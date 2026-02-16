@@ -341,12 +341,13 @@ async def api_advance_league(req: AdvanceLeagueRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    db_path = state.get_db_path()
+
     # 2차: 월별 대학 스탯 스냅샷(변동성 모델) + watch-run(사전 빅보드) 체크포인트 갱신
     try:
         from college.service import run_monthly_watch_and_stats_checkpoints
 
-        db_path = state.get_db_path()
-        checkpoints = run_monthly_watch_and_stats_checkpoints(
+        college_checkpoints = run_monthly_watch_and_stats_checkpoints(
             str(db_path),
             from_date=str(prev_date),
             to_date=str(req.target_date),
@@ -357,11 +358,28 @@ async def api_advance_league(req: AdvanceLeagueRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"college monthly checkpoints failed: {e}") from e
 
+    # 3차: 월별 스카우팅 리포트 체크포인트(유저 선택 기반)
+    # - ACTIVE assignment가 없으면 no-op이어야 한다.
+    # - 월말 기준 14일 이내 배정된 스카우터는 해당 월 리포트를 작성하지 않는다.
+    try:
+        from scouting.service import run_monthly_scouting_checkpoints
+
+        scouting_checkpoints = run_monthly_scouting_checkpoints(
+            str(db_path),
+            from_date=str(prev_date),
+            to_date=str(req.target_date),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scouting monthly checkpoints failed: {e}") from e
+    
     return {
         "target_date": req.target_date,
         "simulated_count": len(simulated),
         "simulated_games": simulated,
-        "college_checkpoints": checkpoints,
+        "college_checkpoints": college_checkpoints,
+        "scouting_checkpoints": scouting_checkpoints,
     }
 
 
