@@ -8,9 +8,12 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+import schema
+
 from config import TEAM_TO_CONF_DIV
 from league_repo import LeagueRepo
 import fatigue
+import injury
 from matchengine_v2_adapter import adapt_matchengine_result_to_v2, build_context_from_team_ids
 from matchengine_v3.sim_game import simulate_game
 from sim.roster_adapter import build_team_state_from_db
@@ -283,17 +286,61 @@ def _simulate_postseason_game(
 
     rng = random.Random()
     with _repo_ctx() as repo:
-        # Ensure schema is applied (idempotent). This guarantees fatigue tables exist
-        # even if the DB was created before the fatigue module was added.
+        # Ensure schema is applied (idempotent). This guarantees fatigue/injury tables exist
+        # even if the DB was created before the modules were added.
         repo.init_db()
 
-        home_team = build_team_state_from_db(repo=repo, team_id=home_team_id)
-        away_team = build_team_state_from_db(repo=repo, team_id=away_team_id)
+        season_year = fatigue.season_year_from_season_id(str(getattr(context, "season_id", "") or ""))
 
-        prepared = None
+        # ------------------------------------------------------------
+        # Injury: prepare between-game state (OUT players + returning debuffs)
+        # ------------------------------------------------------------
+        prepared_inj = None
+        unavailable_by_team: Dict[str, set[str]] = {}
+        attrs_mods_by_pid = None
         try:
-            season_year = fatigue.season_year_from_season_id(str(getattr(context, "season_id", "") or ""))
-            prepared = fatigue.prepare_game_fatigue(
+            prepared_inj = injury.prepare_game_injuries(
+                repo,
+                game_id=str(getattr(context, "game_id", "") or ""),
+                game_date_iso=str(game_date),
+                season_year=int(season_year),
+                home_team_id=str(home_team_id),
+                away_team_id=str(away_team_id),
+            )
+            unavailable_by_team = dict(prepared_inj.unavailable_pids_by_team or {})
+            attrs_mods_by_pid = prepared_inj.attrs_mods_by_pid
+        except Exception:
+            logger.warning(
+                "INJURY_PREPARE_FAILED (playoffs) date=%s home=%s away=%s",
+                str(game_date),
+                str(home_team_id),
+                str(away_team_id),
+                exc_info=True,
+            )
+            prepared_inj = None
+
+        hid = schema.normalize_team_id(str(home_team_id)).upper()
+        aid = schema.normalize_team_id(str(away_team_id)).upper()
+
+        home_team = build_team_state_from_db(
+            repo=repo,
+            team_id=home_team_id,
+            exclude_pids=set(unavailable_by_team.get(hid, set()) or set()),
+            attrs_mods_by_pid=attrs_mods_by_pid,
+        )
+        away_team = build_team_state_from_db(
+            repo=repo,
+            team_id=away_team_id,
+            exclude_pids=set(unavailable_by_team.get(aid, set()) or set()),
+            attrs_mods_by_pid=attrs_mods_by_pid,
+        )
+
+        # ------------------------------------------------------------
+        # Fatigue: prepare between-game condition (start_energy + energy_cap)
+        # ------------------------------------------------------------
+        prepared_fat = None
+        try:
+            prepared_fat = fatigue.prepare_game_fatigue(
                 repo,
                 game_date_iso=str(game_date),
                 season_year=int(season_year),
@@ -309,13 +356,29 @@ def _simulate_postseason_game(
                 exc_info=True,
             )
 
-        raw_result = simulate_game(rng, home_team, away_team, context=context)
+        # In-game injury hook
+        injury_hook = None
+        if prepared_inj is not None:
+            try:
+                injury_hook = injury.make_in_game_injury_hook(prepared_inj, context=context, home=home_team, away=away_team)
+            except Exception:
+                logger.warning(
+                    "INJURY_HOOK_BUILD_FAILED (playoffs) date=%s home=%s away=%s",
+                    str(game_date),
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+                injury_hook = None
 
-        if prepared is not None:
+        raw_result = simulate_game(rng, home_team, away_team, context=context, injury_hook=injury_hook)
+
+        # Post-game finalize: fatigue + injuries
+        if prepared_fat is not None:
             try:
                 fatigue.finalize_game_fatigue(
                     repo,
-                    prepared=prepared,
+                    prepared=prepared_fat,
                     home=home_team,
                     away=away_team,
                     raw_result=raw_result,
@@ -328,6 +391,25 @@ def _simulate_postseason_game(
                     str(away_team_id),
                     exc_info=True,
                 )
+
+        if prepared_inj is not None:
+            try:
+                injury.finalize_game_injuries(
+                    repo,
+                    prepared=prepared_inj,
+                    home=home_team,
+                    away=away_team,
+                    raw_result=raw_result,
+                )
+            except Exception:
+                logger.warning(
+                    "INJURY_FINALIZE_FAILED (playoffs) date=%s home=%s away=%s",
+                    str(game_date),
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+
     v2_result = adapt_matchengine_result_to_v2(
         raw_result,
         context,
@@ -353,147 +435,6 @@ def _simulate_postseason_game(
         "final_score": final,
         "boxscore": v2_result.get("teams"),
     }
-
-
-def _pick_home_advantage(entry_a: Dict[str, Any], entry_b: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    seed_a, seed_b = entry_a.get("seed"), entry_b.get("seed")
-    if isinstance(seed_a, int) and isinstance(seed_b, int):
-        if seed_a != seed_b:
-            return (entry_a, entry_b) if seed_a < seed_b else (entry_b, entry_a)
-
-    win_pct_a = entry_a.get("win_pct") or 0
-    win_pct_b = entry_b.get("win_pct") or 0
-    if win_pct_a != win_pct_b:
-        return (entry_a, entry_b) if win_pct_a > win_pct_b else (entry_b, entry_a)
-
-    pd_a = entry_a.get("point_diff") or 0
-    pd_b = entry_b.get("point_diff") or 0
-    if pd_a != pd_b:
-        return (entry_a, entry_b) if pd_a > pd_b else (entry_b, entry_a)
-
-    return (entry_a, entry_b) if (entry_a.get("team_id") or "") < (entry_b.get("team_id") or "") else (entry_b, entry_a)
-
-
-# ---------------------------------------------------------------------------
-# 필드 구축 / 플레이-인
-# ---------------------------------------------------------------------------
-
-def build_postseason_field() -> Dict[str, Any]:
-    standings = get_conference_standings()
-    field: Dict[str, Any] = {}
-
-    for conf_key in ("east", "west"):
-        conf_rows = standings.get(conf_key, [])
-        seeds = [_seed_entry(r) for r in conf_rows]
-        auto_bids = [s for s in seeds if isinstance(s.get("seed"), int) and s["seed"] <= 6]
-        play_in = [s for s in seeds if isinstance(s.get("seed"), int) and 7 <= s["seed"] <= 10]
-        eliminated = [s for s in seeds if isinstance(s.get("seed"), int) and s["seed"] > 10]
-        field[conf_key] = {
-            "auto_bids": auto_bids,
-            "play_in": play_in,
-            "eliminated": eliminated,
-        }
-
-    postseason_set_field(field)
-    return field
-
-
-def build_random_postseason_field(my_team_id: str) -> Dict[str, Any]:
-    field: Dict[str, Any] = {}
-    my_conf = (TEAM_TO_CONF_DIV.get(my_team_id, {}).get("conference") or "east").lower()
-
-    for conf_key in ("east", "west"):
-        attach_my_team = my_team_id if conf_key == my_conf else None
-        field[conf_key] = _build_random_conf_field(conf_key, attach_my_team)
-
-    postseason_set_field(field)
-    return field
-
-
-def _conference_play_in_template(conf_key: str, field: Dict[str, Any]) -> Dict[str, Any]:
-    seeds = {entry["seed"]: entry for entry in field.get(conf_key, {}).get("play_in", []) if entry.get("seed")}
-    matchups = {
-        "seven_vs_eight": {
-            "home": seeds.get(7),
-            "away": seeds.get(8),
-            "date": None,
-            "result": None,
-        },
-        "nine_vs_ten": {
-            "home": seeds.get(9),
-            "away": seeds.get(10),
-            "date": None,
-            "result": None,
-        },
-        "final": {
-            "home": None,
-            "away": None,
-            "date": None,
-            "result": None,
-        },
-    }
-    return {
-        "conference": conf_key,
-        "participants": seeds,
-        "matchups": matchups,
-        "seed7": None,
-        "seed8": None,
-        "eliminated": [],
-    }
-
-
-def _apply_play_in_results(conf_state: Dict[str, Any]) -> None:
-    matchups = conf_state.get("matchups", {})
-    conf_state["seed7"] = None
-    conf_state["seed8"] = None
-    eliminated: List[str] = []
-
-    seven_res = (matchups.get("seven_vs_eight") or {}).get("result")
-    nine_res = (matchups.get("nine_vs_ten") or {}).get("result")
-    final_res = (matchups.get("final") or {}).get("result")
-
-    main_loser = None
-    lower_winner = None
-
-    if seven_res:
-        winner = seven_res.get("winner")
-        home = seven_res.get("home_team_id")
-        away = seven_res.get("away_team_id")
-        if winner and home and away:
-            conf_state["seed7"] = conf_state["participants"].get(7) if winner == conf_state["participants"].get(7, {}).get("team_id") else conf_state["participants"].get(8)
-            main_loser = conf_state["participants"].get(8) if conf_state["seed7"] is conf_state["participants"].get(7) else conf_state["participants"].get(7)
-
-    if nine_res:
-        winner = nine_res.get("winner")
-        home_entry = conf_state["participants"].get(9)
-        away_entry = conf_state["participants"].get(10)
-        if winner and home_entry and away_entry:
-            lower_winner = home_entry if winner == home_entry.get("team_id") else away_entry
-            lower_loser = away_entry if lower_winner is home_entry else home_entry
-            if lower_loser and lower_loser.get("team_id"):
-                eliminated.append(lower_loser.get("team_id"))
-
-    if final_res:
-        winner = final_res.get("winner")
-        home_team_id = final_res.get("home_team_id")
-        away_team_id = final_res.get("away_team_id")
-        home_entry = None
-        away_entry = None
-        for entry in conf_state["participants"].values():
-            if entry.get("team_id") == home_team_id:
-                home_entry = entry
-            if entry.get("team_id") == away_team_id:
-                away_entry = entry
-        if winner and home_entry and away_entry:
-            conf_state["seed8"] = home_entry if winner == home_entry.get("team_id") else away_entry
-            loser_entry = away_entry if conf_state["seed8"] is home_entry else home_entry
-            if loser_entry.get("team_id"):
-                eliminated.append(loser_entry.get("team_id"))
-
-    conf_state["eliminated"] = eliminated
-
-    if not final_res and main_loser and lower_winner:
-        matchups["final"]["home"], matchups["final"]["away"] = _pick_home_advantage(main_loser, lower_winner)
 
 
 def _simulate_play_in_game(

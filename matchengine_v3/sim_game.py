@@ -8,7 +8,7 @@ NOTE: Split from sim.py on 2025-12-27.
 import random
 import math
 from functools import lru_cache
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple, Callable
 
 import schema
 
@@ -273,6 +273,7 @@ def simulate_game(
     strict_validation: bool = True,
     validation: Optional[ValidationConfig] = None,
     replay_disabled: bool = False,
+    injury_hook: Optional[Callable[[float, GameState, TeamState, TeamState], Any]] = None,
 ) -> Dict[str, Any]:
     """Simulate a full game with input validation/sanitization.
 
@@ -1121,6 +1122,7 @@ def simulate_game(
 
             # --- Apply minutes/fatigue by time segments (handles in-possession lineup changes) ---
             segments = ctx.get("_time_segments") if isinstance(ctx, dict) else None
+            inj_elapsed = 0.0  # total elapsed seconds for this possession chunk (injury rolls)
             if not isinstance(segments, list):
                 segments = None
 
@@ -1153,6 +1155,8 @@ def simulate_game(
                     if seg_elapsed <= 0:
                         continue
 
+                    inj_elapsed += float(seg_elapsed)
+
                     off_seg = list(seg.get("off") or off_on_court)
                     def_seg = list(seg.get("def") or def_on_court)
 
@@ -1166,11 +1170,65 @@ def simulate_game(
             else:
                 # Safety fallback
                 elapsed = max(float(start_clock) - float(game_state.clock_sec), 0.0)
+                inj_elapsed = float(elapsed)
                 _update_minutes(game_state, off_on_court, elapsed, offense, home)
                 _update_minutes(game_state, def_on_court, elapsed, defense, home)
                 fb_intensity = _intensity_from_usage((ctx.get("_fatigue_seg_usage") if isinstance(ctx, dict) else None), elapsed)
                 _apply_fatigue_loss(offense, off_on_court, game_state, rules, fb_intensity, elapsed, home)
                 _apply_fatigue_loss(defense, def_on_court, game_state, rules, fb_intensity, elapsed, home)
+
+            # -------------------------
+            # In-game injury hook (does NOT consume engine RNG)
+            # - Rolls once per possession-chunk using inj_elapsed seconds
+            # - Marks game_state.injured_out and appends game_state.injury_events
+            # -------------------------
+            if injury_hook is not None and float(inj_elapsed) > 0.0:
+                try:
+                    new_inj = injury_hook(float(inj_elapsed), game_state, home, away) or []
+                    if new_inj:
+                        for ev in new_inj:
+                            try:
+                                # InjuryEvent (preferred) exposes to_row(); accept dicts defensively.
+                                if hasattr(ev, "to_row"):
+                                    row = ev.to_row()  # type: ignore[attr-defined]
+                                elif isinstance(ev, dict):
+                                    row = ev
+                                else:
+                                    row = {}
+
+                                team_id = str(row.get("team_id") or "").strip() or None
+                                player_id = str(row.get("player_id") or "").strip() or None
+
+                                emit_event(
+                                    game_state,
+                                    event_type="INJURY",
+                                    home=home,
+                                    away=away,
+                                    rules=rules,
+                                    team_id=team_id,
+                                    player_id=player_id,
+                                    injury_id=row.get("injury_id"),
+                                    body_part=row.get("body_part"),
+                                    injury_type=row.get("injury_type"),
+                                    severity=row.get("severity"),
+                                    duration_days=row.get("duration_days"),
+                                    out_until_date=row.get("out_until_date"),
+                                    returning_until_date=row.get("returning_until_date"),
+                                    include_lineups=True,
+                                )
+                            except Exception as e:
+                                _push_debug_error(
+                                    "replay.emit_event.INJURY",
+                                    e,
+                                    {"event_type": "INJURY"},
+                                )
+                except Exception as e:
+                    _push_debug_error(
+                        "injury_hook",
+                        e,
+                        {"possession": int(getattr(game_state, "possession", 0) or 0)},
+                    )
+
             # Track possession-scope aggregates across dead-ball stop continuations.
             if bool(pos_res.get("had_orb", False)):
                 pos_had_orb = True
@@ -1362,6 +1420,12 @@ def simulate_game(
             "team_fouls": dict(game_state.team_fouls),
             "player_fouls": dict(game_state.player_fouls),
             "fatigue": dict(game_state.fatigue),
+            "fatigue_cap": dict(getattr(game_state, "fatigue_cap", {}) or {}),
+            "injury_events": list(getattr(game_state, "injury_events", []) or []),
+            "injured_out": {
+                str(tid): sorted(list(s))
+                for tid, s in (getattr(game_state, "injured_out", {}) or {}).items()
+            },
             "minutes_played_sec": dict(game_state.minutes_played_sec),
         }
     }

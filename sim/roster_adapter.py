@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import replace
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set, Mapping
 
 from derived_formulas import compute_derived
 from league_repo import LeagueRepo
@@ -331,7 +331,26 @@ def _normalize_pid_list(values: Optional[List[Any]]) -> List[str]:
     return out
 
 
-def load_team_players_from_db(repo: LeagueRepo, team_id: str) -> Tuple[List[Player], Optional[str]]:
+def load_team_players_from_db(
+    repo: LeagueRepo,
+    team_id: str,
+    *,
+    exclude_pids: Optional[Set[str]] = None,
+    attrs_mods_by_pid: Optional[Mapping[str, Mapping[str, float]]] = None,
+) -> Tuple[List[Player], Optional[str]]:
+    """Load team roster from DB and adapt to matchengine_v3 Players.
+
+    Args:
+        exclude_pids:
+            Players who are unavailable (e.g., OUT injuries) and should be excluded from
+            the returned roster.
+
+            Commercial safety: if exclusion would drop the roster below 5 players, the
+            exclusion is ignored (the game must be simulatable).
+        attrs_mods_by_pid:
+            Temporary attribute deltas (e.g., RETURNING injury debuffs) to apply before
+            computing derived ratings. Keys must match ``players.attrs_json`` rating keys.
+    """
     tid = schema.normalize_team_id(team_id)
     roster_rows = repo.get_team_roster(str(tid))
     if not roster_rows:
@@ -350,29 +369,91 @@ def load_team_players_from_db(repo: LeagueRepo, team_id: str) -> Tuple[List[Play
         # Display-only; do not hide real data problems elsewhere.
         team_display_name = None
 
-    players: List[Player] = []
+    mods_map: Mapping[str, Mapping[str, float]] = attrs_mods_by_pid or {}
+
+    players_all: List[Player] = []
     for row in roster_rows:
-        attrs = row.get("attrs") or {}
-        derived = compute_derived(attrs)
         pid = schema.normalize_player_id(row.get("player_id"))
+
+        attrs0 = row.get("attrs") or {}
+        attrs = dict(attrs0) if isinstance(attrs0, dict) else {}
+
+        # Apply temporary attribute modifiers (e.g., RETURNING debuffs) before derived.
+        mods = mods_map.get(str(pid))
+        if isinstance(mods, Mapping) and mods:
+            for k, delta in mods.items():
+                key = str(k)
+                try:
+                    base = float(attrs.get(key, 50.0))
+                except Exception:
+                    base = 50.0
+                try:
+                    d = float(delta)
+                except Exception:
+                    continue
+                v = base + d
+                # 2K-style clamp. Keep floats; derived formulas handle numeric types.
+                if v < 0.0:
+                    v = 0.0
+                if v > 99.0:
+                    v = 99.0
+                attrs[key] = v
+
+        derived = compute_derived(attrs)
 
         # Age is stored in players table and is needed by fatigue/injury subsystems.
         # Keep this robust even if upstream data is missing or malformed.
         age_i = 0
         try:
-            age_i = int(row.get("age") or attrs.get("Age") or 0)
+            age_i = int(row.get("age") or attrs0.get("Age") or 0)
         except Exception:
             age_i = 0
-        players.append(
+
+        # Injury traits (I_InjuryFreq 1..10, Overall Durability 1..100).
+        injury_freq = 5.0
+        try:
+            injury_freq = float(attrs0.get("I_InjuryFreq", 5.0) or 5.0)
+        except Exception:
+            injury_freq = 5.0
+        injury_freq = max(1.0, min(10.0, injury_freq))
+
+        durability = 70.0
+        try:
+            durability = float(attrs0.get("Overall Durability", attrs0.get("Durability", 70.0)) or 70.0)
+        except Exception:
+            durability = 70.0
+        durability = max(1.0, min(100.0, durability))
+
+        players_all.append(
             Player(
                 pid=str(pid),
-                name=str(row.get("name") or attrs.get("Name") or ""),
-                pos=str(row.get("pos") or attrs.get("POS") or attrs.get("Position") or "G"),
+                name=str(row.get("name") or attrs0.get("Name") or ""),
+                pos=str(row.get("pos") or attrs0.get("POS") or attrs0.get("Position") or "G"),
                 derived=derived,
                 age=age_i,
+                injury_freq=injury_freq,
+                durability=durability,
             )
         )
-    return players, team_display_name
+
+    # Apply hard exclusions (OUT injuries) at the roster level.
+    if exclude_pids:
+        try:
+            excl = {str(schema.normalize_player_id(x)) for x in exclude_pids if x is not None and str(x).strip()}
+        except Exception:
+            excl = set()
+
+        if excl:
+            filtered = [p for p in players_all if p.pid not in excl]
+            if len(filtered) >= 5:
+                return filtered, team_display_name
+
+            _warn_limited(
+                "ROSTER_EXCLUDE_TOO_SMALL",
+                f"team={str(tid)} exclude={len(excl)} would leave {len(filtered)} players; ignoring exclusions for safety",
+            )
+
+    return players_all, team_display_name
 
 
 def build_team_state_from_db(
@@ -380,6 +461,8 @@ def build_team_state_from_db(
     repo: LeagueRepo,
     team_id: str,
     tactics: Optional[Dict[str, Any]] = None,
+    exclude_pids: Optional[Set[str]] = None,
+    attrs_mods_by_pid: Optional[Mapping[str, Mapping[str, float]]] = None,
 ) -> TeamState:
     tid = schema.normalize_team_id(team_id)
     lineup_info = tactics.get("lineup", {}) if tactics else {}
@@ -387,7 +470,12 @@ def build_team_state_from_db(
     bench = _normalize_pid_list(lineup_info.get("bench") or [])
     max_players = int((tactics or {}).get("rotation_size") or 10)
 
-    players, team_display_name = load_team_players_from_db(repo, str(tid))
+    players, team_display_name = load_team_players_from_db(
+        repo,
+        str(tid),
+        exclude_pids=exclude_pids,
+        attrs_mods_by_pid=attrs_mods_by_pid,
+    )
     max_players = max(5, min(max_players, len(players)))
     lineup = _select_lineup(players, starters, bench, max_players=max_players)
     roles = _build_roles_from_lineup(lineup[:5])

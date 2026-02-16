@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from functools import lru_cache
 
 import warnings
@@ -157,6 +157,12 @@ class GameState:
     # If absent for a player, engine should fall back to 1.0.
     fatigue_cap: Dict[str, Dict[str, float]] = field(default_factory=dict)         # {team_id: {pid: cap}}
 
+    # --- In-game injuries (v1) ---
+    # injured_out: per-team set of players who are OUT for the rest of this game.
+    # injury_events: append-only list of injury event rows (dict). Persisted post-game.
+    injured_out: Dict[str, Set[str]] = field(default_factory=dict)                      # {team_id: set(pid)}
+    injury_events: List[Dict[str, Any]] = field(default_factory=list)
+
     # Lineup versioning (for replay seeking / exact on-court reconstruction)
     # - lineup_version: global monotonic counter for any on-court change (both teams)
     # - lineup_version_by_team_id: per-team monotonic counter (useful when both teams sub in same stoppage)
@@ -207,6 +213,12 @@ class Player:
     energy_cap: float = 1.0
     # Player age (years). Used by between-game fatigue/injury systems.
     age: int = 0
+
+    # Injury traits (used by injury subsystem)
+    # - injury_freq: I_InjuryFreq rating (1..10)
+    # - durability: Overall Durability rating (1..100)
+    injury_freq: float = 5.0
+    durability: float = 70.0
 
     def get(self, key: str, fatigue_sensitive: bool = True) -> float:
         v = float(self.derived.get(key, DERIVED_DEFAULT))
