@@ -74,6 +74,20 @@ def ensure_db_initialized_and_seeded(state: dict) -> None:
         # Keep rows ready for all teams (idempotent).
         repo.ensure_gm_profiles_seeded(ALL_TEAM_IDS)
 
+        # Seed per-team scouting staff (idempotent).
+        # NOTE: Actual scouting (assignments/reports) is 100% user-driven;
+        #       this only ensures the staff roster exists for each team.
+        try:
+            from scouting.service import ensure_scouts_seeded
+        except Exception as e:
+            raise ImportError(
+                "scouting.service.ensure_scouts_seeded is required after adding scouting schema. "
+                "Implement scouting/service.py or remove this call.\n"
+                f"Import error: {e}"
+            ) from e
+
+        ensure_scouts_seeded(db_path=db_path, team_ids=ALL_TEAM_IDS, scouts_per_team=7)
+
     migrations["db_initialized"] = True
     migrations["db_initialized_db_path"] = db_path
 
