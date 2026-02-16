@@ -73,6 +73,14 @@ CATEGORY_KEYS: Dict[str, List[str]] = {
         "Defensive Consistency",
         "Pass Vision",
     ],
+    "POST": [
+        "Post Control",
+        "Post Fade",
+        "Post Hook",
+        "Close Shot",
+        "Strength",
+        "Hands",
+    ],
 }
 
 
@@ -84,4 +92,5 @@ ALL_CATEGORIES: List[str] = [
     "REBOUNDING",
     "PHYSICAL",
     "IQ",
+    "POST",
 ]
