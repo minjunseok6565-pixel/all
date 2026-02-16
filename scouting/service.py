@@ -19,7 +19,9 @@ Key gameplay rules (as requested):
 
 import datetime as _dt
 import json
+import logging
 import math
+import os
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -27,6 +29,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import game_time
 from league_repo import LeagueRepo
 from ratings_2k import potential_grade_to_scalar
+
+from scouting.report_ai import ScoutingReportWriter
+
+
+logger = logging.getLogger(__name__)
 
 try:
     # Used to compute gameplay-relevant skill axes from attrs_json.
@@ -69,6 +76,148 @@ def _stable_seed(*parts: object) -> int:
         h ^= ch
         h = (h * 16777619) & 0xFFFFFFFF
     return int(h)
+
+
+def _pos_bucket(pos: Any) -> str:
+    """Coarse positional bucket: G/W/B.
+
+    - G: guards
+    - W: wings/forwards
+    - B: bigs
+    """
+    p = str(pos or "").strip().upper()
+    if p in ("PG", "SG", "G"):
+        return "G"
+    if p in ("SF", "PF", "F", "W"):
+        return "W"
+    return "B"
+
+
+def _rule_when_matches(when: Any, ctx: Mapping[str, Any]) -> bool:
+    if not isinstance(when, dict):
+        return False
+
+    pos = str(ctx.get("pos") or "").strip().upper()
+    pos_bucket = str(ctx.get("pos_bucket") or "").strip().upper()
+
+    # List membership filters
+    if "pos_in" in when:
+        arr = when.get("pos_in")
+        if isinstance(arr, (list, tuple, set)):
+            allowed = {str(x).strip().upper() for x in arr}
+            if pos not in allowed:
+                return False
+    if "pos_bucket" in when:
+        arr = when.get("pos_bucket")
+        if isinstance(arr, (list, tuple, set)):
+            allowed = {str(x).strip().upper() for x in arr}
+            if pos_bucket not in allowed:
+                return False
+
+    # Numeric ranges
+    def _num(key: str, default: Optional[float] = None) -> Optional[float]:
+        v = ctx.get(key)
+        try:
+            if v is None:
+                return default
+            return float(v)
+        except Exception:
+            return default
+
+    def _w_num(key: str) -> Optional[float]:
+        v = when.get(key)
+        try:
+            if v is None:
+                return None
+            return float(v)
+        except Exception:
+            return None
+
+    height = _num("height_in")
+    weight = _num("weight_lb")
+    age = _num("age")
+    cy = _num("class_year")
+
+    hmin = _w_num("height_in_min")
+    hmax = _w_num("height_in_max")
+    if height is not None:
+        if hmin is not None and height < hmin:
+            return False
+        if hmax is not None and height > hmax:
+            return False
+
+    wmin = _w_num("weight_lb_min")
+    wmax = _w_num("weight_lb_max")
+    if weight is not None:
+        if wmin is not None and weight < wmin:
+            return False
+        if wmax is not None and weight > wmax:
+            return False
+
+    amin = _w_num("age_min")
+    amax = _w_num("age_max")
+    if age is not None:
+        if amin is not None and age < amin:
+            return False
+        if amax is not None and age > amax:
+            return False
+
+    cmin = _w_num("class_year_min")
+    cmax = _w_num("class_year_max")
+    if cy is not None:
+        if cmin is not None and cy < cmin:
+            return False
+        if cmax is not None and cy > cmax:
+            return False
+
+    return True
+
+
+def _bias_delta_from_rules(
+    *,
+    bias_rules: Any,
+    ctx: Mapping[str, Any],
+    axis_key: str,
+    scout_id: str,
+    player_id: str,
+    period_key: str,
+) -> float:
+    """Compute additional bias delta from conditional bias rules."""
+    if not isinstance(bias_rules, list) or not bias_rules:
+        return 0.0
+
+    total = 0.0
+    for rule in bias_rules:
+        if not isinstance(rule, dict):
+            continue
+        when = rule.get("when")
+        if not _rule_when_matches(when, ctx):
+            continue
+
+        # Optional probability (deterministic per scout+player+month+rule)
+        prob = rule.get("prob")
+        try:
+            p = float(prob) if prob is not None else 1.0
+        except Exception:
+            p = 1.0
+        p = max(0.0, min(1.0, p))
+        if p < 1.0:
+            rule_name = str(rule.get("name") or "rule")
+            rng = random.Random(_stable_seed("bias_rule", scout_id, player_id, period_key, rule_name))
+            if rng.random() > p:
+                continue
+
+        axis_delta = rule.get("axis_delta")
+        if not isinstance(axis_delta, dict):
+            continue
+        if axis_key not in axis_delta:
+            continue
+        try:
+            total += float(axis_delta.get(axis_key) or 0.0)
+        except Exception:
+            continue
+
+    return float(total)
 
 
 # -----------------------------------------------------------------------------
@@ -448,6 +597,23 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"athleticism": 0.70, "finishing": 0.85},
             "learn": {"athleticism": 1.50, "finishing": 1.10},
             "bias": {"shooting": -2.0},
+            "bias_rules": [
+                {
+                    "name": "small_guard_tools_skeptic",
+                    "when": {"pos_bucket": ["G"], "height_in_max": 73},
+                    "axis_delta": {"overall": -1.0, "defense": -1.5},
+                },
+                {
+                    "name": "big_wing_tools_hype",
+                    "when": {"pos_bucket": ["W"], "height_in_min": 79},
+                    "axis_delta": {"athleticism": 1.5, "upside": 1.0},
+                },
+                {
+                    "name": "older_prospect_upside_discount",
+                    "when": {"age_min": 22},
+                    "axis_delta": {"upside": -2.0},
+                },
+            ],
         },
         {
             "specialty_key": "SHOOTING",
@@ -457,6 +623,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"shooting": 0.70},
             "learn": {"shooting": 1.60},
             "bias": {"defense": -2.0},
+            "bias_rules": [
+                {
+                    "name": "bigs_shooting_skepticism",
+                    "when": {"pos_bucket": ["B"]},
+                    "axis_delta": {"shooting": -2.0},
+                },
+                {
+                    "name": "guards_range_credit",
+                    "when": {"pos_bucket": ["G"]},
+                    "axis_delta": {"shooting": 0.8},
+                },
+            ],
         },
         {
             "specialty_key": "DEFENSE",
@@ -466,6 +644,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"defense": 0.75, "rebounding": 0.85},
             "learn": {"defense": 1.35, "rebounding": 1.10},
             "bias": {"shooting": -1.5},
+            "bias_rules": [
+                {
+                    "name": "small_guard_defense_skeptic",
+                    "when": {"pos_bucket": ["G"], "height_in_max": 73},
+                    "axis_delta": {"defense": -2.0},
+                },
+                {
+                    "name": "true_rim_size_hype",
+                    "when": {"pos_bucket": ["B"], "height_in_min": 82},
+                    "axis_delta": {"defense": 1.2, "rebounding": 1.0},
+                },
+            ],
         },
         {
             "specialty_key": "PLAYMAKING",
@@ -475,6 +665,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"playmaking": 0.75},
             "learn": {"playmaking": 1.45},
             "bias": {"finishing": -1.0},
+            "bias_rules": [
+                {
+                    "name": "bigs_playmaking_skepticism",
+                    "when": {"pos_bucket": ["B"]},
+                    "axis_delta": {"playmaking": -1.5},
+                },
+                {
+                    "name": "pg_processing_credit",
+                    "when": {"pos_in": ["PG"]},
+                    "axis_delta": {"playmaking": 1.0},
+                },
+            ],
         },
         {
             "specialty_key": "MEDICAL",
@@ -484,6 +686,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"durability": 0.85},
             "learn": {"durability": 0.75},
             "bias": {"durability": -2.0},  # conservative by default
+            "bias_rules": [
+                {
+                    "name": "heavy_body_durability_risk",
+                    "when": {"weight_lb_min": 255},
+                    "axis_delta": {"durability": -1.5},
+                },
+                {
+                    "name": "older_mileage_assumption",
+                    "when": {"age_min": 22},
+                    "axis_delta": {"durability": -1.0},
+                },
+            ],
         },
         {
             "specialty_key": "CHARACTER",
@@ -493,6 +707,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"character": 0.90},
             "learn": {"character": 0.65},
             "bias": {"character": -1.0},
+            "bias_rules": [
+                {
+                    "name": "upperclass_maturity_bump",
+                    "when": {"class_year_min": 3},
+                    "axis_delta": {"character": 1.0},
+                },
+                {
+                    "name": "freshman_unknown_penalty",
+                    "when": {"class_year_max": 1},
+                    "axis_delta": {"character": -1.5},
+                },
+            ],
         },
         {
             "specialty_key": "ANALYTICS",
@@ -502,6 +728,18 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             "acc": {"overall": 0.85, "upside": 0.85},
             "learn": {"overall": 1.00, "upside": 0.85},
             "bias": {"athleticism": -1.0},
+            "bias_rules": [
+                {
+                    "name": "older_upside_discount",
+                    "when": {"age_min": 22},
+                    "axis_delta": {"upside": -2.0},
+                },
+                {
+                    "name": "young_upside_credit",
+                    "when": {"age_max": 20},
+                    "axis_delta": {"upside": 1.5},
+                },
+            ],
         },
     ]
 
@@ -523,6 +761,7 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
                 "acc": {"overall": 1.00, "shooting": 1.00, "defense": 1.00},
                 "learn": {"overall": 0.90, "shooting": 0.90, "defense": 0.90},
                 "bias": {},
+                "bias_rules": [],
             }
         )
 
@@ -554,6 +793,7 @@ def ensure_scouts_seeded(
 
     created = 0
     existing = 0
+    updated = 0
 
     with LeagueRepo(db_path) as repo:
         repo.init_db()
@@ -566,20 +806,61 @@ def ensure_scouts_seeded(
 
                     scout_id = f"SCT_{team_id}_{specialty_key}"
                     row = cur.execute(
-                        "SELECT scout_id FROM scouting_scouts WHERE scout_id=? LIMIT 1;",
+                        "SELECT profile_json FROM scouting_scouts WHERE scout_id=? LIMIT 1;",
                         (scout_id,),
                     ).fetchone()
                     if row:
                         existing += 1
+
+                        # Non-destructive profile upgrades: add new keys if missing.
+                        cur_profile = _json_loads(row[0], default={})
+                        if not isinstance(cur_profile, dict):
+                            cur_profile = {}
+
+                        # Desired defaults (only applied when the key is missing)
+                        defaults = {
+                            "schema_version": 2,
+                            "specialty_key": specialty_key,
+                            "focus_axes": list(t.get("focus_axes") or []),
+                            "acc_mult_by_axis": dict(t.get("acc") or {}),
+                            "learn_rate_by_axis": dict(t.get("learn") or {}),
+                            "bias_offset_by_axis": dict(t.get("bias") or {}),
+                            "bias_rules": list(t.get("bias_rules") or []),
+                            "style_tags": list(t.get("style_tags") or []),
+                            "rng_seed": _stable_seed("scout", team_id, specialty_key),
+                        }
+
+                        patched = False
+                        for k, dv in defaults.items():
+                            if k not in cur_profile:
+                                cur_profile[k] = dv
+                                patched = True
+
+                        # Schema bump (only forward)
+                        try:
+                            cur_sv = int(cur_profile.get("schema_version") or 0)
+                        except Exception:
+                            cur_sv = 0
+                        if cur_sv < 2:
+                            cur_profile["schema_version"] = 2
+                            patched = True
+
+                        if patched:
+                            cur.execute(
+                                "UPDATE scouting_scouts SET profile_json=?, updated_at=? WHERE scout_id=?;",
+                                (_json_dumps(cur_profile), now, scout_id),
+                            )
+                            updated += 1
                         continue
 
                     profile = {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "specialty_key": specialty_key,
                         "focus_axes": list(t.get("focus_axes") or []),
                         "acc_mult_by_axis": dict(t.get("acc") or {}),
                         "learn_rate_by_axis": dict(t.get("learn") or {}),
                         "bias_offset_by_axis": dict(t.get("bias") or {}),
+                        "bias_rules": list(t.get("bias_rules") or []),
                         "style_tags": list(t.get("style_tags") or []),
                         "rng_seed": _stable_seed("scout", team_id, specialty_key),
                     }
@@ -617,6 +898,7 @@ def ensure_scouts_seeded(
         "scouts_per_team": int(scouts_per_team),
         "created": int(created),
         "existing": int(existing),
+        "updated": int(updated),
     }
 
 
@@ -677,6 +959,7 @@ def run_monthly_scouting_checkpoints(
     *,
     from_date: str,
     to_date: str,
+    api_key: Optional[str] = None,
     min_days_assigned_for_report: int = 14,
 ) -> Dict[str, Any]:
     """Run end-of-month scouting report checkpoints between two dates.
@@ -727,6 +1010,19 @@ def run_monthly_scouting_checkpoints(
     now = game_time.now_utc_like_iso()
     handled: List[Dict[str, Any]] = []
     total_created = 0
+    pending_text: List[Dict[str, Any]] = []  # created reports needing LLM text
+    text_generated = 0
+    text_failed = 0
+    text_skipped_missing_api_key = 0
+
+    def _resolve_llm_api_key(v: Optional[str]) -> Optional[str]:
+        if v and str(v).strip():
+            return str(v).strip()
+        for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GENAI_API_KEY"):
+            vv = os.getenv(k)
+            if vv and str(vv).strip():
+                return str(vv).strip()
+        return None
 
     with LeagueRepo(db_path) as repo:
         repo.init_db()
@@ -850,6 +1146,10 @@ def run_monthly_scouting_checkpoints(
                     bias_offset_by_axis = scout_profile.get("bias_offset_by_axis")
                     if not isinstance(bias_offset_by_axis, dict):
                         bias_offset_by_axis = {}
+
+                    bias_rules = scout_profile.get("bias_rules")
+                    if not isinstance(bias_rules, list):
+                        bias_rules = []
                     style_tags = scout_profile.get("style_tags")
                     if not isinstance(style_tags, list):
                         style_tags = []
@@ -871,6 +1171,22 @@ def run_monthly_scouting_checkpoints(
 
                     if not prow:
                         skipped_missing_player += 1
+                        # Auto-end assignment if the target player is missing
+                        # (e.g., drafted and removed from college_players).
+                        if str(target_kind).upper() == "COLLEGE":
+                            try:
+                                progress["ended_reason"] = "missing_player"
+                                progress["ended_at"] = as_of
+                                cur.execute(
+                                    """
+                                    UPDATE scouting_assignments
+                                    SET status='ENDED', ended_date=?, progress_json=?, updated_at=?
+                                    WHERE assignment_id=? AND status='ACTIVE';
+                                    """,
+                                    (as_of, _json_dumps(progress), now, assignment_id),
+                                )
+                            except Exception as e:
+                                logger.warning("auto_end_assignment_failed: %s", e)
                         continue
 
                     # Unpack player
@@ -968,7 +1284,23 @@ def run_monthly_scouting_checkpoints(
                         sigma0 = _safe_float(st.get("sigma"), axis_def.init_sigma)
 
                         true_v = _safe_float(true_axes.get(axis_key), 50.0)
-                        bias = _safe_float(bias_offset_by_axis.get(axis_key), 0.0)
+                        base_bias = _safe_float(bias_offset_by_axis.get(axis_key), 0.0)
+                        ctx = {
+                            "pos": p_pos,
+                            "pos_bucket": _pos_bucket(p_pos),
+                            "height_in": int(p_h),
+                            "weight_lb": int(p_w),
+                            "age": int(p_age),
+                            "class_year": int(p_class),
+                        }
+                        bias = base_bias + _bias_delta_from_rules(
+                            bias_rules=bias_rules,
+                            ctx=ctx,
+                            axis_key=axis_key,
+                            scout_id=scout_id,
+                            player_id=player_id,
+                            period_key=pk,
+                        )
 
                         acc_mult = _safe_float(acc_mult_by_axis.get(axis_key), 1.0)
                         learn = _safe_float(learn_rate_by_axis.get(axis_key), 1.0)
@@ -1017,7 +1349,7 @@ def run_monthly_scouting_checkpoints(
                     progress["total_obs_days"] = int(_safe_float(progress.get("total_obs_days"), 0.0) + days_covered)
                     progress["updated_at"] = now
 
-                    # Build structured payload for LLM (text generation is done elsewhere)
+                    # Build structured payload for LLM (text generation happens at month-end checkpoint)
                     payload = {
                         "schema_version": 1,
                         "method": "kalman_v1",
@@ -1075,12 +1407,23 @@ def run_monthly_scouting_checkpoints(
                             int(days_covered),
                             _json_dumps(player_snapshot),
                             _json_dumps(payload),
-                            None,  # report_text (LLM-generated elsewhere / on-demand)
+                            None,  # report_text (LLM-generated below)
                             "READY_STRUCT",
-                            _json_dumps({"note": "text_generation_deferred"}),
+                            _json_dumps({"status": "PENDING"}),
                             now,
                             now,
                         ),
+                    )
+
+                    pending_text.append(
+                        {
+                            "report_id": report_id,
+                            "team_id": team_id,
+                            "scout_id": scout_id,
+                            "player_id": player_id,
+                            "period_key": pk,
+                            "payload": payload,
+                        }
                     )
 
                     # Persist assignment progress
@@ -1112,10 +1455,121 @@ def run_monthly_scouting_checkpoints(
             )
             total_created += int(created)
 
+        # -----------------------------------------------------------------
+        # Option A: generate LLM report_text at month-end checkpoint
+        # -----------------------------------------------------------------
+        if pending_text:
+            eff_key = _resolve_llm_api_key(api_key)
+            if not eff_key:
+                text_skipped_missing_api_key = len(pending_text)
+                logger.warning(
+                    "scouting_reports_text_generation_skipped: missing_api_key (pending=%s)",
+                    len(pending_text),
+                )
+                with repo.transaction() as cur:
+                    for item in pending_text:
+                        rid = str(item.get("report_id") or "")
+                        if not rid:
+                            continue
+                        cur.execute(
+                            """
+                            UPDATE scouting_reports
+                            SET status='FAILED_TEXT', llm_meta_json=?, updated_at=?
+                            WHERE report_id=?;
+                            """,
+                            (
+                                _json_dumps(
+                                    {
+                                        "status": "FAILED",
+                                        "error": "missing_api_key",
+                                        "hint": "Provide api_key in /api/advance-league or set GEMINI_API_KEY env var.",
+                                    }
+                                ),
+                                now,
+                                rid,
+                            ),
+                        )
+            else:
+                try:
+                    writer = ScoutingReportWriter(api_key=eff_key)
+                except Exception as e:
+                    text_failed = len(pending_text)
+                    logger.exception("failed_to_initialize_scouting_report_writer: %s", e)
+                    with repo.transaction() as cur:
+                        for item in pending_text:
+                            rid = str(item.get("report_id") or "")
+                            if not rid:
+                                continue
+                            cur.execute(
+                                """
+                                UPDATE scouting_reports
+                                SET status='FAILED_TEXT', llm_meta_json=?, updated_at=?
+                                WHERE report_id=?;
+                                """,
+                                (
+                                    _json_dumps(
+                                        {
+                                            "status": "FAILED",
+                                            "error": f"writer_init_failed: {e}",
+                                        }
+                                    ),
+                                    now,
+                                    rid,
+                                ),
+                            )
+                else:
+                    for item in pending_text:
+                        rid = str(item.get("report_id") or "")
+                        payload = item.get("payload")
+                        if not rid or not isinstance(payload, dict):
+                            continue
+                        try:
+                            text, meta = writer.write(payload)
+                            text = str(text or "").strip()
+                            if not text:
+                                raise ValueError("LLM returned empty report_text")
+
+                            with repo.transaction() as cur:
+                                cur.execute(
+                                    """
+                                    UPDATE scouting_reports
+                                    SET report_text=?, status='READY_TEXT', llm_meta_json=?, updated_at=?
+                                    WHERE report_id=?;
+                                    """,
+                                    (text, _json_dumps(meta), now, rid),
+                                )
+                            text_generated += 1
+                        except Exception as e:
+                            text_failed += 1
+                            logger.warning("scouting_report_text_generation_failed: %s", e)
+                            with repo.transaction() as cur:
+                                cur.execute(
+                                    """
+                                    UPDATE scouting_reports
+                                    SET status='FAILED_TEXT', llm_meta_json=?, updated_at=?
+                                    WHERE report_id=?;
+                                    """,
+                                    (
+                                        _json_dumps(
+                                            {
+                                                "status": "FAILED",
+                                                "error": str(e),
+                                            }
+                                        ),
+                                        now,
+                                        rid,
+                                    ),
+                                )
+
     return {
         "ok": True,
         "from_date": str(from_date),
         "to_date": str(to_date),
         "handled": handled,
         "generated_reports": int(total_created),
+        "llm": {
+            "text_generated": int(text_generated),
+            "text_failed": int(text_failed),
+            "text_skipped_missing_api_key": int(text_skipped_missing_api_key),
+        },
     }
