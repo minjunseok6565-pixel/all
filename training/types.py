@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Mapping, Optional
 
+from .config import INTENSITY_MULTIPLIER
+
 
 TrainingIntensity = Literal["LOW", "MED", "HIGH"]
 TrainingCategory = Literal[
@@ -15,14 +17,8 @@ TrainingCategory = Literal[
     "REBOUNDING",
     "PHYSICAL",
     "IQ",
+    "POST",
 ]
-
-
-INTENSITY_MULTIPLIER: Dict[str, float] = {
-    "LOW": 0.85,
-    "MED": 1.00,
-    "HIGH": 1.15,
-}
 
 
 def stable_seed(*parts: str) -> int:
@@ -60,6 +56,8 @@ def _norm_category(v: Any) -> str:
         "DEF": "DEFENSE",
         "REB": "REBOUNDING",
         "PHY": "PHYSICAL",
+        "POSTUP": "POST",
+        "POST": "POST",
     }
     s = aliases.get(s, s)
     if s in {
@@ -71,6 +69,7 @@ def _norm_category(v: Any) -> str:
         "REBOUNDING",
         "PHYSICAL",
         "IQ",
+        "POST",
     }:
         return s
     return "BALANCED"

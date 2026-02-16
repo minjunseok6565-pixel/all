@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping
 from ratings_2k import potential_grade_to_scalar, compute_ovr_proxy
 
 from .types import stable_seed
+from . import config as cfg
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -35,7 +36,7 @@ def build_growth_profile(
     rng = random.Random(stable_seed("growth_profile", pid))
 
     pot = potential_grade_to_scalar(attrs.get("Potential"))  # 0.40..1.00
-    pot = _clamp(pot, 0.40, 1.00)
+    pot = _clamp(pot, float(cfg.POT_MIN), float(cfg.POT_MAX))
 
     try:
         cur_proxy = float(compute_ovr_proxy(attrs, pos=str(pos)))
@@ -44,25 +45,38 @@ def build_growth_profile(
 
     # Younger players tend to have more runway.
     # Age factor: 19 -> 1.00, 27 -> ~0.55, 31 -> ~0.35
-    age_f = _clamp(1.10 - 0.06 * float(max(0, age - 19)), 0.25, 1.10)
+    age_f = _clamp(
+        float(cfg.AGE_FACTOR_BASE) - float(cfg.AGE_FACTOR_SLOPE) * float(max(0, age - int(cfg.AGE_FACTOR_START_AGE))),
+        float(cfg.AGE_FACTOR_MIN),
+        float(cfg.AGE_FACTOR_MAX),
+    )
 
     # Headroom: 6..18ish depending on potential.
-    base_headroom = 6.0 + 14.0 * pot
-    noise = 0.85 + 0.30 * rng.random()
+    base_headroom = float(cfg.HEADROOM_BASE) + float(cfg.HEADROOM_SCALE) * pot
+    noise = float(cfg.HEADROOM_NOISE_BASE) + float(cfg.HEADROOM_NOISE_RANGE) * rng.random()
     headroom = base_headroom * age_f * noise
 
-    ceiling = _clamp(cur_proxy + headroom, cur_proxy + 1.0, 99.0)
+    ceiling = _clamp(cur_proxy + headroom, cur_proxy + float(cfg.CEILING_MIN_ADD), float(cfg.CEILING_MAX))
 
     # Peak age: higher potential tends to peak slightly later.
-    peak = 24.0 + 4.0 * pot + rng.gauss(0.0, 0.8)
-    peak = _clamp(peak, 23.0, 29.5)
+    peak = float(cfg.PEAK_BASE) + float(cfg.PEAK_POT_SCALE) * pot + rng.gauss(0.0, float(cfg.PEAK_SIGMA))
+    peak = _clamp(peak, float(cfg.PEAK_MIN), float(cfg.PEAK_MAX))
 
     # Decline starts after peak.
-    decline_start = peak + 3.5 + (1.0 - pot) * 2.0 + rng.gauss(0.0, 0.7)
-    decline_start = _clamp(decline_start, 27.5, 34.0)
+    decline_start = (
+        peak
+        + float(cfg.DECLINE_START_BASE_ADD)
+        + (1.0 - pot) * float(cfg.DECLINE_START_POT_PENALTY)
+        + rng.gauss(0.0, float(cfg.DECLINE_START_SIGMA))
+    )
+    decline_start = _clamp(decline_start, float(cfg.DECLINE_START_MIN), float(cfg.DECLINE_START_MAX))
 
-    late_decline = decline_start + 4.5 + rng.gauss(0.0, 0.8)
-    late_decline = _clamp(late_decline, max(31.0, decline_start + 2.0), 38.0)
+    late_decline = decline_start + float(cfg.LATE_DECLINE_BASE_ADD) + rng.gauss(0.0, float(cfg.LATE_DECLINE_SIGMA))
+    late_decline = _clamp(
+        late_decline,
+        max(float(cfg.LATE_DECLINE_MIN_ABS), decline_start + float(cfg.LATE_DECLINE_MIN_DELTA)),
+        float(cfg.LATE_DECLINE_MAX),
+    )
 
     return {
         "player_id": pid,

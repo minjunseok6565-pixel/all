@@ -11,13 +11,10 @@ from ratings_2k import _apply_relationship_constraints as _apply_relationship_co
 
 from .mapping import ALL_CATEGORIES, CATEGORY_KEYS
 from .types import intensity_multiplier, stable_seed
+from . import config as cfg
 
 
-MIN_ATTR: int = 25
-MAX_ATTR: int = 99
-
-
-def _clamp_int(x: float, lo: int = MIN_ATTR, hi: int = MAX_ATTR) -> int:
+def _clamp_int(x: float, lo: int = cfg.MIN_ATTR, hi: int = cfg.MAX_ATTR) -> int:
     try:
         v = int(round(float(x)))
     except Exception:
@@ -31,8 +28,8 @@ def _norm_mental(v: Any) -> float:
         x = float(v)
     except Exception:
         x = 60.0
-    x = max(25.0, min(99.0, x))
-    return (x - 25.0) / (99.0 - 25.0)
+    x = max(float(cfg.MIN_ATTR), min(float(cfg.MAX_ATTR), x))
+    return (x - float(cfg.MIN_ATTR)) / (float(cfg.MAX_ATTR) - float(cfg.MIN_ATTR))
 
 
 def _sigmoid(x: float) -> float:
@@ -44,28 +41,28 @@ def _age_growth_factor(age: int, peak_age: float) -> float:
     """0..1-ish factor: young -> high, after peak -> low."""
     a = float(age)
     # At age == peak_age -> 0.5
-    raw = 1.0 / (1.0 + math.exp((a - float(peak_age)) / 1.25))
+    raw = 1.0 / (1.0 + math.exp((a - float(peak_age)) / float(cfg.AGE_GROWTH_K)))
     # Keep some residual growth even after peak.
-    return 0.20 + 0.80 * raw
+    return float(cfg.AGE_GROWTH_FLOOR) + (1.0 - float(cfg.AGE_GROWTH_FLOOR)) * raw
 
 
 def _age_decline_factor(age: int, decline_start: float, late_decline: float) -> float:
     a = float(age)
-    start = _sigmoid((a - float(decline_start)) / 1.15)  # 0..1
-    late = _sigmoid((a - float(late_decline)) / 1.10)  # 0..1
-    return start * (1.0 + 0.85 * late)
+    start = _sigmoid((a - float(decline_start)) / float(cfg.AGE_DECLINE_START_K))  # 0..1
+    late = _sigmoid((a - float(late_decline)) / float(cfg.AGE_DECLINE_LATE_K))  # 0..1
+    return start * (1.0 + float(cfg.AGE_DECLINE_LATE_MULT) * late)
 
 
 def _cap_factor(cur_proxy: float, ceiling_proxy: float) -> float:
     room = max(0.0, float(ceiling_proxy) - float(cur_proxy))
     # Diminishing returns near the ceiling.
-    return room / (room + 8.0)
+    return room / (room + float(cfg.CAP_ROOM_DAMP))
 
 
 def _minutes_factor(minutes: float, *, ref: float) -> float:
     m = max(0.0, float(minutes))
-    # 0 min -> 0.55, heavy minutes -> up to ~1.10
-    return 0.55 + 0.55 * math.sqrt(m / (m + float(ref)))
+    # 0 min -> ~MINUTES_FLOOR, heavy minutes -> ~MINUTES_FLOOR+MINUTES_SCALE
+    return float(cfg.MINUTES_FLOOR) + float(cfg.MINUTES_SCALE) * math.sqrt(m / (m + float(ref)))
 
 
 def _effective_category_weights(
@@ -78,10 +75,10 @@ def _effective_category_weights(
 
     focus = str(team_plan.get("focus") or "BALANCED").upper()
     if focus and focus != "BALANCED" and focus in w:
-        w[focus] = 1.8
+        w[focus] = float(cfg.TEAM_FOCUS_MULTIPLIER)
         for c in w:
             if c != focus:
-                w[c] *= 0.90
+                w[c] *= float(cfg.TEAM_NONFOCUS_MULTIPLIER)
 
     # Explicit team weights override the focus shaping.
     weights_raw = team_plan.get("weights")
@@ -99,9 +96,9 @@ def _effective_category_weights(
     primary = str(player_plan.get("primary") or "BALANCED").upper()
     secondary = str(player_plan.get("secondary") or "").upper()
     if primary and primary != "BALANCED" and primary in w:
-        w[primary] += 1.2
+        w[primary] += float(cfg.PLAYER_PRIMARY_BONUS)
     if secondary and secondary != "BALANCED" and secondary in w:
-        w[secondary] += 0.6
+        w[secondary] += float(cfg.PLAYER_SECONDARY_BONUS)
 
     # Normalize.
     s = sum(max(0.0, x) for x in w.values())
@@ -110,15 +107,7 @@ def _effective_category_weights(
     return {c: max(0.0, x) / s for c, x in w.items()}
 
 
-DECLINE_WEIGHTS: Dict[str, float] = {
-    "PHYSICAL": 0.40,
-    "DEFENSE": 0.25,
-    "FINISHING": 0.12,
-    "REBOUNDING": 0.08,
-    "PLAYMAKING": 0.08,
-    "SHOOTING": 0.05,
-    "IQ": 0.02,
-}
+DECLINE_WEIGHTS: Dict[str, float] = dict(cfg.DECLINE_WEIGHTS)
 
 
 def _weighted_choice(rng: random.Random, items: List[Tuple[str, float]]) -> str:
@@ -142,7 +131,7 @@ def _choose_key_for_positive(rng: random.Random, attrs: Mapping[str, Any], keys:
             v = float(attrs.get(k, 50.0))
         except Exception:
             v = 50.0
-        headroom = max(0.0, float(MAX_ATTR) - v)
+        headroom = max(0.0, float(cfg.MAX_ATTR) - v)
         if headroom <= 0.0:
             continue
         scored.append((k, max(0.25, headroom)))
@@ -158,7 +147,7 @@ def _choose_key_for_negative(rng: random.Random, attrs: Mapping[str, Any], keys:
             v = float(attrs.get(k, 50.0))
         except Exception:
             v = 50.0
-        room = max(0.0, v - float(MIN_ATTR))
+        room = max(0.0, v - float(cfg.MIN_ATTR))
         if room <= 0.0:
             continue
         scored.append((k, max(0.25, room)))
@@ -246,16 +235,26 @@ def apply_growth_tick(
     ego = _norm_mental(attrs.get("M_Ego"))
     adapt = _norm_mental(attrs.get("M_Adaptability"))
 
-    drive = 0.75 + 0.55 * (0.45 * work + 0.25 * coach + 0.15 * amb + 0.15 * adapt)
-    drive = max(0.70, min(1.35, drive))
+    drive = float(cfg.DRIVE_BASE) + float(cfg.DRIVE_SCALE) * (
+        float(cfg.DRIVE_W_WORK) * work
+        + float(cfg.DRIVE_W_COACH) * coach
+        + float(cfg.DRIVE_W_AMB) * amb
+        + float(cfg.DRIVE_W_ADAPT) * adapt
+    )
+    drive = max(float(cfg.DRIVE_MIN), min(float(cfg.DRIVE_MAX), drive))
 
-    stability = 0.55 + 0.35 * (0.45 * work + 0.20 * coach + 0.20 * loyal + 0.15 * adapt) - 0.25 * ego
-    stability = max(0.10, min(0.90, stability))
+    stability = float(cfg.STABILITY_BASE) + float(cfg.STABILITY_SCALE) * (
+        float(cfg.STABILITY_W_WORK) * work
+        + float(cfg.STABILITY_W_COACH) * coach
+        + float(cfg.STABILITY_W_LOYAL) * loyal
+        + float(cfg.STABILITY_W_ADAPT) * adapt
+    ) - float(cfg.STABILITY_EGO_PENALTY) * ego
+    stability = max(float(cfg.STABILITY_MIN), min(float(cfg.STABILITY_MAX), stability))
 
     # Training multipliers.
     t_int = intensity_multiplier(team_plan.get("intensity"))
     p_int = intensity_multiplier(player_plan.get("intensity"))
-    intensity_mult = 0.60 * t_int + 0.40 * p_int
+    intensity_mult = float(cfg.TEAM_INTENSITY_SHARE) * t_int + float(cfg.PLAYER_INTENSITY_SHARE) * p_int
 
     # Age curve.
     g_age = _age_growth_factor(int(age), float(peak_age))
@@ -263,27 +262,32 @@ def apply_growth_tick(
 
     # Minutes curve.
     if str(tick_kind).lower() == "offseason":
-        m_mult = _minutes_factor(minutes, ref=1100.0)
-        base_pos = 8.0
-        base_neg = 3.2
+        m_mult = _minutes_factor(minutes, ref=float(cfg.OFFSEASON_MINUTES_REF))
+        base_pos = float(cfg.OFFSEASON_BASE_POS)
+        base_neg = float(cfg.OFFSEASON_BASE_NEG)
     else:
-        m_mult = _minutes_factor(minutes, ref=240.0)
-        base_pos = 1.6
-        base_neg = 0.9
+        m_mult = _minutes_factor(minutes, ref=float(cfg.MONTHLY_MINUTES_REF))
+        base_pos = float(cfg.MONTHLY_BASE_POS)
+        base_neg = float(cfg.MONTHLY_BASE_NEG)
 
     # Cap.
     cap_mult = _cap_factor(cur_proxy, ceiling_proxy)
 
     # Stochasticity: low stability -> more variance.
-    sigma = 0.10 + 0.28 * (1.0 - stability)
-    noise = max(0.55, min(1.45, rng.gauss(1.0, sigma)))
+    sigma = float(cfg.NOISE_SIGMA_BASE) + float(cfg.NOISE_SIGMA_SCALE) * (1.0 - stability)
+    noise = max(float(cfg.NOISE_MULT_MIN), min(float(cfg.NOISE_MULT_MAX), rng.gauss(1.0, sigma)))
 
     # Positive & negative point budgets.
     pos_points_f = base_pos * g_age * drive * intensity_mult * m_mult * cap_mult * noise
 
     # Work ethic reduces decline (maintenance).
-    maintenance = 0.78 + 0.35 * work + 0.10 * coach
-    neg_points_f = base_neg * d_age * (1.25 - 0.25 * maintenance) * (0.90 + 0.15 * rng.random())
+    maintenance = float(cfg.MAINTENANCE_BASE) + float(cfg.MAINTENANCE_W_WORK) * work + float(cfg.MAINTENANCE_W_COACH) * coach
+    neg_points_f = (
+        base_neg
+        * d_age
+        * (float(cfg.DECLINE_MULT_BASE) - float(cfg.DECLINE_MULT_MAINTENANCE_SCALE) * maintenance)
+        * (float(cfg.DECLINE_NOISE_BASE) + float(cfg.DECLINE_NOISE_SCALE) * rng.random())
+    )
 
     # Convert to discrete "rating points".
     def _to_int_points(x: float) -> int:
@@ -344,17 +348,17 @@ def apply_growth_tick(
             new_proxy = cur_proxy
 
         guard = 0
-        while new_proxy > ceiling_proxy and guard < 40 and positive_keys:
+        while new_proxy > ceiling_proxy and guard < int(cfg.CEILING_SHAVE_GUARD) and positive_keys:
             guard += 1
             k = rng.choice(positive_keys)
             try:
                 cur_v = int(attrs.get(k, 50) or 50)
             except Exception:
                 cur_v = 50
-            if cur_v <= MIN_ATTR:
+            if cur_v <= int(cfg.MIN_ATTR):
                 positive_keys = [x for x in positive_keys if x != k]
                 continue
-            attrs[k] = int(max(MIN_ATTR, cur_v - 1))
+            attrs[k] = int(max(int(cfg.MIN_ATTR), cur_v - 1))
             try:
                 new_proxy = float(compute_ovr_proxy(attrs, pos=str(pos)))
             except Exception:
