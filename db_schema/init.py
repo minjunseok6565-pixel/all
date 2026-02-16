@@ -16,7 +16,7 @@ from .registry import EnsureColumnsFn, apply_all
 # Order matters:
 # - core must come first (players table is referenced by other modules)
 # - training references core.players
-DEFAULT_MODULES = (core, training, trade_assets, draft, gm, college)
+DEFAULT_MODULES = (core, training, trade_assets, draft, gm, college, scouting)
 
 
 def apply_schema(
