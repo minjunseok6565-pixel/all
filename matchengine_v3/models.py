@@ -153,6 +153,9 @@ class GameState:
     # Use float to avoid systematic undercount from truncation when segment lengths are fractional.
     minutes_played_sec: Dict[str, Dict[str, float]] = field(default_factory=dict)  # {team_id: {pid: sec}}
     fatigue: Dict[str, Dict[str, float]] = field(default_factory=dict)             # {team_id: {pid: energy}}
+    # Per-team, per-player recovery cap for fatigue (energy) in this game.
+    # If absent for a player, engine should fall back to 1.0.
+    fatigue_cap: Dict[str, Dict[str, float]] = field(default_factory=dict)         # {team_id: {pid: cap}}
 
     # Lineup versioning (for replay seeking / exact on-court reconstruction)
     # - lineup_version: global monotonic counter for any on-court change (both teams)
@@ -199,6 +202,11 @@ class Player:
     pos: str = "G"
     derived: Dict[str, float] = field(default_factory=dict)
     energy: float = 1.0  # 1.0 fresh -> 0.0 exhausted  (단일 스케일과 동일한 의미)
+    # In-game recovery cap for this game (e.g., derived from pre-game Condition).
+    # If not used, should remain at 1.0.
+    energy_cap: float = 1.0
+    # Player age (years). Used by between-game fatigue/injury systems.
+    age: int = 0
 
     def get(self, key: str, fatigue_sensitive: bool = True) -> float:
         v = float(self.derived.get(key, DERIVED_DEFAULT))
