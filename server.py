@@ -863,9 +863,11 @@ async def api_scouting_assign(req: ScoutingAssignRequest):
                     raise HTTPException(status_code=404, detail=f"College player not found: {pid}")
 
                 assignment_id = f"SASN_{uuid4().hex}"
+                # Assignment progress state (scouting v2):
+                #   - "signals": per-signal mu/sigma updated by monthly checkpoints
                 progress = {
-                    "schema_version": 1,
-                    "axes": {},
+                    "schema_version": 2,
+                    "signals": {},
                     "last_obs_date": None,
                     "total_obs_days": 0,
                 }
