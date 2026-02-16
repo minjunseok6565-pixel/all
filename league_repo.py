@@ -67,6 +67,7 @@ except Exception as e:  # pragma: no cover
 
 _HEIGHT_RE = re.compile(r"^\s*(\d+)\s*'\s*(\d+)\s*\"?\s*$")
 _WEIGHT_RE = re.compile(r"^\s*(\d+)\s*(?:lbs?)?\s*$", re.IGNORECASE)
+_SALARY_YEAR_COL_RE = re.compile(r"^salary_(\d{4})$", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 _WARN_COUNTS: Dict[str, int] = {}
@@ -163,6 +164,27 @@ def parse_salary_int(value: Any) -> Optional[int]:
     except (TypeError, ValueError, OverflowError):
         _warn_limited("SALARY_STR_COERCE_FAILED", f"value={value!r}", limit=3)
         return None
+
+
+def _extract_salary_by_year_excel(row: Any, df_columns: Sequence[str]) -> Dict[str, float]:
+    """Extract per-season salary map from Excel row.
+
+    Supported forms:
+      - salary_2025 / salary_2026 / ... columns only
+    """
+    out: Dict[str, float] = {}
+
+    for col in df_columns:
+        m = _SALARY_YEAR_COL_RE.match(str(col).strip())
+        if not m:
+            continue
+        year_i = int(m.group(1))
+        val_i = parse_salary_int(row.get(col, None))
+        if val_i is None:
+            continue
+        out[str(year_i)] = float(val_i)
+
+    return out
 
 
 def _require_columns(cols: Sequence[str], required: Sequence[str]) -> None:
@@ -1231,6 +1253,7 @@ class LeagueRepo:
 
         players: List[PlayerRow] = []
         roster: List[RosterRow] = []
+        contracts_by_id: Dict[str, Dict[str, Any]] = {}
 
         # Columns we treat as "core" (not attributes)
         core_cols = {
@@ -1243,6 +1266,10 @@ class LeagueRepo:
             "Salary", "salary", "salary_amount",
             "OVR", "ovr",
         }
+        salary_year_cols = [
+            col for col in df_columns if _SALARY_YEAR_COL_RE.match(str(col).strip())
+        ]
+        core_cols.update(salary_year_cols)
 
         for _, row in df.iterrows():
             raw_pid = row.get(ROSTER_COL_PLAYER_ID)
@@ -1285,6 +1312,25 @@ class LeagueRepo:
             if sal is None:
                 sal = row.get("Salary", None)
             salary_amount = parse_salary_int(sal)
+
+            salary_by_year = _extract_salary_by_year_excel(row, df_columns)
+            if salary_by_year:
+                start_year = min(int(k) for k in salary_by_year.keys())
+                years = max(len(salary_by_year), 1)
+                contract_id = f"BOOT_{season_id_from_year(start_year)}_{pid}"
+                status = "ACTIVE" if str(tid).upper() != "FA" else "INACTIVE"
+                contracts_by_id[str(contract_id)] = {
+                    "contract_id": contract_id,
+                    "player_id": str(pid),
+                    "team_id": str(tid).upper(),
+                    "signed_date": "1900-01-01",
+                    "start_season_year": int(start_year),
+                    "years": int(years),
+                    "salary_by_year": salary_by_year,
+                    "options": [],
+                    "status": status,
+                    "contract_type": "STANDARD",
+                }
 
             # ovr
             ovr = row.get("ovr", None)
@@ -1369,6 +1415,10 @@ class LeagueRepo:
                 """,
                 [(r.player_id, r.team_id, r.salary_amount, now) for r in roster],
             )
+
+        if contracts_by_id:
+            self.upsert_contract_records(contracts_by_id)
+            self.rebuild_contract_indices()
 
         # Validate after import
         self.validate_integrity(strict_ids=strict_ids)
