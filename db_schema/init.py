@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
-from . import core, training, trade_assets, draft, gm, college
+from . import core, training, trade_assets, draft, gm, college, scouting
 from .registry import EnsureColumnsFn, apply_all
 
 
