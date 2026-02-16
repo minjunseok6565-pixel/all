@@ -139,6 +139,7 @@ class ChatMainRequest(BaseModel):
 class AdvanceLeagueRequest(BaseModel):
     target_date: str  # YYYY-MM-DD, 이 날짜까지 리그를 자동 진행
     user_team_id: Optional[str] = None
+    apiKey: Optional[str] = None  # Optional: used for month-end scouting LLM generation
 
 
 class PostseasonSetupRequest(BaseModel):
@@ -368,6 +369,7 @@ async def api_advance_league(req: AdvanceLeagueRequest):
             str(db_path),
             from_date=str(prev_date),
             to_date=str(req.target_date),
+            api_key=req.apiKey,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
