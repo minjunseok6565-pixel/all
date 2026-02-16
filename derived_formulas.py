@@ -1,12 +1,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict
 
 import logging
-
-import numpy as np
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 _warn_counts: Dict[str, int] = {}
@@ -57,7 +55,7 @@ COL = {
 
 def _get(row, key: str, default: float = 50.0) -> float:
     c = COL.get(key)
-    if c and c in row and pd.notna(row[c]):
+    if c and c in row and _is_not_na(row[c]):
         try:
             return float(row[c])
         except (TypeError, ValueError):
@@ -65,8 +63,17 @@ def _get(row, key: str, default: float = 50.0) -> float:
             return default
     return default
 
+
+def _is_not_na(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    return True
+
+
 def _clamp100(x: float) -> float:
-    return float(np.clip(x, 0, 100))
+    return float(min(100.0, max(0.0, float(x))))
 
 def compute_derived(row) -> Dict[str, float]:
     FIN_RIM = 0.35*_get(row,"Layup")+0.20*_get(row,"CloseShot")+0.15*_get(row,"ShotIQ")+0.10*_get(row,"OffCons")+0.10*_get(row,"Strength")+0.10*_get(row,"Vertical")

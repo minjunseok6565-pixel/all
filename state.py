@@ -1047,6 +1047,7 @@ def get_league_context_snapshot() -> dict:
         league = v["league"]
         trade_rules = league.get("trade_rules") if hasattr(league, "get") else {}
         return {
+            "active_season_id": v.get("active_season_id"),
             "season_year": league["season_year"],
             "trade_rules": _to_plain(trade_rules),
             "current_date": league["current_date"],
