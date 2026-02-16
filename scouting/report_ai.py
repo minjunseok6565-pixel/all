@@ -14,7 +14,10 @@ import datetime as _dt
 import json
 from typing import Any, Dict, Tuple
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except Exception:  # pragma: no cover - optional dependency in offline/local env
+    genai = None
 
 
 DEFAULT_MODEL_NAME = "gemini-3-pro-preview"
@@ -83,6 +86,11 @@ class ScoutingReportWriter:
     """Thin wrapper around Gemini model to generate report_text."""
 
     def __init__(self, *, api_key: str, model_name: str = DEFAULT_MODEL_NAME):
+        if genai is None:
+            raise ImportError(
+                "google.generativeai is required to generate scouting reports. "
+                "Install the optional dependency to enable this feature."
+            )
         if not api_key or not str(api_key).strip():
             raise ValueError("api_key is required")
         self.api_key = str(api_key).strip()
