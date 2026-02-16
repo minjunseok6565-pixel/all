@@ -16,6 +16,7 @@ from matchengine_v2_adapter import (
     build_context_from_team_ids,
 )
 from matchengine_v3.sim_game import simulate_game
+import fatigue
 from state import (
     export_full_state_snapshot,
     get_db_path,
@@ -46,10 +47,51 @@ def _run_match(
 ) -> Dict[str, Any]:
     rng = random.Random()
     with _repo_ctx() as repo:
+        # Ensure schema is applied (idempotent). This guarantees fatigue tables exist
+        # even if the DB was created before the fatigue module was added.
+        repo.init_db()
+
         home = build_team_state_from_db(repo=repo, team_id=home_team_id, tactics=home_tactics)
         away = build_team_state_from_db(repo=repo, team_id=away_team_id, tactics=away_tactics)
 
-    raw_result = simulate_game(rng, home, away, context=context)
+        prepared = None
+        try:
+            season_year = fatigue.season_year_from_season_id(str(getattr(context, "season_id", "") or ""))
+            prepared = fatigue.prepare_game_fatigue(
+                repo,
+                game_date_iso=game_date,
+                season_year=int(season_year),
+                home=home,
+                away=away,
+            )
+        except Exception:
+            logger.warning(
+                "FATIGUE_PREPARE_FAILED game_date=%s home=%s away=%s",
+                game_date,
+                str(home_team_id),
+                str(away_team_id),
+                exc_info=True,
+            )
+
+        raw_result = simulate_game(rng, home, away, context=context)
+
+        if prepared is not None:
+            try:
+                fatigue.finalize_game_fatigue(
+                    repo,
+                    prepared=prepared,
+                    home=home,
+                    away=away,
+                    raw_result=raw_result,
+                )
+            except Exception:
+                logger.warning(
+                    "FATIGUE_FINALIZE_FAILED game_date=%s home=%s away=%s",
+                    game_date,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
     v2_result = adapt_matchengine_result_to_v2(
         raw_result,
         context,

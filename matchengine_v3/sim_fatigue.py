@@ -181,6 +181,30 @@ def _apply_fatigue_loss(
     # Engine-internal fatigue dict keys are team_id only (no 'home'/'away', no side mapping).
     fat_map = game_state.fatigue.setdefault(tid, {})
 
+    # Optional per-player recovery cap (energy ceiling) for this game.
+    # - If absent, fall back to 1.0.
+    # - Stored in GameState.fatigue_cap by team_id.
+    caps_root = getattr(game_state, "fatigue_cap", None)
+    cap_map: Dict[str, float] = {}
+    if isinstance(caps_root, dict):
+        # Ensure team entry exists so later code can safely write to it.
+        cap_map = caps_root.setdefault(tid, {})  # type: ignore[assignment]
+
+    def cap_for(pid: str) -> float:
+        try:
+            cap = float(cap_map.get(pid, 1.0))
+        except Exception:
+            cap = 1.0
+        return clamp01(cap)
+
+    def clamp_to_cap(pid: str, x: float) -> float:
+        cap = cap_for(pid)
+        if x < 0.0:
+            return 0.0
+        if x > cap:
+            return cap
+        return float(x)
+
     for pid in on_court:
         # Use configured offensive roles if available; otherwise fallback to legacy role+position heuristics.
         role = _fatigue_archetype_for_pid(team, pid, role_by_pid)
@@ -206,14 +230,15 @@ def _apply_fatigue_loss(
         c01 = cap01(pid)
         loss *= lerp(drain_lo, drain_hi, c01)
 
-        fat_map[pid] = clamp01(float(fat_map.get(pid, 1.0)) - float(loss))
+        fat_map[pid] = clamp_to_cap(pid, float(fat_map.get(pid, 1.0)) - float(loss))
 
     # --- bench: 회복 ---
     bench_pids = [p.pid for p in team.lineup if p.pid not in on_court]
     for pid in bench_pids:
         c01 = cap01(pid)
         rec = bench_rec_per_sec * float(elapsed_sec) * lerp(rec_lo, rec_hi, c01)
-        fat_map[pid] = clamp01(float(fat_map.get(pid, 1.0)) + float(rec))
+        fat_map[pid] = clamp_to_cap(pid, float(fat_map.get(pid, 1.0)) + float(rec))
+
 
 def _apply_break_recovery(
     team: TeamState,
@@ -254,15 +279,36 @@ def _apply_break_recovery(
     # Engine-internal fatigue dict keys are team_id only (no 'home'/'away', no side mapping).
     fat_map = game_state.fatigue.setdefault(tid, {})
 
+    # Optional per-player recovery cap (energy ceiling) for this game.
+    caps_root = getattr(game_state, "fatigue_cap", None)
+    cap_map: Dict[str, float] = {}
+    if isinstance(caps_root, dict):
+        cap_map = caps_root.setdefault(tid, {})  # type: ignore[assignment]
+
+    def cap_for(pid: str) -> float:
+        try:
+            cap = float(cap_map.get(pid, 1.0))
+        except Exception:
+            cap = 1.0
+        return clamp01(cap)
+
+    def clamp_to_cap(pid: str, x: float) -> float:
+        cap = cap_for(pid)
+        if x < 0.0:
+            return 0.0
+        if x > cap:
+            return cap
+        return float(x)
+
     # on-court players recover
     for pid in on_court:
         c01 = cap01(pid)
         rec = on_per_sec * float(break_sec) * lerp(rec_lo, rec_hi, c01)
-        fat_map[pid] = clamp01(float(fat_map.get(pid, 1.0)) + float(rec))
+        fat_map[pid] = clamp_to_cap(pid, float(fat_map.get(pid, 1.0)) + float(rec))
 
     # bench players recover
     bench_pids = [p.pid for p in team.lineup if p.pid not in on_court]
     for pid in bench_pids:
         c01 = cap01(pid)
         rec = bench_per_sec * float(break_sec) * lerp(rec_lo, rec_hi, c01)
-        fat_map[pid] = clamp01(float(fat_map.get(pid, 1.0)) + float(rec))
+        fat_map[pid] = clamp_to_cap(pid, float(fat_map.get(pid, 1.0)) + float(rec))

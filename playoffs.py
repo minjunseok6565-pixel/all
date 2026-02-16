@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from config import TEAM_TO_CONF_DIV
 from league_repo import LeagueRepo
+import fatigue
 from matchengine_v2_adapter import adapt_matchengine_result_to_v2, build_context_from_team_ids
 from matchengine_v3.sim_game import simulate_game
 from sim.roster_adapter import build_team_state_from_db
@@ -282,10 +283,51 @@ def _simulate_postseason_game(
 
     rng = random.Random()
     with _repo_ctx() as repo:
+        # Ensure schema is applied (idempotent). This guarantees fatigue tables exist
+        # even if the DB was created before the fatigue module was added.
+        repo.init_db()
+
         home_team = build_team_state_from_db(repo=repo, team_id=home_team_id)
         away_team = build_team_state_from_db(repo=repo, team_id=away_team_id)
 
-    raw_result = simulate_game(rng, home_team, away_team, context=context)
+        prepared = None
+        try:
+            season_year = fatigue.season_year_from_season_id(str(getattr(context, "season_id", "") or ""))
+            prepared = fatigue.prepare_game_fatigue(
+                repo,
+                game_date_iso=str(game_date),
+                season_year=int(season_year),
+                home=home_team,
+                away=away_team,
+            )
+        except Exception:
+            logger.warning(
+                "FATIGUE_PREPARE_FAILED (playoffs) date=%s home=%s away=%s",
+                str(game_date),
+                str(home_team_id),
+                str(away_team_id),
+                exc_info=True,
+            )
+
+        raw_result = simulate_game(rng, home_team, away_team, context=context)
+
+        if prepared is not None:
+            try:
+                fatigue.finalize_game_fatigue(
+                    repo,
+                    prepared=prepared,
+                    home=home_team,
+                    away=away_team,
+                    raw_result=raw_result,
+                )
+            except Exception:
+                logger.warning(
+                    "FATIGUE_FINALIZE_FAILED (playoffs) date=%s home=%s away=%s",
+                    str(game_date),
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
     v2_result = adapt_matchengine_result_to_v2(
         raw_result,
         context,

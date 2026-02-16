@@ -357,6 +357,21 @@ def simulate_game(
     to_rules = rules.get("timeouts", {}) if isinstance(rules, dict) else {}
     per_team_timeouts = int(to_rules.get("per_team", 7))
 
+    # Pre-game energy seeding:
+    # - Default behavior (legacy) starts everyone at 1.0.
+    # - Between-game fatigue subsystem can inject Player.energy / Player.energy_cap before calling simulate_game().
+    #   We treat those as the SSOT for tip-off energy and per-game recovery cap.
+    home_energy = {p.pid: clamp(getattr(p, "energy", 1.0), 0.0, 1.0) for p in home.lineup}
+    away_energy = {p.pid: clamp(getattr(p, "energy", 1.0), 0.0, 1.0) for p in away.lineup}
+    home_cap = {
+        p.pid: max(home_energy.get(p.pid, 1.0), clamp(getattr(p, "energy_cap", 1.0), 0.0, 1.0))
+        for p in home.lineup
+    }
+    away_cap = {
+        p.pid: max(away_energy.get(p.pid, 1.0), clamp(getattr(p, "energy_cap", 1.0), 0.0, 1.0))
+        for p in away.lineup
+    }
+
     game_state = GameState(
         quarter=1,
         clock_sec=0.0,
@@ -369,8 +384,12 @@ def simulate_game(
         team_fouls={home_team_id: 0, away_team_id: 0},
         player_fouls={home_team_id: {}, away_team_id: {}},
         fatigue={
-            home_team_id: {p.pid: 1.0 for p in home.lineup},
-            away_team_id: {p.pid: 1.0 for p in away.lineup},
+            home_team_id: dict(home_energy),
+            away_team_id: dict(away_energy),
+        },
+        fatigue_cap={
+            home_team_id: dict(home_cap),
+            away_team_id: dict(away_cap),
         },
         minutes_played_sec={
             home_team_id: {p.pid: 0.0 for p in home.lineup},

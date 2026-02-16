@@ -355,12 +355,21 @@ def load_team_players_from_db(repo: LeagueRepo, team_id: str) -> Tuple[List[Play
         attrs = row.get("attrs") or {}
         derived = compute_derived(attrs)
         pid = schema.normalize_player_id(row.get("player_id"))
+
+        # Age is stored in players table and is needed by fatigue/injury subsystems.
+        # Keep this robust even if upstream data is missing or malformed.
+        age_i = 0
+        try:
+            age_i = int(row.get("age") or attrs.get("Age") or 0)
+        except Exception:
+            age_i = 0
         players.append(
             Player(
                 pid=str(pid),
                 name=str(row.get("name") or attrs.get("Name") or ""),
                 pos=str(row.get("pos") or attrs.get("POS") or attrs.get("Position") or "G"),
                 derived=derived,
+                age=age_i,
             )
         )
     return players, team_display_name
