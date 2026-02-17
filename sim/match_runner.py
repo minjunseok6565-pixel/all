@@ -134,6 +134,15 @@ def run_simulated_game(
         # Growth tick must never crash games.
         logger.warning("MONTHLY_GROWTH_TICK_FAILED date=%s", game_date_str, exc_info=True)
 
+    # Ensure monthly agency tick is applied (idempotent).
+    try:
+        from agency.checkpoints import maybe_run_monthly_agency_tick
+
+        maybe_run_monthly_agency_tick(db_path=state.get_db_path(), game_date_iso=game_date_str)
+    except Exception:
+        # Agency tick must never crash games.
+        logger.warning("MONTHLY_AGENCY_TICK_FAILED date=%s", game_date_str, exc_info=True)
+
     context = build_context_from_team_ids(
         str(game_id),
         game_date_str,

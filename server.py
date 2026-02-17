@@ -1349,6 +1349,20 @@ async def api_offseason_contracts_process(req: OffseasonContractsProcessRequest)
 
         # process_offseason은 DB를 갱신하지만 state를 직접 mutate 하진 않는다.
         snap = state.export_full_state_snapshot()
+
+        # Best-effort: ensure the final regular-season month agency tick is applied
+        # before offseason contract processing (idempotent).
+        try:
+            from agency.checkpoints import ensure_last_regular_month_agency_tick
+
+            final_agency_tick = ensure_last_regular_month_agency_tick(
+                db_path=str(db_path),
+                now_date_iso=str(decision_date_iso),
+                state_snapshot=snap,
+            )
+        except Exception:
+            final_agency_tick = {"ok": True, "skipped": True, "reason": "tick_check_failed"}
+
         result = process_offseason(
             snap,
             from_season_year=int(from_year),
@@ -1356,7 +1370,13 @@ async def api_offseason_contracts_process(req: OffseasonContractsProcessRequest)
             decision_date_iso=str(decision_date_iso),
             decision_policy=make_ai_team_option_decision_policy(user_team_id=str(team_id)),
         )
-        return {"ok": True, "from_season_year": int(from_year), "to_season_year": int(to_year), "result": result}
+        return {
+            "ok": True,
+            "from_season_year": int(from_year),
+            "to_season_year": int(to_year),
+            "final_regular_month_agency_tick": final_agency_tick,
+            "result": result,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1390,10 +1410,10 @@ async def api_offseason_training_apply_growth(req: EmptyRequest):
 
     # If the last regular-season month tick hasn't been applied yet (common when
     # jumping into offseason), apply it now (idempotent).
+    snap = state.export_full_state_snapshot()
+
     try:
         from training.checkpoints import ensure_last_regular_month_tick
-
-        snap = state.export_full_state_snapshot()
         final_month_tick = ensure_last_regular_month_tick(
             db_path=str(db_path),
             now_date_iso=str(in_game_date),
@@ -1401,6 +1421,18 @@ async def api_offseason_training_apply_growth(req: EmptyRequest):
         )
     except Exception:
         final_month_tick = {"ok": True, "skipped": True, "reason": "tick_check_failed"}
+
+    # Same parity checkpoint for player agency (idempotent).
+    try:
+        from agency.checkpoints import ensure_last_regular_month_agency_tick
+
+        final_agency_tick = ensure_last_regular_month_agency_tick(
+            db_path=str(db_path),
+            now_date_iso=str(in_game_date),
+            state_snapshot=snap,
+        )
+    except Exception:
+        final_agency_tick = {"ok": True, "skipped": True, "reason": "tick_check_failed"}
 
     from training.service import apply_offseason_growth
 
@@ -1424,7 +1456,104 @@ async def api_offseason_training_apply_growth(req: EmptyRequest):
         pass
 
     result["final_regular_month_tick"] = final_month_tick
+    result["final_regular_month_agency_tick"] = final_agency_tick
     return result
+
+
+# -------------------------------------------------------------------------
+# Agency (player autonomy) API
+# -------------------------------------------------------------------------
+
+
+@app.get("/api/agency/player/{player_id}")
+async def api_agency_get_player(player_id: str, limit: int = 50, offset: int = 0, season_year: Optional[int] = None):
+    """Get a player's current agency state + recent events."""
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    db_path = state.get_db_path()
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        try:
+            from agency import repo as agency_repo
+
+            with repo.transaction() as cur:
+                st_map = agency_repo.get_player_agency_states(cur, [pid])
+                st = st_map.get(pid)
+                events = agency_repo.list_agency_events(
+                    cur,
+                    player_id=pid,
+                    season_year=int(season_year) if season_year is not None else None,
+                    limit=int(limit),
+                    offset=int(offset),
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read agency data: {e}")
+
+    return {"ok": True, "player_id": pid, "state": st, "events": events}
+
+
+@app.get("/api/agency/team/{team_id}/events")
+async def api_agency_get_team_events(
+    team_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    season_year: Optional[int] = None,
+    event_type: Optional[str] = None,
+):
+    """List agency events for a team (UI feed)."""
+    tid = str(normalize_team_id(team_id)).upper()
+    if not tid:
+        raise HTTPException(status_code=400, detail="Invalid team_id")
+
+    db_path = state.get_db_path()
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        try:
+            from agency import repo as agency_repo
+
+            with repo.transaction() as cur:
+                events = agency_repo.list_agency_events(
+                    cur,
+                    team_id=tid,
+                    season_year=int(season_year) if season_year is not None else None,
+                    event_type=str(event_type) if event_type else None,
+                    limit=int(limit),
+                    offset=int(offset),
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to list agency events: {e}")
+
+    return {"ok": True, "team_id": tid, "events": events}
+
+
+@app.get("/api/agency/events")
+async def api_agency_get_events(
+    limit: int = 50,
+    offset: int = 0,
+    season_year: Optional[int] = None,
+    event_type: Optional[str] = None,
+):
+    """List league-wide agency events (debug / commissioner feed)."""
+    db_path = state.get_db_path()
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        try:
+            from agency import repo as agency_repo
+
+            with repo.transaction() as cur:
+                events = agency_repo.list_agency_events(
+                    cur,
+                    season_year=int(season_year) if season_year is not None else None,
+                    event_type=str(event_type) if event_type else None,
+                    limit=int(limit),
+                    offset=int(offset),
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to list agency events: {e}")
+
+    return {"ok": True, "events": events}
 
 
 @app.post("/api/offseason/options/team/pending")
