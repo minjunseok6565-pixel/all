@@ -1338,6 +1338,7 @@ class LeagueService:
         signed_date: date | str | None = None,
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
+        team_option_last_year: bool = False,
     ) -> ServiceEvent:
         """Sign an FA (DB): roster.team_id + contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1347,6 +1348,10 @@ class LeagueService:
         years_i = int(years)
         if years_i <= 0:
             raise ValueError("years must be >= 1")
+
+        team_option_last_year_b = bool(team_option_last_year)
+        if team_option_last_year_b and years_i < 2:
+            raise ValueError("team_option_last_year requires years >= 2")
 
         def _infer_start_season_year_from_date(d_iso: str) -> int:
             try:
@@ -1391,6 +1396,17 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
+            options: List[dict] = []
+            if team_option_last_year_b:
+                option_year = int(start_season_year) + years_i - 1
+                if str(option_year) not in salary_norm:
+                    raise ValueError(
+                        "team_option_last_year requires salary_by_year to include the last season year "
+                        f"(missing year={option_year})"
+                    )
+                options = [
+                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
+                ]
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1401,7 +1417,7 @@ class LeagueService:
                 start_season_year=int(start_season_year),
                 years=years_i,
                 salary_by_year=salary_norm,
-                options=[],
+                options=options,
                 status="ACTIVE",
             )
 
@@ -1486,6 +1502,7 @@ class LeagueService:
         signed_date: date | str | None = None,
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
+        team_option_last_year: bool = False,
     ) -> ServiceEvent:
         """Re-sign / extend a player (DB): contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1495,6 +1512,10 @@ class LeagueService:
         years_i = int(years)
         if years_i <= 0:
             raise ValueError("years must be >= 1")
+
+        team_option_last_year_b = bool(team_option_last_year)
+        if team_option_last_year_b and years_i < 2:
+            raise ValueError("team_option_last_year requires years >= 2")
 
         def _infer_start_season_year_from_date(d_iso: str) -> int:
             try:
@@ -1542,6 +1563,17 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
+            options: List[dict] = []
+            if team_option_last_year_b:
+                option_year = int(start_season_year) + years_i - 1
+                if str(option_year) not in salary_norm:
+                    raise ValueError(
+                        "team_option_last_year requires salary_by_year to include the last season year "
+                        f"(missing year={option_year})"
+                    )
+                options = [
+                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
+                ]
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1552,7 +1584,7 @@ class LeagueService:
                 start_season_year=int(start_season_year),
                 years=years_i,
                 salary_by_year=salary_norm,
-                options=[],
+                options=options,
                 status="ACTIVE",
             )
 
