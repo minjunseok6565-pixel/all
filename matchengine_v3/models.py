@@ -394,12 +394,19 @@ class TeamState:
 # Minimal role ranking keys (for fallbacks)
 # -------------------------
 
+# Canonical offensive role keys (C13) -> derived stat key for ranking fallback candidates.
 ROLE_FALLBACK_RANK = {
-    "ball_handler": "PNR_READ",
-    "secondary_handler": "PASS_CREATE",
-    "screener": "SHORTROLL_PLAY",
-    "post": "POST_SCORE",
-    "shooter": "SHOT_3_CS",
-    "cutter": "FIRST_STEP",
-    "rim_runner": "FIN_DUNK",
+    "Engine_Primary": "PNR_READ",
+    "Engine_Secondary": "PASS_CREATE",
+    "Transition_Engine": "FIRST_STEP",
+    "Shot_Creator": "SHOT_3_OD",
+    "Rim_Pressure": "DRIVE_CREATE",
+    "SpotUp_Spacer": "SHOT_3_CS",
+    "Movement_Shooter": "SHOT_3_CS",
+    "Cutter_Finisher": "FIN_RIM",
+    "Connector": "PASS_SAFE",
+    "Roll_Man": "FIN_DUNK",
+    "ShortRoll_Hub": "SHORTROLL_PLAY",
+    "Pop_Threat": "SHOT_3_CS",
+    "Post_Anchor": "POST_SCORE",
 }

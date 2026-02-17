@@ -18,7 +18,7 @@ Design principles (as agreed):
 - Uses action alias mappings passed into get_action_base() to map concrete actions to base actions.
 
 Integration conditions (so you can use this file "as-is" with a UI-driven role system):
-- TeamState.roles must be a dict[str, str] mapping role_fit role names -> on-court player pid strings.
+- TeamState.roles must be a dict[str, str] mapping offensive role keys (C13; see offense_roles.py) -> on-court player pid strings.
   Example: roles["Engine_Primary"] = "p123" (must match Player.pid on-court).
 - Primary handler selection reads ONLY roles["Engine_Primary"].
   If no Engine_Primary is on-court, this module falls back to max(_onball_score) and may try to write
@@ -29,8 +29,6 @@ Integration conditions (so you can use this file "as-is" with a UI-driven role s
     * ctx["tactic_name"|"tactic"|"scheme_name"|"scheme"] (string), or
     * game_state.<tactic_name|tactic|scheme_name|scheme> (string).
   If no scheme is provided (or it doesn't match the table), screeners fall back to _screen_score().
-- This module intentionally ignores legacy keys roles["ball_handler"], roles["secondary_handler"], roles["screener"].
-  (So you should NOT rely on those keys once you adopt the canonical C13 role system.)
 - If your UI stores roles as Player objects, indices, or other types, convert them to pid strings before calling.
 """
 
@@ -191,7 +189,7 @@ def _maybe_autoreset_style_cache(game_state: Any, ctx: Optional[Dict[str, Any]])
     """Auto-clear style cache at game/experiment boundaries.
 
     Triggers:
-    - ctx["shot_diet_reset_cache"] (or legacy aliases) is truthy.
+    - ctx["shot_diet_reset_cache"] (or alternate keys) is truthy.
     - ctx["game_id"] changes compared to the last observed non-empty value.
 
     This is intentionally lightweight: a single string comparison per call.
@@ -317,8 +315,8 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
     Map role_fit roles -> shot_diet initiators.
 
     Rules:
-    - ball_handler == Engine_Primary (must be on-court). If none on-court, assign best _onball_score as Engine_Primary.
-    - secondary_handler prefers Engine_Secondary (on-court). If none on-court, pick best _onball_score excluding primary.
+    - Primary handler prefers Engine_Primary (must be on-court). If missing, assign best _onball_score as Engine_Primary.
+    - Secondary handler prefers Engine_Secondary (on-court). If missing, pick best _onball_score excluding primary.
     """
     lineup = off.on_court_players()
     pid_map = _pid_to_player(lineup)
@@ -481,7 +479,7 @@ def compute_shot_diet_style(
     off_energy = tuple(_energy_bucket(getattr(p, "energy", None)) for p in off_sorted)
     def_energy = tuple(_energy_bucket(getattr(p, "energy", None)) for p in def_sorted)
     roles = offense.roles or {}
-    # screener selection depends on scheme_name (ctx/game_state), and initiators depend on Initiator roles.
+    # Screener selection depends on scheme_name (ctx/game_state), and primary/secondary handlers depend on Engine roles.
     # Integration note: if you want scheme-specific screener priority, pass scheme via ctx or game_state.
     scheme_name = None
     if ctx and isinstance(ctx, dict):
@@ -499,7 +497,7 @@ def compute_shot_diet_style(
     scheme_norm = _normalize_scheme_name(scheme_name)
 
     # Include role assignments in cache key so initiator/screener selection stays coherent.
-    # Cache uses a *canonical snapshot* (C13 keys), but lookup accepts legacy keys too.
+    # Cache uses a canonical snapshot (C13 role keys).
     _ROLE_KEYS_CANON = (
         ROLE_ENGINE_PRIMARY,
         ROLE_ENGINE_SECONDARY,

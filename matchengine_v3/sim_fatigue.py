@@ -69,7 +69,7 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
                 continue
             rn = _norm_role(role_name)
             if rn not in ROLE_TO_GROUPS:
-                # Ignore legacy keys (ball_handler, screener, etc.) and unknown entries.
+                # Ignore unknown role keys.
                 continue
             pid_s = str(pid)
             pid_to_role_candidates.setdefault(pid_s, []).append(rn)

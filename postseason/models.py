@@ -107,4 +107,3 @@ class PlayoffsState(TypedDict, total=False):
     # Optional UX helpers (not required by existing UI)
     calendar: Dict[str, List[str]]          # date -> [game_id]
     game_specs: Dict[str, Dict[str, Any]]   # game_id -> metadata
-"""
