@@ -9,6 +9,8 @@ Tables:
 - draft_combine_results: combine outputs per prospect (pre-draft)
 - draft_workout_results: workout outputs per (team, prospect) (pre-draft)
 - draft_interview_results: interview outputs per (team, prospect) (pre-draft)
+- draft_withdrawals: "test the waters" withdrawals (pre-draft)
+- draft_undrafted_outcomes: undrafted routing outcomes after draft apply
 - draft_watch_runs: monthly "watch" snapshot runs (pre-declaration; for early bigboards)
 - draft_watch_probs: per-run player declare probabilities / projections (pre-declaration)
 
@@ -132,6 +134,41 @@ def ddl(*, now: str, schema_version: str) -> str:
 
                 CREATE INDEX IF NOT EXISTS idx_draft_interview_results_year_team
                     ON draft_interview_results(draft_year, team_id);
+
+                -- -----------------------------------------------------------------------------
+                -- Withdrawals (test the waters) + Undrafted resolution
+                -- -----------------------------------------------------------------------------
+
+                -- Underclass withdrawal decisions (pre-draft)
+                CREATE TABLE IF NOT EXISTS draft_withdrawals (
+                    draft_year INTEGER NOT NULL,
+                    player_id TEXT NOT NULL,
+                    withdrawn_at TEXT NOT NULL,
+                    decision_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (draft_year, player_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_draft_withdrawals_year
+                    ON draft_withdrawals(draft_year);
+
+                -- Undrafted outcomes after draft apply
+                CREATE TABLE IF NOT EXISTS draft_undrafted_outcomes (
+                    draft_year INTEGER NOT NULL,
+                    player_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,              -- FA / RETIRED (future: GLEAGUE / OVERSEAS)
+                    decided_at TEXT NOT NULL,
+                    decision_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (draft_year, player_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_draft_undrafted_year
+                    ON draft_undrafted_outcomes(draft_year);
+
+                CREATE INDEX IF NOT EXISTS idx_draft_undrafted_year_outcome
+                    ON draft_undrafted_outcomes(draft_year, outcome);
 
                 -- -----------------------------------------------------------------------------
                 -- Draft watch snapshots (pre-declaration)
