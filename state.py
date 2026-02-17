@@ -625,7 +625,41 @@ def get_cached_weekly_news_snapshot() -> dict:
 
 def set_cached_weekly_news_snapshot(cache: dict) -> None:
     def _impl(state: dict) -> None:
-        state["cached_views"]["weekly_news"] = deepcopy(cache)
+        # Normalize to the strict schema (state_schema.py).
+        # This keeps callers backward-compatible (they may pass only legacy keys)
+        # while ensuring state validation always passes.
+        existing = state.get("cached_views", {}).get("weekly_news")
+        if not isinstance(existing, dict):
+            existing = {}
+
+        turn_i = int(state.get("turn") or 0)
+        active_sid = state.get("active_season_id")
+
+        # LLM meta is stored as an object with exact keys.
+        llm_in = cache.get("llm") if isinstance(cache, dict) else None
+        llm_prev = existing.get("llm") if isinstance(existing.get("llm"), dict) else None
+        llm_src = llm_in if isinstance(llm_in, dict) else (llm_prev if isinstance(llm_prev, dict) else {})
+        llm_norm = {
+            "used": bool(llm_src.get("used")) if isinstance(llm_src.get("used"), bool) else False,
+            "model": llm_src.get("model") if isinstance(llm_src.get("model"), str) else None,
+            "error": llm_src.get("error") if isinstance(llm_src.get("error"), str) else None,
+        }
+
+        state["cached_views"]["weekly_news"] = {
+            "last_generated_week_start": cache.get(
+                "last_generated_week_start", existing.get("last_generated_week_start")
+            ),
+            "last_generated_as_of_date": cache.get(
+                "last_generated_as_of_date", existing.get("last_generated_as_of_date")
+            ),
+            "built_from_turn": cache.get("built_from_turn", existing.get("built_from_turn", turn_i)),
+            "season_id": cache.get("season_id", existing.get("season_id", active_sid)),
+            "generator_version": cache.get(
+                "generator_version", existing.get("generator_version", "news.weekly.v2")
+            ),
+            "llm": llm_norm,
+            "items": deepcopy(cache.get("items", existing.get("items", []))),
+        }
 
     _mutate_state("set_cached_weekly_news_snapshot", _impl)
 
@@ -636,7 +670,26 @@ def get_cached_playoff_news_snapshot() -> dict:
 
 def set_cached_playoff_news_snapshot(cache: dict) -> None:
     def _impl(state: dict) -> None:
-        state["cached_views"]["playoff_news"] = deepcopy(cache)
+        # Normalize to the strict schema (state_schema.py).
+        existing = state.get("cached_views", {}).get("playoff_news")
+        if not isinstance(existing, dict):
+            existing = {}
+
+        turn_i = int(state.get("turn") or 0)
+        active_sid = state.get("active_season_id")
+
+        state["cached_views"]["playoff_news"] = {
+            "series_game_counts": deepcopy(cache.get("series_game_counts", existing.get("series_game_counts", {}))),
+            "processed_game_ids": deepcopy(
+                cache.get("processed_game_ids", existing.get("processed_game_ids", []))
+            ),
+            "built_from_turn": cache.get("built_from_turn", existing.get("built_from_turn", turn_i)),
+            "season_id": cache.get("season_id", existing.get("season_id", active_sid)),
+            "generator_version": cache.get(
+                "generator_version", existing.get("generator_version", "news.playoffs.v2")
+            ),
+            "items": deepcopy(cache.get("items", existing.get("items", []))),
+        }
 
     _mutate_state("set_cached_playoff_news_snapshot", _impl)
 
@@ -1119,8 +1172,23 @@ def set_active_season_id(next_season_id: str) -> None:
             "scores": {"latest_date": None, "games": []},
             "schedule": {"teams": {}},
             "stats": {"leaders": None},
-            "weekly_news": {"last_generated_week_start": None, "items": []},
-            "playoff_news": {"series_game_counts": {}, "items": []},
+            "weekly_news": {
+                "last_generated_week_start": None,
+                "last_generated_as_of_date": None,
+                "built_from_turn": -1,
+                "season_id": None,
+                "generator_version": "news.weekly.v2",
+                "llm": {"used": False, "model": None, "error": None},
+                "items": [],
+            },
+            "playoff_news": {
+                "series_game_counts": {},
+                "processed_game_ids": [],
+                "built_from_turn": -1,
+                "season_id": None,
+                "generator_version": "news.playoffs.v2",
+                "items": [],
+            },
             "_meta": {
                 "scores": {"built_from_turn": -1, "season_id": None},
                 "schedule": {"built_from_turn_by_team": {}, "season_id": None},
