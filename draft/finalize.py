@@ -168,6 +168,106 @@ def infer_db_path_from_state(state_snapshot: Mapping[str, Any]) -> str:
     raise ValueError("Cannot infer db_path from state_snapshot (expected league.db_path)")
 
 
+def infer_playoff_team_ids_from_state(state_snapshot: Mapping[str, Any]) -> Tuple[List[TeamId], str]:
+    """Infer the 16 playoff teams (post play-in) from a full state snapshot.
+
+    NBA draft order rule depends on whether a team made the playoffs.
+    This function prefers the authoritative postseason.playoffs.seeds when
+    available, and falls back to postseason.field + postseason.play_in when
+    play-in is complete but playoffs have not been initialized yet.
+
+    Returns
+    -------
+    (team_ids, source)
+        team_ids: 16 unique TeamIds
+        source: string label describing which snapshot branch was used
+    """
+    postseason = state_snapshot.get("postseason") if isinstance(state_snapshot, Mapping) else None
+    if not isinstance(postseason, Mapping):
+        raise ValueError("Cannot infer playoff teams: state_snapshot.postseason missing")
+
+    # 1) Preferred: postseason.playoffs.seeds (post play-in; authoritative)
+    playoffs = postseason.get("playoffs")
+    if isinstance(playoffs, Mapping):
+        seeds = playoffs.get("seeds")
+        if isinstance(seeds, Mapping):
+            out: List[TeamId] = []
+            for conf in ("east", "west"):
+                conf_seeds = seeds.get(conf)
+                if not isinstance(conf_seeds, Mapping):
+                    continue
+                for seed_no in range(1, 9):
+                    entry = conf_seeds.get(seed_no) or conf_seeds.get(str(seed_no))
+                    if not isinstance(entry, Mapping):
+                        continue
+                    tid = norm_team_id(entry.get("team_id"))
+                    if tid and tid != "FA":
+                        out.append(tid)
+            # unique preserve order
+            uniq: List[TeamId] = []
+            seen: set[str] = set()
+            for t in out:
+                if t in seen:
+                    continue
+                seen.add(t)
+                uniq.append(t)
+            if len(uniq) == 16:
+                return uniq, "postseason.playoffs.seeds"
+
+    # 2) Fallback: postseason.field + postseason.play_in (requires seed7/seed8 resolved)
+    field = postseason.get("field")
+    play_in = postseason.get("play_in")
+    if isinstance(field, Mapping) and isinstance(play_in, Mapping):
+        out2: List[TeamId] = []
+        for conf in ("east", "west"):
+            conf_field = field.get(conf) or {}
+            conf_play_in = play_in.get(conf) or {}
+            if not isinstance(conf_field, Mapping) or not isinstance(conf_play_in, Mapping):
+                continue
+
+            seeds_map: Dict[int, Mapping[str, Any]] = {}
+            for entry in list(conf_field.get("auto_bids") or []):
+                if not isinstance(entry, Mapping):
+                    continue
+                try:
+                    s = int(entry.get("seed") or 0)
+                except Exception:
+                    continue
+                if 1 <= s <= 6:
+                    seeds_map[s] = entry
+
+            seed7 = conf_play_in.get("seed7")
+            seed8 = conf_play_in.get("seed8")
+            if isinstance(seed7, Mapping):
+                seeds_map[7] = seed7
+            if isinstance(seed8, Mapping):
+                seeds_map[8] = seed8
+
+            # Require 1..8 to be present.
+            for seed_no in range(1, 9):
+                entry = seeds_map.get(seed_no)
+                if not isinstance(entry, Mapping):
+                    break
+                tid = norm_team_id(entry.get("team_id"))
+                if tid and tid != "FA":
+                    out2.append(tid)
+
+        uniq2: List[TeamId] = []
+        seen2: set[str] = set()
+        for t in out2:
+            if t in seen2:
+                continue
+            seen2.add(t)
+            uniq2.append(t)
+        if len(uniq2) == 16:
+            return uniq2, "postseason.field+postseason.play_in"
+
+    raise ValueError(
+        "Cannot infer playoff teams for NBA-style draft order: "
+        "expected postseason.playoffs.seeds or completed postseason.field+postseason.play_in (seed7/seed8)."
+    )
+
+
 def compute_plan_from_state(
     state_snapshot: Mapping[str, Any],
     *,
@@ -184,9 +284,12 @@ def compute_plan_from_state(
         require_initialized_schedule=True,
     )
 
+    playoff_team_ids, playoff_source = infer_playoff_team_ids_from_state(state_snapshot)
+
     plan = compute_draft_order_plan_from_records(
         draft_year=dy,
         records=records,
+        playoff_team_ids=playoff_team_ids,
         rng_seed=int(rng_seed),
         tie_break_seed=tie_break_seed,
         use_lottery=bool(use_lottery),
@@ -194,6 +297,7 @@ def compute_plan_from_state(
             "rng_seed": int(rng_seed),
             "tie_break_seed": int(tie_break_seed) if tie_break_seed is not None else None,
             "use_lottery": bool(use_lottery),
+            "playoff_team_source": playoff_source,
         },
     )
     return plan
