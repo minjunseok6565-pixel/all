@@ -44,8 +44,7 @@ def estimate_draft_score(
 
     IMPORTANT:
     - This score is designed to be *ranked within the eligible pool*.
-    - It is NOT a pick number and should not be mapped to an absolute 1..N pick by a
-      fixed formula (that causes structural inflation when the eligible pool grows).
+    - Treat this as a relative ordering signal (higher is better), not as a pick number.
 
     We keep this intentionally compact and stable so that:
     - OVR / upside (potential) are primary drivers
@@ -91,45 +90,6 @@ def estimate_draft_score(
     return float(score)
 
 
-def estimate_projected_pick(
-    *,
-    ovr: int,
-    age: int,
-    class_year: int,
-    potential_grade: str,
-    season_stats: Optional[CollegeSeasonStats],
-    class_strength: float,
-) -> int:
-    """LEGACY: rough internal projection -> pseudo pick number.
-
-    Returns 1..90 ( >60 implies undrafted risk) using a *fixed mapping*.
-
-    This function is kept only as a backwards-compatible fallback for cases where
-    the eligible pool ranking is not available.
-
-    For high-quality declaration logic, prefer:
-      - compute `estimate_draft_score(...)` for all eligible players
-      - rank them within the pool
-      - pass that rank into declare_probability(projected_pick=rank)
-    """
-
-    score = estimate_draft_score(
-        ovr=ovr,
-        age=age,
-        class_year=class_year,
-        potential_grade=str(potential_grade),
-        season_stats=season_stats,
-        class_strength=class_strength,
-    )
-
-    # Map score to pick: higher score => lower pick number
-    # Tuned so typical good prospects land 10~45 range.
-    # We allow >60 as undrafted risk zone.
-    pick = int(round(55 - 0.9 * float(score)))
-    pick = int(_clamp(pick, 1, 90))
-    return pick
-
-
 def declare_probability(
     rng: random.Random,
     *,
@@ -141,7 +101,7 @@ def declare_probability(
     potential_grade: str,
     season_stats: Optional[CollegeSeasonStats],
     class_strength: float,
-    projected_pick: Optional[int] = None,
+    projected_pick: int,
     eligible_pool_size: Optional[int] = None,
 ) -> DraftEntryDecisionTrace:
     """Compute declare probability with a transparent factor breakdown.
@@ -149,25 +109,9 @@ def declare_probability(
     IMPORTANT (P0-2 fix):
     - `projected_pick` should be the player's *rank within the eligible pool*.
       (1 = best prospect, 60 = fringe draft pick, 61+ = increasingly likely undrafted)
-
-    If `projected_pick` is omitted, we fall back to a legacy absolute mapping.
     """
 
-    proj = projected_pick
-    proj_style = "eligible_rank"
-    if proj is None:
-        # Backwards-compatible fallback (NOT pool-relative).
-        proj_style = "legacy_absolute_pick"
-        proj = estimate_projected_pick(
-            ovr=ovr,
-            age=age,
-            class_year=class_year,
-            potential_grade=str(potential_grade),
-            season_stats=season_stats,
-            class_strength=class_strength,
-        )
-
-    rank = int(proj)
+    rank = int(projected_pick)
 
     pot_scalar = float(potential_grade_to_scalar(potential_grade))
     potential = _potential_points_from_grade(str(potential_grade))
@@ -259,7 +203,7 @@ def declare_probability(
         draft_year=int(draft_year),
         declared=bool(declared),
         declare_prob=float(p),
-        projected_pick=int(rank) if rank is not None else None,
+        projected_pick=int(rank),
         factors={
             "bias": bias,
             "ovr": comp_ovr,
@@ -283,7 +227,6 @@ def declare_probability(
             "logit": logit,
         },
         notes={
-            "projected_pick_style": str(proj_style),
             "draft_slots": int(DRAFT_SLOTS),
             "first_round_slots": int(FIRST_ROUND_SLOTS),
             "drafted_buffer": float(drafted_buffer),
