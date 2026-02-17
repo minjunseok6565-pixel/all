@@ -11,7 +11,7 @@ from .models import Player, TeamState
 # Participant selection (C13 role-driven)
 # -------------------------
 #
-# This module intentionally does NOT use legacy role keys (e.g., "ball_handler", "screener", "post").
+# This module intentionally does NOT use legacy role keys.
 # TeamState.roles is expected to be a mapping: C13 role name -> pid.
 
 # NOTE: Implementation split across participants_*.py modules; this file re-exports the original API.
