@@ -330,13 +330,285 @@ def _public_prod_score(stats: Any) -> float:
     return float(base)
 
 
-def _public_consensus_component(p: Prospect) -> float:
-    """Translate consensus projected_pick into 0..100 (higher is better)."""
-    proj = _i(_get_nested(p.meta, "decision_trace", "projected_pick"), 9999)
-    if proj <= 0:
-        proj = 9999
-    # 1 -> ~99, 10 -> ~88, 30 -> ~64, 60 -> ~28
-    return _clamp(100.0 - 1.2 * float(proj - 1), 0.0, 100.0)
+def _make_market_profile() -> ExpertProfile:
+    """Market consensus observation profile.
+
+    This is NOT one of the 6 experts. It represents a noisy, biased "industry buzz" signal
+    used only as a top-end anchor inside base_public.
+
+    Key intent:
+      - more stable than any single expert (slightly lower axis noise)
+      - still imperfect (keeps meaningful uncertainty on hard-to-scout axes)
+    """
+
+    # Default (1.0) means "as hard as the base sigma says".
+    # <1.0 means more stable; >1.0 means more uncertain.
+    acc = {
+        # Observable / measurable-ish
+        "TOOLS": 0.80,
+        "FIN_BURST": 0.80,
+        "MOTOR": 0.90,
+        "S_SPOT": 0.90,
+        "S_TOUCH": 0.95,
+        "BALL_SAFE": 0.95,
+        "PLAY": 0.95,
+        "REB": 0.95,
+
+        # Still noisy (translation / role / scheme)
+        "S_OD": 1.00,
+        "CREATION": 1.00,
+        "FIN_RIM": 1.00,
+        "FIN_PHYS": 1.05,
+        "DEF_POA": 1.05,
+        "DEF_RIM": 1.05,
+        "DEF_HELP": 1.10,
+
+        # Hardest / most rumor-driven
+        "DUR": 1.10,
+        "UPSIDE": 1.10,
+        "AGE": 1.00,
+    }
+
+    return ExpertProfile(
+        expert_id="market_buzz",
+        display_name="Market Buzz",
+        short_tag="Market",
+        weights={},               # unused
+        acc_mult=acc,
+        bias_rules=(),            # narrative bias handled at score level
+        anchor_alpha_top=1.0,
+        anchor_alpha_mid=1.0,
+        anchor_alpha_late=1.0,
+        global_noise_sd=0.0,      # unused
+        base_influence=0.0,       # unused
+    )
+
+
+_MARKET_PROFILE: ExpertProfile = _make_market_profile()
+
+
+# Market STAR/FLOOR weights (axis names are the same internal axes used by experts).
+_MARKET_STAR_WEIGHTS_G: Dict[str, float] = {
+    "UPSIDE": 1.25,
+    "CREATION": 1.25,
+    "S_OD": 0.95,
+    "PLAY": 0.80,
+    "FIN_BURST": 0.65,
+    "TOOLS": 0.85,
+    "S_SPOT": 0.70,
+    "DEF_POA": 0.55,
+    "MOTOR": 0.45,
+}
+
+_MARKET_STAR_WEIGHTS_W: Dict[str, float] = {
+    "TOOLS": 1.25,
+    "UPSIDE": 1.20,
+    "CREATION": 0.95,
+    "S_OD": 0.80,
+    "S_SPOT": 0.75,
+    "DEF_POA": 0.60,
+    "DEF_HELP": 0.55,
+    "FIN_BURST": 0.55,
+    "MOTOR": 0.50,
+}
+
+_MARKET_STAR_WEIGHTS_B: Dict[str, float] = {
+    "TOOLS": 1.30,
+    "UPSIDE": 1.15,
+    "DEF_RIM": 0.90,
+    "FIN_PHYS": 0.75,
+    "FIN_RIM": 0.65,
+    "MOTOR": 0.55,
+    "S_SPOT": 0.55,
+    "FIN_BURST": 0.35,
+    "PLAY": 0.35,
+    "CREATION": 0.25,
+}
+
+
+_MARKET_FLOOR_WEIGHTS_G: Dict[str, float] = {
+    "S_SPOT": 1.10,
+    "S_TOUCH": 0.95,
+    "BALL_SAFE": 0.90,
+    "PLAY": 0.85,
+    "DEF_POA": 0.65,
+    "MOTOR": 0.55,
+    "DUR": 0.75,
+}
+
+_MARKET_FLOOR_WEIGHTS_W: Dict[str, float] = {
+    "S_SPOT": 1.05,
+    "DEF_HELP": 0.75,
+    "DEF_POA": 0.65,
+    "MOTOR": 0.60,
+    "DUR": 0.75,
+    "BALL_SAFE": 0.55,
+    "PLAY": 0.55,
+    "FIN_RIM": 0.50,
+}
+
+_MARKET_FLOOR_WEIGHTS_B: Dict[str, float] = {
+    "DEF_RIM": 1.00,
+    "REB": 0.90,
+    "DUR": 0.85,
+    "MOTOR": 0.70,
+    "FIN_PHYS": 0.60,
+    "FIN_RIM": 0.55,
+    "S_TOUCH": 0.45,
+    "S_SPOT": 0.35,
+}
+
+
+def _market_star_floor_weights(pos_bucket: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+    b = str(pos_bucket or "B").upper()
+    if b == "G":
+        return _MARKET_STAR_WEIGHTS_G, _MARKET_FLOOR_WEIGHTS_G
+    if b == "W":
+        return _MARKET_STAR_WEIGHTS_W, _MARKET_FLOOR_WEIGHTS_W
+    return _MARKET_STAR_WEIGHTS_B, _MARKET_FLOOR_WEIGHTS_B
+
+
+def _market_buzz_component(*, p: Prospect, draft_year: int, phase: str) -> float:
+    """A noisy, biased "industry/market buzz" anchor score in 0..100.
+
+    Goal:
+      - keep generational prospects from drifting out of the top 10
+      - remain imperfect (not a hidden true-rank oracle)
+
+    Implementation summary:
+      1) build true axes (hidden)
+      2) observe them with a special market profile (reduced axis noise)
+      3) compute STAR and FLOOR composites by position bucket
+      4) apply small narrative biases + durability red flags
+      5) add controlled noise that scales with uncertainty + polarizing profiles
+    """
+
+    tid = str(getattr(p, "temp_id", "") or "")
+    dy = int(draft_year)
+    ph = str(phase or PHASE_PRE_COMBINE)
+    seed = _stable_u32("market_buzz_v1", dy, ph, tid)
+    rng = random.Random(seed)
+
+    true_axes = build_true_axes_from_prospect(p)
+
+    ctx = {
+        "temp_id": tid,
+        "name": p.name,
+        "pos": p.pos,
+        "bio": {
+            "pos": p.pos,
+            "age": int(getattr(p, "age", 20)),
+            "height_in": int(getattr(p, "height_in", 78)),
+            "weight_lb": int(getattr(p, "weight_lb", 215)),
+        },
+        "stats": (p.meta or {}).get("season_stats") if isinstance((p.meta or {}).get("season_stats"), dict) else {},
+        "combine": (p.meta or {}).get("combine") if (ph == PHASE_POST_COMBINE and isinstance((p.meta or {}).get("combine"), dict)) else None,
+    }
+
+    # 1) market-observed axes (independent RNG from experts)
+    obs_axes, _rule_delta = observe_axes(expert=_MARKET_PROFILE, true_axes=true_axes, ctx=ctx, phase=ph, rng=rng)
+
+    # 2) STAR / FLOOR composites
+    pb = _pos_bucket(p.pos)
+    w_star, w_floor = _market_star_floor_weights(pb)
+    star = _axis_weighted_avg(w_star, obs_axes)
+    floor = _axis_weighted_avg(w_floor, obs_axes)
+
+    if pb == "B":
+        core = 0.60 * star + 0.40 * floor
+    else:
+        core = 0.66 * star + 0.34 * floor
+
+    # 3) Narrative bias (small but meaningful)
+    narrative = 0.0
+
+    h_in = float(getattr(p, "height_in", 78))
+    tools = _f(obs_axes.get("TOOLS"), 50.0)
+    s_spot = _f(obs_axes.get("S_SPOT"), 50.0)
+    s_od = _f(obs_axes.get("S_OD"), 50.0)
+    creation = _f(obs_axes.get("CREATION"), 50.0)
+    def_poa = _f(obs_axes.get("DEF_POA"), 50.0)
+    def_rim = _f(obs_axes.get("DEF_RIM"), 50.0)
+
+    # Small guard skepticism
+    if pb == "G" and h_in < 74.0:
+        narrative -= 2.0
+        if tools < 60.0:
+            narrative -= 1.0
+
+    # Bigs who can't shoot get pushed down; stretch bigs get a bump
+    if pb == "B":
+        if s_spot < 45.0:
+            narrative -= 4.0
+        elif s_spot < 55.0:
+            narrative -= 2.5
+        elif s_spot >= 75.0:
+            narrative += 2.0
+
+    # Plus wingspan (only if combine is available in this phase)
+    combine = ctx.get("combine")
+    if isinstance(combine, dict):
+        ws = _f(_get_nested(combine, "measurements", "wingspan_in"), 0.0)
+        hn = _f(_get_nested(combine, "measurements", "height_noshoes_in"), 0.0)
+        if ws > 0.0 and hn > 0.0:
+            diff = ws - hn
+            if diff >= 8.0:
+                narrative += 1.6
+            elif diff >= 6.0:
+                narrative += 1.0
+
+    # Elite shot creator signal
+    if creation >= 88.0 and s_od >= 84.0:
+        narrative += 1.5
+
+    # Two-way wing premium
+    if pb == "W" and def_poa >= 82.0 and s_spot >= 72.0:
+        narrative += 1.0
+
+    # Rim protector premium
+    if pb == "B" and def_rim >= 85.0:
+        narrative += 1.2
+        if tools >= 80.0:
+            narrative += 0.5
+
+    # 4) Medical / durability red flags (rumor-driven)
+    dur = _f(obs_axes.get("DUR"), 70.0)
+    medical = 0.0
+    if dur <= 35.0:
+        medical -= 9.0
+    elif dur <= 45.0:
+        medical -= 6.0
+    elif dur <= 55.0:
+        medical -= 3.0
+
+    # 5) Rare-trait separation (cap to avoid over-shooting)
+    rare = 0.35 * max(0.0, star - 85.0)
+    if rare > 4.5:
+        rare = 4.5
+
+    # 6) Controlled noise: more uncertainty on lower cores and polarizing profiles
+    base_sd = 1.6 + 3.0 * (1.0 - core / 100.0)
+    polar = max(0.0, star - floor)
+    sd = base_sd + 0.05 * polar
+
+    stats = ctx.get("stats") or {}
+    games = _f(stats.get("games"), 0.0)
+    mpg = _f(stats.get("mpg"), 0.0)
+    coverage = 0.0
+    if games > 0.0 or mpg > 0.0:
+        coverage = 0.5 * min(games / 35.0, 1.0) + 0.5 * min(mpg / 30.0, 1.0)
+
+    # Up to 25% less variance for well-scouted college samples
+    sd *= (1.0 - 0.25 * coverage)
+
+    # Combine reduces overall uncertainty only if we actually have combine payload
+    has_combine = isinstance(combine, dict) and bool(combine)
+    if ph == PHASE_POST_COMBINE and has_combine:
+        sd *= 0.85
+
+    # Final market buzz score
+    score = float(core + rare + narrative + medical + rng.gauss(0.0, float(sd)))
+    return _clamp(score, 0.0, 100.0)
 
 
 def _public_frame_component(p: Prospect) -> float:
@@ -357,17 +629,17 @@ def _public_combine_component(p: Prospect, phase: str) -> float:
     return _clamp(a, 0.0, 100.0)
 
 
-def compute_base_public_score(p: Prospect, phase: str, *, prod_norm: Optional[Tuple[float, float]] = None) -> float:
+def compute_base_public_score(p: Prospect, draft_year: int, phase: str, *, prod_norm: Optional[Tuple[float, float]] = None) -> float:
     """Base score from public-ish signals.
 
     Components:
-      - consensus projected pick (public)
+      - market/industry buzz (public-ish; noisy, biased; does NOT require projected_pick)
       - productivity proxy (public)
       - frame (height/weight, public)
       - combine athletic_score (public, post-combine only)
       - age mild adjustment (public)
     """
-    cons = _public_consensus_component(p)
+    buzz = _market_buzz_component(p=p, draft_year=int(draft_year), phase=str(phase))
     prod = _public_prod_score((p.meta or {}).get("season_stats"))
     if prod_norm:
         mean, sd = prod_norm
@@ -382,8 +654,8 @@ def compute_base_public_score(p: Prospect, phase: str, *, prod_norm: Optional[Tu
     comb = _public_combine_component(p, phase)
     age = float(getattr(p, "age", 20))
 
-    # weights tuned for stability: consensus anchors the top
-    base = 0.62 * cons + 0.18 * _clamp(50.0 + 10.0 * prod_z, 0.0, 100.0) + 0.14 * frame + 0.06 * comb
+    # weights tuned for stability: market buzz anchors the top
+    base = 0.62 * buzz + 0.18 * _clamp(50.0 + 10.0 * prod_z, 0.0, 100.0) + 0.14 * frame + 0.06 * comb
     # older players: tiny penalty (not huge; expert #6 handles this more)
     base += _clamp((20.0 - age) * 0.6, -4.0, 4.0)
     return _clamp(base, 0.0, 100.0)
@@ -825,7 +1097,7 @@ def compute_expert_ranks_from_prospects(
     base_score_by_id: Dict[str, float] = {}
     for p in ps:
         tid = str(p.temp_id)
-        b = compute_base_public_score(p, ph, prod_norm=prod_norm)
+        b = compute_base_public_score(p, int(draft_year), ph, prod_norm=prod_norm)
         base_score_by_id[tid] = b
         base_rows.append((tid, b))
 
@@ -991,7 +1263,7 @@ def generate_expert_bigboard(
     base_score_by_id: Dict[str, float] = {}
     for p in prospects:
         tid = str(p.temp_id)
-        b = compute_base_public_score(p, ph, prod_norm=prod_norm)
+        b = compute_base_public_score(p, int(draft_year), ph, prod_norm=prod_norm)
         base_score_by_id[tid] = b
         base_rows.append((tid, b))
 
