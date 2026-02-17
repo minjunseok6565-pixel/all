@@ -78,39 +78,54 @@ def _is_match_point(best_of: int, wins_home: int, wins_road: int) -> bool:
 def extract_playoff_events(
     playoffs: Dict[str, Any],
     *,
-    previous_counts: Dict[str, int],
+    processed_game_ids: set[str],
     boxscore_lookup: Dict[Tuple[str, str, str, int, int], Dict[str, Any]] | None = None,
-) -> Tuple[List[NewsEvent], Dict[str, int]]:
-    """Extract new playoff events since last cache update.
+) -> List[NewsEvent]:
+    """Extract playoff events for games that are not yet processed.
+
+    This extractor is *strictly* deduped by processed_game_ids (game_id), and does not use
+    any legacy counters or series-length snapshots.
 
     Args:
         playoffs: postseason['playoffs'] snapshot
-        previous_counts: cache['series_game_counts']
+        processed_game_ids: set of game_id that already generated news
         boxscore_lookup: optional index mapping
             (date, home_id, away_id, home_score, away_score) -> game_result_v2
 
     Returns:
-        (events, updated_series_counts)
+        A list of NewsEvent objects for newly finished playoff games.
     """
-    prev = previous_counts
-    series_counts: Dict[str, int] = {}
+    if not isinstance(processed_game_ids, set):
+        processed_game_ids = set(str(x) for x in processed_game_ids)  # type: ignore[arg-type]
+
     events: List[NewsEvent] = []
 
     for s in iter_series(playoffs):
-        key = series_key(s)
         games = s.get("games") or []
         if not isinstance(games, list):
             continue
-        prev_count = int(prev.get(key, 0) or 0)
 
         home_id = str(s.get("home_court") or "")
         road_id = str(s.get("road") or "")
         best_of = int(s.get("best_of") or 7)
         round_label = _playoff_round_label(s.get("round"))
+        key = series_key(s)
 
-        for idx in range(prev_count, len(games)):
-            g = games[idx]
+        for idx, g in enumerate(games):
             if not isinstance(g, dict):
+                continue
+
+            winner = str(g.get("winner") or "")
+            if not winner:
+                continue
+
+            game_id = str(g.get("game_id") or "").strip()
+            if not game_id:
+                # Postseason games should always carry deterministic game_id.
+                # Skip silently to avoid spamming duplicates if upstream forgot to set it.
+                continue
+
+            if game_id in processed_game_ids:
                 continue
 
             d = _parse_date_iso(g.get("date"))
@@ -123,9 +138,6 @@ def extract_playoff_events(
                 hs = 0
                 as_ = 0
 
-            winner = str(g.get("winner") or "")
-            if not winner:
-                continue
             loser = road_id if winner == home_id else home_id
             margin = abs(hs - as_)
 
@@ -143,6 +155,9 @@ def extract_playoff_events(
                     top_perf = _extract_top_performers_simple(gr, winner, limit=2)
 
             base_facts = {
+                "game_id": game_id,
+                "series_key": key,
+                "series_id": s.get("series_id"),
                 "round_label": round_label,
                 "round": s.get("round"),
                 "game_number": game_number,
@@ -158,9 +173,10 @@ def extract_playoff_events(
                 "top_performers": top_perf,
             }
 
+            # Game recap is always generated
             events.append(
                 {
-                    "event_id": make_event_id("PLAYOFF", d_iso, "GAME", key, game_number),
+                    "event_id": make_event_id("PLAYOFF", game_id, "RECAP"),
                     "date": d_iso,
                     "type": "PLAYOFF_GAME_RECAP",
                     "importance": 0.0,
@@ -177,7 +193,7 @@ def extract_playoff_events(
             if max(h_wins, r_wins) >= need:
                 events.append(
                     {
-                        "event_id": make_event_id("PLAYOFF", d_iso, "ELIM", key, game_number),
+                        "event_id": make_event_id("PLAYOFF", game_id, "ELIM"),
                         "date": d_iso,
                         "type": "PLAYOFF_ELIMINATION",
                         "importance": 0.0,
@@ -191,7 +207,7 @@ def extract_playoff_events(
             elif _is_match_point(best_of, h_wins, r_wins):
                 events.append(
                     {
-                        "event_id": make_event_id("PLAYOFF", d_iso, "MP", key, game_number),
+                        "event_id": make_event_id("PLAYOFF", game_id, "MP"),
                         "date": d_iso,
                         "type": "PLAYOFF_MATCH_POINT",
                         "importance": 0.0,
@@ -213,7 +229,7 @@ def extract_playoff_events(
                     if (prev_leader != cur_leader) or (cur_leader is None):
                         events.append(
                             {
-                                "event_id": make_event_id("PLAYOFF", d_iso, "SWING", key, game_number),
+                                "event_id": make_event_id("PLAYOFF", game_id, "SWING"),
                                 "date": d_iso,
                                 "type": "PLAYOFF_SERIES_SWING",
                                 "importance": 0.0,
@@ -225,9 +241,7 @@ def extract_playoff_events(
                             }
                         )
 
-        series_counts[key] = len(games)
-
-    return events, series_counts
+    return events
 
 
 def _extract_top_performers_simple(game_result_v2: Dict[str, Any], winner_team_id: str, *, limit: int = 2) -> List[str]:

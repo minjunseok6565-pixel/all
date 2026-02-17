@@ -1129,11 +1129,10 @@ def set_active_season_id(next_season_id: str) -> None:
                 "items": [],
             },
             "playoff_news": {
-                "series_game_counts": {},
                 "processed_game_ids": [],
                 "built_from_turn": -1,
                 "season_id": None,
-                "generator_version": "news.playoffs.v2",
+                "generator_version": "news.playoffs.v3",
                 "items": [],
             },
             "_meta": {
