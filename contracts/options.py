@@ -57,8 +57,38 @@ def apply_option_decision(
     option["decision_date"] = decision_date_iso
 
     if decision_value == "DECLINE":
+        # Declining an option terminates the deal from that season onward.
+        #
+        # Important: we *must* remove ALL future salary years to avoid leaving
+        # "dangling" salary keys that can pollute downstream valuations or cap views.
+        #
+        # This also keeps multi-year option tails (e.g. 2+2) consistent:
+        # - decline year 3 option => years 3+4 removed
+        # - decline year 4 option => only year 4 removed
+        cut_year = int(option["season_year"])
         salary_by_year = contract.get("salary_by_year") or {}
-        salary_by_year.pop(str(option["season_year"]), None)
+        # Remove salary for cut_year and any later seasons.
+        for k in list(salary_by_year.keys()):
+            try:
+                y = int(k)
+            except (TypeError, ValueError):
+                continue
+            if y >= cut_year:
+                salary_by_year.pop(str(k), None)
+
+        # Also mark any later PENDING options as declined (data cleanliness).
+        try:
+            for opt in (contract.get("options") or []):
+                try:
+                    oy = int(opt.get("season_year") or -1)
+                except (TypeError, ValueError):
+                    continue
+                if oy >= cut_year and str(opt.get("status") or "").upper() == "PENDING":
+                    opt["status"] = "DECLINED"
+                    opt["decision_date"] = decision_date_iso
+        except Exception:
+            # Best-effort; don't fail the main decision on cleanup.
+            pass
 
 
 def recompute_contract_years_from_salary(contract: dict) -> None:
