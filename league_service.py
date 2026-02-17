@@ -123,6 +123,103 @@ def _coerce_iso(d: date | str | None) -> str:
     return d.isoformat()
 
 
+def _normalize_tail_team_option_years(
+    *,
+    start_season_year: int,
+    years: int,
+    salary_by_year: Mapping[str, Any],
+    team_option_years: Optional[Sequence[int]] = None,
+    team_option_last_year: bool = False,
+    context: str,
+) -> tuple[List[int], List[dict], int]:
+    """Normalize TEAM option years into option records, with NBA-like constraints.
+
+    Why this helper exists:
+    - Keeps contract write paths deterministic and validated.
+    - Makes it easy for UI to send a "shape" (years + option years), and for the
+      backend to enforce a safe / NBA-like subset.
+
+    NBA-like constraints enforced:
+    - TEAM options can only exist on the *tail* of a contract (final consecutive seasons).
+      Examples allowed:
+        - 1+1  -> years=2, team_option_years=[start+1]
+        - 2+1  -> years=3, team_option_years=[start+2]
+        - 3+1  -> years=4, team_option_years=[start+3]
+        - 2+2  -> years=4, team_option_years=[start+2, start+3]
+        - rookie scale (handled elsewhere) -> [start+2, start+3]
+      Examples rejected:
+        - [start+1, start+3] (hole)
+        - [start+0] (no guaranteed year)
+        - [end-1] only (must include final year if any TEAM options exist)
+    - At least 1 guaranteed season is required (earliest option year > start).
+    - If any TEAM options are specified, they MUST include the final season year.
+
+    Returns:
+      (sorted_option_years, option_records, guaranteed_years)
+    """
+    start = int(start_season_year)
+    yrs = int(years)
+    if yrs <= 0:
+        raise ValueError(f"{context}: years must be >= 1")
+
+    end = start + yrs - 1
+
+    # Guard: salary_by_year must cover every season in the contract (contiguous).
+    missing = [y for y in range(start, start + yrs) if str(y) not in (salary_by_year or {})]
+    if missing:
+        raise ValueError(
+            f"{context}: salary_by_year missing required seasons: missing={missing} start={start} years={yrs}"
+        )
+
+    # Resolve desired option years (prefer explicit list; last_year is shorthand).
+    raw: List[int] = []
+    if team_option_years:
+        raw = [int(y) for y in list(team_option_years)]
+    elif team_option_last_year:
+        raw = [end]
+
+    option_years = sorted(set(raw))
+    if not option_years:
+        return [], [], yrs
+
+    # Require that TEAM options include the final season.
+    if option_years[-1] != end:
+        raise ValueError(
+            f"{context}: TEAM option years must include final season_year={end} (got={option_years})"
+        )
+
+    # Require at least one guaranteed year.
+    if option_years[0] <= start:
+        raise ValueError(
+            f"{context}: TEAM option cannot be on the first season (start_year={start}); require >=1 guaranteed year"
+        )
+
+    # Range check.
+    for y in option_years:
+        if y < start or y > end:
+            raise ValueError(
+                f"{context}: TEAM option year out of range: year={y} valid_range=[{start}, {end}]"
+            )
+        if str(y) not in (salary_by_year or {}):
+            raise ValueError(
+                f"{context}: TEAM option year={y} missing from salary_by_year keys"
+            )
+
+    # Tail-consecutive constraint.
+    expected = list(range(option_years[0], end + 1))
+    if option_years != expected:
+        raise ValueError(
+            f"{context}: TEAM option years must be consecutive tail seasons: expected={expected} got={option_years}"
+        )
+
+    option_records = [
+        normalize_option_record({"season_year": y, "type": "TEAM", "status": "PENDING"})
+        for y in option_years
+    ]
+    guaranteed_years = option_years[0] - start
+    return option_years, option_records, int(guaranteed_years)
+
+
 def _extract_team_ids_from_deal(deal: Any) -> List[str]:
     """Best-effort extraction of team ids from various deal shapes.
 
@@ -1333,6 +1430,7 @@ class LeagueService:
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
         team_option_last_year: bool = False,
+        team_option_years: Optional[Sequence[int]] = None,
     ) -> ServiceEvent:
         """Sign an FA (DB): roster.team_id + contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1344,6 +1442,9 @@ class LeagueService:
             raise ValueError("years must be >= 1")
 
         team_option_last_year_b = bool(team_option_last_year)
+        team_option_years_list = list(team_option_years) if team_option_years is not None else []
+        if team_option_years_list and years_i < 2:
+            raise ValueError("team_option_years requires years >= 2")
         if team_option_last_year_b and years_i < 2:
             raise ValueError("team_option_last_year requires years >= 2")
 
@@ -1390,17 +1491,14 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
-            options: List[dict] = []
-            if team_option_last_year_b:
-                option_year = int(start_season_year) + years_i - 1
-                if str(option_year) not in salary_norm:
-                    raise ValueError(
-                        "team_option_last_year requires salary_by_year to include the last season year "
-                        f"(missing year={option_year})"
-                    )
-                options = [
-                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
-                ]
+            option_years_sorted, options, guaranteed_years = _normalize_tail_team_option_years(
+                start_season_year=int(start_season_year),
+                years=int(years_i),
+                salary_by_year=salary_norm,
+                team_option_years=team_option_years_list,
+                team_option_last_year=team_option_last_year_b,
+                context="sign_free_agent",
+            )
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1414,6 +1512,11 @@ class LeagueService:
                 options=options,
                 status="ACTIVE",
             )
+
+            # UI-friendly terms (non-SSOT convenience; SSOT remains contract_json + options)
+            contract["guaranteed_years"] = int(guaranteed_years)
+            if option_years_sorted:
+                contract["team_option_years"] = [int(y) for y in option_years_sorted]
 
             # Persist + activate + roster move
             self._upsert_contract_records_in_cur(cur, {contract_id: contract})
@@ -1485,6 +1588,8 @@ class LeagueService:
                 "signed_date": signed_date_iso,
                 "start_season_year": int(start_season_year),
                 "years": years_i,
+                "guaranteed_years": int(guaranteed_years),
+                "team_option_years": [int(y) for y in option_years_sorted] if option_years_sorted else [],
             },
         )
 
@@ -1497,6 +1602,7 @@ class LeagueService:
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
         team_option_last_year: bool = False,
+        team_option_years: Optional[Sequence[int]] = None,
     ) -> ServiceEvent:
         """Re-sign / extend a player (DB): contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1508,6 +1614,9 @@ class LeagueService:
             raise ValueError("years must be >= 1")
 
         team_option_last_year_b = bool(team_option_last_year)
+        team_option_years_list = list(team_option_years) if team_option_years is not None else []
+        if team_option_years_list and years_i < 2:
+            raise ValueError("team_option_years requires years >= 2")
         if team_option_last_year_b and years_i < 2:
             raise ValueError("team_option_last_year requires years >= 2")
 
@@ -1557,17 +1666,14 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
-            options: List[dict] = []
-            if team_option_last_year_b:
-                option_year = int(start_season_year) + years_i - 1
-                if str(option_year) not in salary_norm:
-                    raise ValueError(
-                        "team_option_last_year requires salary_by_year to include the last season year "
-                        f"(missing year={option_year})"
-                    )
-                options = [
-                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
-                ]
+            option_years_sorted, options, guaranteed_years = _normalize_tail_team_option_years(
+                start_season_year=int(start_season_year),
+                years=int(years_i),
+                salary_by_year=salary_norm,
+                team_option_years=team_option_years_list,
+                team_option_last_year=team_option_last_year_b,
+                context="re_sign_or_extend",
+            )
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1581,6 +1687,11 @@ class LeagueService:
                 options=options,
                 status="ACTIVE",
             )
+
+            # UI-friendly terms (non-SSOT convenience; SSOT remains contract_json + options)
+            contract["guaranteed_years"] = int(guaranteed_years)
+            if option_years_sorted:
+                contract["team_option_years"] = [int(y) for y in option_years_sorted]
 
             self._upsert_contract_records_in_cur(cur, {contract_id: contract})
             self._activate_contract_for_player_in_cur(cur, pid, contract_id)
@@ -1630,6 +1741,8 @@ class LeagueService:
                 "signed_date": signed_date_iso,
                 "start_season_year": int(start_season_year),
                 "years": years_i,
+                "guaranteed_years": int(guaranteed_years),
+                "team_option_years": [int(y) for y in option_years_sorted] if option_years_sorted else [],
             },
         )
 
