@@ -1246,7 +1246,9 @@ def recompute_draft_watch_run(
 def advance_offseason(db_path: str, from_season_year: int, to_season_year: int) -> None:
     """
     Advance college world from from_season_year -> to_season_year:
-    - Reset DECLARED -> ACTIVE (undrafted return-to-school model; can be expanded later)
+    - NOTE: DECLARED players are expected to be resolved *before* this step:
+        * Underclass withdrawals (return-to-school) should flip status back to ACTIVE.
+        * Post-draft undrafted should be routed to pro/retirement (not return-to-school).
     - Increment class_year (+ age)
     - Graduate/remove players beyond 4
     - Always add a fixed number of freshmen per team
@@ -1269,6 +1271,19 @@ def advance_offseason(db_path: str, from_season_year: int, to_season_year: int) 
         if _get_meta(repo, meta_key) == "1":
             return
 
+        # Fail-loud guard: by this stage there should be no DECLARED players left.
+        # (Withdrawals step returns underclassmen to ACTIVE; undrafted step removes/promotes.)
+        # We prefer a loud error over silently "return everyone", because that can explode
+        # declaration counts and breaks NBA-like realism.
+        row = repo._conn.execute("SELECT COUNT(1) AS n FROM college_players WHERE status='DECLARED';").fetchone()
+        declared_left = int(row["n"] if row is not None else 0)
+        if declared_left > 0:
+            raise ValueError(
+                "college.advance_offseason: DECLARED players still exist. "
+                "Run draft withdrawals + draft apply (with undrafted resolution) before advancing college offseason. "
+                f"declared_left={declared_left} to_season_year={ty}"
+            )
+
         # Load teams (ordered)
         teams = _load_teams(repo)
         team_ids = [t.college_team_id for t in teams]
@@ -1288,10 +1303,7 @@ def advance_offseason(db_path: str, from_season_year: int, to_season_year: int) 
             raise ValueError("OFFSEASON_FRESHMEN_PER_TEAM must be >= 0")
 
         with repo.transaction() as cur:
-            # (1) Reset DECLARED -> ACTIVE (they returned if not drafted)
-            cur.execute("UPDATE college_players SET status='ACTIVE' WHERE status='DECLARED';")
-
-            # (2) Progress class year + age for ACTIVE
+            # (1) Progress class year + age for ACTIVE
             cur.execute(
                 """
                 UPDATE college_players
@@ -1301,10 +1313,10 @@ def advance_offseason(db_path: str, from_season_year: int, to_season_year: int) 
                 """
             )
 
-            # (3) Graduate: remove those now beyond 4
+            # (2) Graduate: remove those now beyond 4
             cur.execute("DELETE FROM college_players WHERE status='ACTIVE' AND class_year > 4;")
 
-            # (4) Safety trim (pre-add): if any team is over hard_cap, trim lowest OVR first.
+            # (3) Safety trim (pre-add): if any team is over hard_cap, trim lowest OVR first.
             for tid in team_ids:
                 row = repo._conn.execute(
                     "SELECT COUNT(*) FROM college_players WHERE status='ACTIVE' AND college_team_id=?;",
@@ -1329,7 +1341,7 @@ def advance_offseason(db_path: str, from_season_year: int, to_season_year: int) 
                     cur.execute("DELETE FROM college_player_season_stats WHERE player_id=?;", (pid,))
                     cur.execute("DELETE FROM college_players WHERE player_id=?;", (pid,))
 
-            # (5) Aggregate current ACTIVE totals by team (after bump+graduation+pre-trim)
+            # (4) Aggregate current ACTIVE totals by team (after bump+graduation+pre-trim)
             rows = repo._conn.execute(
                 """
                 SELECT college_team_id, COUNT(*) AS cnt

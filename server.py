@@ -1250,6 +1250,7 @@ async def api_enter_offseason(req: EmptyRequest):
             "/api/offseason/draft/combine",
             "/api/offseason/draft/workouts",
             "/api/offseason/draft/interviews",
+            "/api/offseason/draft/withdrawals",
             "/api/offseason/draft/selections/auto",
             "/api/offseason/draft/selections/pick",
             "/api/offseason/draft/apply",
@@ -1735,6 +1736,28 @@ async def api_offseason_draft_interviews(req: DraftInterviewsRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/api/offseason/draft/withdrawals")
+async def api_offseason_draft_withdrawals(req: EmptyRequest):
+    """드래프트 철회(언더클래스만 복귀) 단계 실행 + DB 반영."""
+    league_ctx = state.get_league_context_snapshot() or {}
+    try:
+        from_year = int(league_ctx.get("season_year") or 0)
+    except Exception:
+        from_year = 0
+    if from_year <= 0:
+        raise HTTPException(status_code=500, detail="Invalid season_year in state.")
+    draft_year = from_year + 1
+
+    try:
+        from draft.withdrawals import run_withdrawals
+
+        db_path = state.get_db_path()
+        result = run_withdrawals(db_path=db_path, draft_year=int(draft_year))
+        return {"ok": True, "draft_year": int(draft_year), "result": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # -------------------------------------------------------------------------
 # Draft Experts Big Board (Sam Vecenie-style)
 # -------------------------------------------------------------------------
@@ -2049,6 +2072,16 @@ async def api_offseason_draft_apply(req: EmptyRequest):
 
         applied_count = int(apply_selections(db_path=db_path, draft_year=int(draft_year), tx_date_iso=tx_date_iso))
 
+        # 2) Resolve undrafted declared players into pro routes (FA / retirement)
+        from draft.undrafted import resolve_undrafted_to_pro
+
+        undrafted_result = resolve_undrafted_to_pro(
+            db_path=db_path,
+            draft_year=int(draft_year),
+            tx_date_iso=str(tx_date_iso),
+        )
+
+        # Mark draft completed AFTER undrafted resolution to avoid leaving DECLARED players behind.
         meta_key = f"draft_completed_{draft_year}"
         with LeagueRepo(db_path) as repo:
             repo.init_db()
@@ -2076,6 +2109,7 @@ async def api_offseason_draft_apply(req: EmptyRequest):
             "ok": True,
             "draft_year": int(draft_year),
             "applied_count": int(applied_count),
+            "undrafted": undrafted_result,
             "college_advanced_to": int(to_year),
             "season_transition": transition,
         }
