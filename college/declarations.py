@@ -163,8 +163,8 @@ def declare_probability(
     # - drafted cutoff: smoother, modest tail past 60
     # - first round cutoff: sharper (top 30 is relatively distinct)
     drafted_buffer = 10.0
-    drafted_k = 3.0
-    first_round_k = 0.20
+    drafted_k = 12.0
+    first_round_k = 4.0
 
     p_drafted = float(_sigmoid(((DRAFT_SLOTS + drafted_buffer + 0.5) - float(rank)) / drafted_k))
     p_first_round = float(_sigmoid(((FIRST_ROUND_SLOTS + 0.5) - float(rank)) / first_round_k))
