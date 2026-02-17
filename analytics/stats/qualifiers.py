@@ -40,7 +40,7 @@ def infer_max_team_games(team_stats: Mapping[str, Any] | None, player_stats: Map
         for entry_any in player_stats.values():
             if not isinstance(entry_any, Mapping):
                 continue
-            max_gp = max(max_gp, coerce_int(entry_any.get("games") or entry_any.get("GP"), 0))
+            max_gp = max(max_gp, coerce_int(entry_any.get("games"), 0))
 
     return max_gp
 

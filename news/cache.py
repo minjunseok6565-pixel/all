@@ -69,7 +69,6 @@ def _normalize_playoff_cache(value: Any) -> Dict[str, Any]:
     """Normalize playoff_news cache for state_schema 4.1.
 
     Expected 4.1 keys:
-      - series_game_counts: dict
       - processed_game_ids: list[str]
       - built_from_turn: int
       - season_id: str|None
@@ -78,9 +77,6 @@ def _normalize_playoff_cache(value: Any) -> Dict[str, Any]:
     """
     cache: Dict[str, Any] = value if isinstance(value, dict) else {}
 
-    series_game_counts = cache.get("series_game_counts")
-    if not isinstance(series_game_counts, dict):
-        series_game_counts = {}
 
     processed = cache.get("processed_game_ids")
     if not isinstance(processed, list):
@@ -104,7 +100,6 @@ def _normalize_playoff_cache(value: Any) -> Dict[str, Any]:
         items = []
 
     return {
-        "series_game_counts": series_game_counts,
         "processed_game_ids": processed,
         "built_from_turn": built_from_turn,
         "season_id": season_id,

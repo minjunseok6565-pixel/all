@@ -88,22 +88,27 @@ def _is_match_point(best_of: int, wins_home: int, wins_road: int) -> bool:
 def extract_playoff_events(
     playoffs: Dict[str, Any],
     *,
-    previous_counts: Dict[str, Any] | None,
+    game_ids: Iterable[str] | None = None,
     boxscore_lookup: Dict[Tuple[str, str, str, int, int], Dict[str, Any]] | None = None,
-) -> Tuple[List[NewsEvent], Dict[str, int]]:
-    """Extract new playoff events since last cache update.
+) -> List[NewsEvent]:
+    """Extract playoff events for completed games.
 
     Args:
         playoffs: postseason['playoffs'] snapshot
-        previous_counts: cache['series_game_counts']
+        game_ids: optional iterable of game_ids to emit events for. When omitted,
+            events are generated for *all* completed games in the snapshot.
         boxscore_lookup: optional index mapping
             (date, home_id, away_id, home_score, away_score) -> game_result_v2
 
     Returns:
-        (events, updated_series_counts)
+        List[NewsEvent]
     """
-    prev = previous_counts or {}
-    series_counts: Dict[str, int] = {}
+    allowed_ids: set[str] | None = None
+    if game_ids is not None:
+        allowed_ids = {str(x) for x in game_ids if x}
+        if not allowed_ids:
+            return []
+
     events: List[NewsEvent] = []
 
     for s in iter_series(playoffs):
@@ -111,31 +116,34 @@ def extract_playoff_events(
         games = s.get("games") or []
         if not isinstance(games, list):
             continue
-        prev_count = int(prev.get(key, 0) or 0)
-
         home_id = str(s.get("home_court") or "")
         road_id = str(s.get("road") or "")
         best_of = int(s.get("best_of") or 7)
         round_label = _playoff_round_label(s.get("round"))
 
-        for idx in range(prev_count, len(games)):
-            g = games[idx]
-            if not isinstance(g, dict):
+        for idx, g_any in enumerate(games):
+            if not isinstance(g_any, dict):
                 continue
 
-            d = _parse_date_iso(g.get("date"))
-            d_iso = d.isoformat() if d else str(g.get("date") or "")[:10]
+            gid = str(g_any.get("game_id") or "")
+            if not gid:
+                continue
+            if allowed_ids is not None and gid not in allowed_ids:
+                continue
+
+            winner = str(g_any.get("winner") or "")
+            if not winner:
+                continue
+
+            d = _parse_date_iso(g_any.get("date"))
+            d_iso = d.isoformat() if d else str(g_any.get("date") or "")[:10]
 
             try:
-                hs = int(g.get("home_score"))
-                as_ = int(g.get("away_score"))
+                hs = int(g_any.get("home_score"))
+                as_ = int(g_any.get("away_score"))
             except Exception:
                 hs = 0
                 as_ = 0
-
-            winner = str(g.get("winner") or "")
-            if not winner:
-                continue
             loser = road_id if winner == home_id else home_id
             margin = abs(hs - as_)
 
@@ -163,7 +171,7 @@ def extract_playoff_events(
                 "winner": winner,
                 "loser": loser,
                 "margin": margin,
-                "is_overtime": bool(g.get("is_overtime")),
+                "is_overtime": bool(g_any.get("is_overtime")),
                 "series_score": s_score,
                 "top_performers": top_perf,
             }
@@ -235,9 +243,9 @@ def extract_playoff_events(
                             }
                         )
 
-        series_counts[key] = len(games)
-
-    return events, series_counts
+    # Stable sort by date and series key so that LLM prompt is deterministic.
+    events.sort(key=lambda e: (str(e.get("date") or ""), str(e.get("series_key") or ""), str(e.get("kind") or ""), str(e.get("id") or "")))
+    return events
 
 
 def _extract_top_performers_simple(game_result_v2: Dict[str, Any], winner_team_id: str, *, limit: int = 2) -> List[str]:
