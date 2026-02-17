@@ -172,7 +172,7 @@ def compute_award_candidates(
                 "player_id": pl.player_id,
                 "name": pl.name,
                 "team_id": pl.team_id,
-                "GP": gp,
+                "games": gp,
                 "MIN_total": coerce_float(pl.totals.get("MIN"), 0.0),
                 "features": feats,
             }
@@ -200,7 +200,7 @@ def compute_award_candidates(
             "player_id": r["player_id"],
             "name": r["name"],
             "team_id": r["team_id"],
-            "GP": r["GP"],
+            "games": r["games"],
             "score": round(score, 4),
         }
 
@@ -216,5 +216,5 @@ def compute_award_candidates(
         ]
         scored.append(out)
 
-    scored.sort(key=lambda x: (-float(x.get("score") or 0.0), -int(x.get("GP") or 0), str(x.get("player_id") or "")))
+    scored.sort(key=lambda x: (-float(x.get("score") or 0.0), -int(x.get("games") or 0), str(x.get("player_id") or "")))
     return scored[: max(0, int(top_n or 0))]
