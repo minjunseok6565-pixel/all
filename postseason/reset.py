@@ -74,11 +74,17 @@ def reset_postseason_state() -> Dict[str, Any]:
     _clear_phase_results_container("play_in")
     _clear_phase_results_container("playoffs")
 
-    # Clear playoff news cache.
-    playoff_news = state.get_cached_playoff_news_snapshot() or {}
-    playoff_news["series_game_counts"] = {}
-    playoff_news["items"] = []
-    state.set_cached_playoff_news_snapshot(playoff_news)
+    # Clear playoff news cache (schema 4.1 exact keys).
+    state.set_cached_playoff_news_snapshot(
+        {
+            "series_game_counts": {},
+            "processed_game_ids": [],
+            "built_from_turn": -1,
+            "season_id": state.get_active_season_id(),
+            "generator_version": "news.playoffs.v2",
+            "items": [],
+        }
+    )
 
     # Invalidate stats leaders cache (UI-only).
     stats_cache = state.get_cached_stats_snapshot() or {}
