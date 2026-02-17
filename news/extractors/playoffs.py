@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+from datetime import date
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from ..ids import make_event_id
+from ..models import NewsEvent
+
+
+def _parse_date_iso(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if len(s) >= 10:
+        s = s[:10]
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _playoff_round_label(round_name: Optional[str]) -> str:
+    mapping = {
+        "Conference Quarterfinals": "플레이오프 1라운드",
+        "Conference Semifinals": "플레이오프 2라운드",
+        "Conference Finals": "컨퍼런스 파이널",
+        "NBA Finals": "NBA 파이널",
+    }
+    if not round_name:
+        return "플레이오프"
+    return mapping.get(round_name, str(round_name))
+
+
+def iter_series(playoffs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Best-effort iterator for legacy bracket shapes."""
+    bracket = playoffs.get("bracket") or {}
+    out: List[Dict[str, Any]] = []
+
+    def _add(series: Any) -> None:
+        if isinstance(series, dict):
+            out.append(series)
+
+    for series in (bracket.get("east", {}) or {}).get("quarterfinals", []) or []:
+        _add(series)
+    for series in (bracket.get("west", {}) or {}).get("quarterfinals", []) or []:
+        _add(series)
+    for series in (bracket.get("east", {}) or {}).get("semifinals", []) or []:
+        _add(series)
+    for series in (bracket.get("west", {}) or {}).get("semifinals", []) or []:
+        _add(series)
+    _add((bracket.get("east", {}) or {}).get("finals"))
+    _add((bracket.get("west", {}) or {}).get("finals"))
+    _add(bracket.get("finals"))
+
+    # Newer shapes may store series lists directly
+    if not out and isinstance(bracket.get("series"), list):
+        for s in bracket.get("series"):
+            _add(s)
+
+    return out
+
+
+def series_key(series: Dict[str, Any]) -> str:
+    return f"{series.get('round')}::{series.get('home_court')}::{series.get('road')}"
+
+
+def wins_through(series: Dict[str, Any], game_index: int) -> Dict[str, int]:
+    wins: Dict[str, int] = {}
+    for g in (series.get("games") or [])[: game_index + 1]:
+        w = g.get("winner")
+        if not w:
+            continue
+        wins[str(w)] = wins.get(str(w), 0) + 1
+    return wins
+
+
+def _series_score(home_id: str, road_id: str, wins: Dict[str, int]) -> str:
+    return f"{wins.get(home_id, 0)}-{wins.get(road_id, 0)}"
+
+
+def _is_match_point(best_of: int, wins_home: int, wins_road: int) -> bool:
+    need = best_of // 2 + 1
+    return max(wins_home, wins_road) == need - 1 and (wins_home != wins_road)
+
+
+def extract_playoff_events(
+    playoffs: Dict[str, Any],
+    *,
+    previous_counts: Dict[str, Any] | None,
+    boxscore_lookup: Dict[Tuple[str, str, str, int, int], Dict[str, Any]] | None = None,
+) -> Tuple[List[NewsEvent], Dict[str, int]]:
+    """Extract new playoff events since last cache update.
+
+    Args:
+        playoffs: postseason['playoffs'] snapshot
+        previous_counts: cache['series_game_counts']
+        boxscore_lookup: optional index mapping
+            (date, home_id, away_id, home_score, away_score) -> game_result_v2
+
+    Returns:
+        (events, updated_series_counts)
+    """
+    prev = previous_counts or {}
+    series_counts: Dict[str, int] = {}
+    events: List[NewsEvent] = []
+
+    for s in iter_series(playoffs):
+        key = series_key(s)
+        games = s.get("games") or []
+        if not isinstance(games, list):
+            continue
+        prev_count = int(prev.get(key, 0) or 0)
+
+        home_id = str(s.get("home_court") or "")
+        road_id = str(s.get("road") or "")
+        best_of = int(s.get("best_of") or 7)
+        round_label = _playoff_round_label(s.get("round"))
+
+        for idx in range(prev_count, len(games)):
+            g = games[idx]
+            if not isinstance(g, dict):
+                continue
+
+            d = _parse_date_iso(g.get("date"))
+            d_iso = d.isoformat() if d else str(g.get("date") or "")[:10]
+
+            try:
+                hs = int(g.get("home_score"))
+                as_ = int(g.get("away_score"))
+            except Exception:
+                hs = 0
+                as_ = 0
+
+            winner = str(g.get("winner") or "")
+            if not winner:
+                continue
+            loser = road_id if winner == home_id else home_id
+            margin = abs(hs - as_)
+
+            wins = wins_through(s, idx)
+            h_wins = wins.get(home_id, 0)
+            r_wins = wins.get(road_id, 0)
+            s_score = _series_score(home_id, road_id, wins)
+            game_number = idx + 1
+
+            # Attempt to attach top performer strings
+            top_perf: List[str] = []
+            if boxscore_lookup is not None:
+                gr = boxscore_lookup.get((d_iso, home_id, road_id, hs, as_))
+                if isinstance(gr, dict):
+                    top_perf = _extract_top_performers_simple(gr, winner, limit=2)
+
+            base_facts = {
+                "round_label": round_label,
+                "round": s.get("round"),
+                "game_number": game_number,
+                "home_team_id": home_id,
+                "away_team_id": road_id,
+                "home_score": hs,
+                "away_score": as_,
+                "winner": winner,
+                "loser": loser,
+                "margin": margin,
+                "is_overtime": bool(g.get("is_overtime")),
+                "series_score": s_score,
+                "top_performers": top_perf,
+            }
+
+            events.append(
+                {
+                    "event_id": make_event_id("PLAYOFF", d_iso, "GAME", key, game_number),
+                    "date": d_iso,
+                    "type": "PLAYOFF_GAME_RECAP",
+                    "importance": 0.0,
+                    "facts": base_facts,
+                    "related_team_ids": [home_id, road_id],
+                    "related_player_ids": [],
+                    "related_player_names": [],
+                    "tags": ["playoffs"],
+                }
+            )
+
+            # Series swing / match point / elimination
+            need = best_of // 2 + 1
+            if max(h_wins, r_wins) >= need:
+                events.append(
+                    {
+                        "event_id": make_event_id("PLAYOFF", d_iso, "ELIM", key, game_number),
+                        "date": d_iso,
+                        "type": "PLAYOFF_ELIMINATION",
+                        "importance": 0.0,
+                        "facts": base_facts,
+                        "related_team_ids": [home_id, road_id],
+                        "related_player_ids": [],
+                        "related_player_names": [],
+                        "tags": ["playoffs"],
+                    }
+                )
+            elif _is_match_point(best_of, h_wins, r_wins):
+                events.append(
+                    {
+                        "event_id": make_event_id("PLAYOFF", d_iso, "MP", key, game_number),
+                        "date": d_iso,
+                        "type": "PLAYOFF_MATCH_POINT",
+                        "importance": 0.0,
+                        "facts": base_facts,
+                        "related_team_ids": [home_id, road_id],
+                        "related_player_ids": [],
+                        "related_player_names": [],
+                        "tags": ["playoffs"],
+                    }
+                )
+            else:
+                # swing when series becomes tied or lead changes
+                if idx > 0:
+                    prev_wins = wins_through(s, idx - 1)
+                    prev_h = prev_wins.get(home_id, 0)
+                    prev_r = prev_wins.get(road_id, 0)
+                    prev_leader = home_id if prev_h > prev_r else road_id if prev_r > prev_h else None
+                    cur_leader = home_id if h_wins > r_wins else road_id if r_wins > h_wins else None
+                    if (prev_leader != cur_leader) or (cur_leader is None):
+                        events.append(
+                            {
+                                "event_id": make_event_id("PLAYOFF", d_iso, "SWING", key, game_number),
+                                "date": d_iso,
+                                "type": "PLAYOFF_SERIES_SWING",
+                                "importance": 0.0,
+                                "facts": base_facts,
+                                "related_team_ids": [home_id, road_id],
+                                "related_player_ids": [],
+                                "related_player_names": [],
+                                "tags": ["playoffs"],
+                            }
+                        )
+
+        series_counts[key] = len(games)
+
+    return events, series_counts
+
+
+def _extract_top_performers_simple(game_result_v2: Dict[str, Any], winner_team_id: str, *, limit: int = 2) -> List[str]:
+    """Pull a compact top-performer list from a v2 game_result.
+
+    Output entries look like "Name 34득점".
+    """
+    try:
+        teams = game_result_v2.get("teams") or {}
+        team = teams.get(winner_team_id) or {}
+        rows = team.get("players") or []
+    except Exception:
+        return []
+
+    if not isinstance(rows, list):
+        return []
+
+    scored = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("Name") or "")
+        try:
+            pts = int(float(r.get("PTS") or 0))
+        except Exception:
+            pts = 0
+        try:
+            ast = int(float(r.get("AST") or 0))
+        except Exception:
+            ast = 0
+        try:
+            reb = int(float(r.get("REB") or 0))
+        except Exception:
+            reb = 0
+        gs = pts + 0.7 * reb + 0.7 * ast
+        if name:
+            scored.append((gs, f"{name} {pts}득점"))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [s for _, s in scored[:limit]]
