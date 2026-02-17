@@ -19,8 +19,6 @@ from .participants_roles import (
     ROLE_SHORTROLL_HUB,
     ROLE_POP_THREAT,
     ROLE_POST_ANCHOR,
-    canonical_offense_role,
-    expand_role_keys_for_lookup,
 )
 
 from .participants_common import (
@@ -94,9 +92,8 @@ def choose_creator_for_pulloff(
     # 13-role candidates first, then fill so that ALL on-court players can be selected.
     key = "SHOT_3_OD" if outcome == "SHOT_3_OD" else "SHOT_MID_PU"
 
-    # During migration, offense.roles may contain canonical C13 keys or legacy 12-role keys.
-    # Expand role keys for robust lookup.
-    cand = _players_from_roles(offense, expand_role_keys_for_lookup(_CREATOR_ROLE_PRIORITY))
+    # Role slots are canonical C13 keys.
+    cand = _players_from_roles(offense, _CREATOR_ROLE_PRIORITY)
 
     # Previously capped to 3, which hard-limited distribution.
     # Use the on-court count (normally 5) so every player becomes a candidate.
@@ -167,14 +164,14 @@ _MULT_MAX = 1.40
 
 
 def _pid_role_mult_canon(team: TeamState, pid: str, role_mult: Dict[str, float]) -> float:
-    """Version of _pid_role_mult() that canonicalizes role keys first."""
+    """Return the max role multiplier for a pid (canonical C13 role keys)."""
     mult = 1.0
     roles = getattr(team, "roles", {}) or {}
     for role, rpid in roles.items():
         if str(rpid) != str(pid):
             continue
-        canon = canonical_offense_role(str(role))
-        mult = max(mult, float(role_mult.get(canon, 1.0)))
+        rk = str(role or "").strip()
+        mult = max(mult, float(role_mult.get(rk, 1.0)))
     return mult
 
 
@@ -197,7 +194,7 @@ def choose_finisher_rim(
     else:
         role_priority = _FINISH_ROLE_BASE
 
-    cand = _players_from_roles(offense, expand_role_keys_for_lookup(role_priority))
+    cand = _players_from_roles(offense, role_priority)
     cand = _fill_candidates_with_top_k(offense, cand, cap=4, stat_key=key)
 
     info = _shot_diet_info(style)
@@ -233,12 +230,11 @@ _POST_FALLBACK_ROLES: Tuple[str, ...] = (
 
 def choose_post_target(offense: TeamState) -> Player:
     # Prefer the Post_Anchor. If missing, fall back to the most post-capable big-ish option.
-    for role_key in expand_role_keys_for_lookup((ROLE_POST_ANCHOR,)):
-        p = _role_player(offense, role_key)
-        if p:
-            return p
+    p = _role_player(offense, ROLE_POST_ANCHOR)
+    if p:
+        return p
 
-    cand = _players_from_roles(offense, expand_role_keys_for_lookup(_POST_FALLBACK_ROLES))
+    cand = _players_from_roles(offense, _POST_FALLBACK_ROLES)
     if cand:
         # Deterministic: choose the best by POST_CONTROL (then POST_SCORE).
         return max(cand, key=lambda x: (x.get("POST_CONTROL"), x.get("POST_SCORE")))

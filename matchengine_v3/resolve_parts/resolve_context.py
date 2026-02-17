@@ -38,7 +38,7 @@ def is_foul(o: str) -> bool: return str(o).startswith("FOUL_")
 def is_reset(o: str) -> bool: return str(o).startswith("RESET_")
 
 def _pick_default_actor(offense: TeamState) -> Player:
-    """12-role first, then best passer. Used when an outcome has no specific participant chooser."""
+    """Role-priority first, then best passer. Used when an outcome has no specific participant chooser."""
     return choose_default_actor(offense)
 
 def _knob_mult(game_cfg: "GameConfig", key: str, default: float = 1.0) -> float:

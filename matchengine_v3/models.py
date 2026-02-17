@@ -249,7 +249,7 @@ class TeamState:
     # -------------------------
     # These are optional and can be supplied by UI/config.
     # - rotation_target_sec_by_pid: per-player target minutes in seconds.
-    # - rotation_offense_role_by_pid: per-player offensive role name (one of the 12 roles).
+    # - rotation_offense_role_by_pid: per-player offensive role name (one of the C13 roles).
     # - rotation_lock_pids: players that should never be auto-subbed out (except foul-out).
     rotation_target_sec_by_pid: Dict[str, int] = field(default_factory=dict)
     rotation_offense_role_by_pid: Dict[str, str] = field(default_factory=dict)

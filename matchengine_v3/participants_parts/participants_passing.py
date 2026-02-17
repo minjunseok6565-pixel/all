@@ -19,8 +19,6 @@ from .participants_roles import (
     ROLE_SHORTROLL_HUB,
     ROLE_POP_THREAT,
     ROLE_POST_ANCHOR,
-    canonical_offense_role,
-    expand_role_keys_for_lookup,
 )
 
 from .participants_common import (
@@ -42,7 +40,7 @@ def _role_of_pid(team: TeamState, pid: str) -> str:
     roles = getattr(team, "roles", {}) or {}
     for role_name, rpid in roles.items():
         if str(rpid) == pid:
-            return canonical_offense_role(str(role_name))
+            return str(role_name or "").strip()
     return ""
 
 
@@ -229,8 +227,8 @@ def _role_mult_with_default(team: TeamState, pid: str, role_mult: Dict[str, floa
     for role, rpid in roles.items():
         if str(rpid) != str(pid):
             continue
-        canon = canonical_offense_role(str(role))
-        out = max(out, float(role_mult.get(canon, base)))
+        rk = str(role or "").strip()
+        out = max(out, float(role_mult.get(rk, base)))
     return out
 
 
@@ -243,8 +241,8 @@ def _role_bonus_for_outcome(team: TeamState, pid: str, outcome: str) -> float:
     for role, rpid in roles.items():
         if str(rpid) != str(pid):
             continue
-        canon = canonical_offense_role(str(role))
-        out = max(out, float(bonus_map.get(canon, 1.0)))
+        rk = str(role or "").strip()
+        out = max(out, float(bonus_map.get(rk, 1.0)))
     return out
 
 
@@ -289,11 +287,10 @@ def choose_passer(
     """
     fam = _pass_family(base_action, outcome)
     role_priority = _PASSER_ROLE_PRIORITY.get(fam, _PASSER_ROLE_PRIORITY["default"])
-    role_priority_exp = expand_role_keys_for_lookup(role_priority)
     cap = int(_PASSER_CAND_CAP.get(fam, 5))
 
     # 1) Start from role-based candidates
-    cand: List[Player] = _players_from_roles(offense, role_priority_exp)
+    cand: List[Player] = _players_from_roles(offense, role_priority)
 
     # 2) Fill with top-k by relevant stats (family-specific), keeping uniqueness
     if fam == "drive":
@@ -353,7 +350,7 @@ _ASSIST_ROLE_PRIORITY: Tuple[str, ...] = (
 
 def choose_assister_deterministic(team: TeamState, shooter_pid: str) -> Optional[Player]:
     # Prefer primary playmakers, but never return the shooter.
-    for role in expand_role_keys_for_lookup(_ASSIST_ROLE_PRIORITY):
+    for role in _ASSIST_ROLE_PRIORITY:
         pid = team.roles.get(role)
         if pid and pid != shooter_pid:
             p = team.find_player(pid)
@@ -463,7 +460,7 @@ def choose_assister_weighted(
     # Role-first candidates
     cand: List[Player] = []
     roles = getattr(offense, "roles", {}) or {}
-    for role in expand_role_keys_for_lookup(_ASSISTER_ROLE_PRIORITY_WEIGHTED):
+    for role in _ASSISTER_ROLE_PRIORITY_WEIGHTED:
         pid = roles.get(role)
         if not pid:
             continue
@@ -498,7 +495,7 @@ def choose_assister_weighted(
 
 
 # -------------------------
-# Additional choosers moved from resolve_12role
+# Additional choosers (generic role-first participants)
 # -------------------------
 
 # Default actor selection for outcomes that don't have a specific chooser.
@@ -518,7 +515,7 @@ def choose_default_actor(offense: TeamState) -> Player:
     a specific participant chooser is not defined.
     """
     roles = getattr(offense, "roles", {}) or {}
-    for role in expand_role_keys_for_lookup(_DEFAULT_ACTOR_ROLE_PRIORITY):
+    for role in _DEFAULT_ACTOR_ROLE_PRIORITY:
         pid = roles.get(role)
         if isinstance(pid, str) and pid:
             p = offense.find_player(pid)

@@ -8,11 +8,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .core import weighted_choice
 from .models import Player, TeamState
 
-# Participant selection (12-role only)
+# Participant selection (C13 role-driven)
 # -------------------------
 #
 # This module intentionally does NOT use legacy role keys (e.g., "ball_handler", "screener", "post").
-# TeamState.roles is expected to be a mapping: 12-role name -> pid.
+# TeamState.roles is expected to be a mapping: C13 role name -> pid.
 
 # NOTE: Implementation split across participants_*.py modules; this file re-exports the original API.
 

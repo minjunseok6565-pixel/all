@@ -105,7 +105,7 @@ except ImportError:  # pragma: no cover
 
 
 # -----------------------------
-# Role key SSOT (C13) + legacy compatibility
+# Role key SSOT (C13)
 # -----------------------------
 try:
     # Package execution
@@ -123,8 +123,6 @@ try:
         ROLE_SHORTROLL_HUB,
         ROLE_POP_THREAT,
         ROLE_POST_ANCHOR,
-        canonical_offense_role,
-        expand_role_keys_for_lookup,
     )
 except ImportError:  # pragma: no cover
     # Script / flat-module execution
@@ -142,15 +140,22 @@ except ImportError:  # pragma: no cover
         ROLE_SHORTROLL_HUB,
         ROLE_POP_THREAT,
         ROLE_POST_ANCHOR,
-        canonical_offense_role,
-        expand_role_keys_for_lookup,
     )
+
+def _norm_role(role: Any) -> str:
+    """Normalize a role key to a canonical C13 string.
+
+    The engine is C13-only; unknown/empty inputs normalize to "".
+    """
+    r = str(role or "").strip()
+    return r
+
 
 # -----------------------------
 # Fit score / grade
 # -----------------------------
 def role_fit_score(player: Player, role: str) -> float:
-    role = canonical_offense_role(role)
+    role = _norm_role(role)
     w = ROLE_FIT_WEIGHTS.get(role)
     if not w:
         return 50.0
@@ -166,7 +171,7 @@ def role_fit_score(player: Player, role: str) -> float:
 
 
 def role_fit_grade(role: str, fit: float) -> str:
-    role = canonical_offense_role(role)
+    role = _norm_role(role)
     cuts = ROLE_FIT_CUTS.get(role)
     if not cuts:
         return "B" if fit >= 60 else "C" if fit >= 52 else "D"
@@ -216,7 +221,7 @@ def _role_fit_default_cuts() -> Tuple[float, float, float, float]:
 
 def role_fit_g(role: str, fit: float) -> float:
     """Continuous grade coordinate in [-2, +2] for a given (role, fit)."""
-    role = canonical_offense_role(role)
+    role = _norm_role(role)
     cuts = ROLE_FIT_CUTS.get(role) or _role_fit_default_cuts()
     try:
         s_min, a_min, b_min, c_min = [float(x) for x in cuts]
@@ -385,12 +390,11 @@ def _pid_is_on_court(offense: TeamState, pid: Any) -> bool:
 def _choose_best_role(offense: TeamState, roles: List[str]) -> Optional[Tuple[str, Player, float]]:
     """Pick the best on-court player among the provided role keys.
 
-    Input role keys may be canonical C13 or legacy 12-role names.
+    Input role keys are canonical C13 names.
     """
     best: Optional[Tuple[str, Player, float]] = None
 
-    roles_expanded = list(expand_role_keys_for_lookup(roles))
-    for r in roles_expanded:
+    for r in roles:
         pid = getattr(offense, "roles", {}).get(r)
         if not pid:
             continue
@@ -399,10 +403,10 @@ def _choose_best_role(offense: TeamState, roles: List[str]) -> Optional[Tuple[st
         p = offense.find_player(pid)
         if not p:
             continue
-        canon = canonical_offense_role(r)
-        fit = role_fit_score(p, canon)
+        rk = _norm_role(r)
+        fit = role_fit_score(p, rk)
         if best is None or fit > best[2]:
-            best = (canon, p, fit)
+            best = (rk, p, fit)
 
     return best
 
@@ -412,8 +416,7 @@ def _collect_roles_for_action_family(action_family: str, offense: TeamState) -> 
 
     This is the only place that should reference specific *offensive* role keys.
 
-    Role keys are canonical C13 (see offense_roles.py), but legacy 12-role keys are
-    accepted via :func:`expand_role_keys_for_lookup` / :func:`canonical_offense_role`.
+    Role keys are canonical C13 (see offense_roles.py).
     """
     parts: List[Tuple[str, Player, float]] = []
     fam = str(action_family)
@@ -428,29 +431,30 @@ def _collect_roles_for_action_family(action_family: str, offense: TeamState) -> 
             if pid in seen_pids:
                 return
             seen_pids.add(pid)
-        parts.append((canonical_offense_role(role_key), p, float(fit)))
+        parts.append((_norm_role(role_key), p, float(fit)))
 
     def _add_best(group: List[str]) -> None:
         _add_pick(_choose_best_role(offense, group))
 
     def _add_assigned(role_key: str) -> None:
         # Include a role participant if that role is explicitly assigned on-court.
-        for rk in expand_role_keys_for_lookup([role_key]):
-            pid = getattr(offense, "roles", {}).get(rk)
-            if not pid:
-                continue
-            if not _pid_is_on_court(offense, pid):
-                continue
-            p = offense.find_player(pid)
-            if not p:
-                continue
-            # Avoid double-counting the same player for a single action family.
-            if getattr(p, "pid", None) in seen_pids:
-                return
-            canon = canonical_offense_role(rk)
-            seen_pids.add(str(p.pid))
-            parts.append((canon, p, role_fit_score(p, canon)))
+        rk = _norm_role(role_key)
+        if not rk:
             return
+        pid = getattr(offense, "roles", {}).get(rk)
+        if not pid:
+            return
+        if not _pid_is_on_court(offense, pid):
+            return
+        p = offense.find_player(pid)
+        if not p:
+            return
+        # Avoid double-counting the same player for a single action family.
+        if getattr(p, "pid", None) in seen_pids:
+            return
+        seen_pids.add(str(p.pid))
+        parts.append((rk, p, role_fit_score(p, rk)))
+        return
 
     if fam == "PnR":
         # Handler(s)

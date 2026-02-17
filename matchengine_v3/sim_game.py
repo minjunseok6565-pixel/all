@@ -68,66 +68,6 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
     return {}
 
 
-def _enforce_initiator_primary_start(
-    team: TeamState,
-    start_pids: List[str],
-    targets_sec_by_pid: Dict[str, int],
-    rules: Dict[str, Any],
-) -> List[str]:
-    """Best-effort: ensure Initiator_Primary is on-court exactly once at tip-off.
-
-    If the user configured at least one Initiator_Primary-eligible player, enforce:
-      - start lineup contains exactly 1 Initiator_Primary
-    If constraint is impossible (e.g., no eligible initiator), lineup is returned unchanged.
-
-    This is a one-time pre-game correction; in-game rotation logic will continue to enforce the constraint.
-    """
-    role_by_pid = _get_offense_role_by_pid(team)
-    roster_pids = [p.pid for p in team.lineup]
-    eligible = [pid for pid in roster_pids if role_by_pid.get(pid) == "Initiator_Primary"]
-    if not eligible:
-        return list(start_pids)
-
-    def is_init(pid: str) -> bool:
-        return role_by_pid.get(pid) == "Initiator_Primary"
-
-    start = list(start_pids)[:5]
-    init_in_start = [pid for pid in start if is_init(pid)]
-    n = len(init_in_start)
-
-    # Helper for choosing replacements: prefer higher target minutes for IN, lower target minutes for OUT.
-    def tgt(pid: str) -> int:
-        return int(targets_sec_by_pid.get(pid, 0))
-
-    # Case 1: 0 initiators -> bring in best eligible, push out lowest-target player.
-    if n == 0:
-        pid_in = max(eligible, key=tgt)
-        if pid_in in start:
-            return start
-        # choose OUT: lowest target (ties: random order is fine)
-        pid_out = min(start, key=tgt)
-        start[start.index(pid_out)] = pid_in
-        return start
-
-    # Case 2: 2+ initiators -> keep highest-target one, swap out the rest for best non-initiators.
-    if n > 1:
-        keep = max(init_in_start, key=tgt)
-        extras = [pid for pid in init_in_start if pid != keep]
-
-        bench_non_init = [pid for pid in roster_pids if pid not in start and not is_init(pid)]
-        bench_non_init.sort(key=tgt, reverse=True)
-
-        for pid_out in extras:
-            if not bench_non_init:
-                break
-            pid_in = bench_non_init.pop(0)
-            start[start.index(pid_out)] = pid_in
-
-        # still 2+ (no bench non-init)? best-effort: return as-is
-        return start
-
-    # Case 3: exactly 1 initiator -> ok
-    return start
 
 
 def _choose_ot_start_offense(
@@ -338,12 +278,9 @@ def simulate_game(
     targets_home = _init_targets(home, rules)
     targets_away = _init_targets(away, rules)
 
-    # Starting 5 defaults to lineup order, but if Initiator_Primary is configured we enforce:
-    # - exactly 1 Initiator_Primary on-court at tip-off (best-effort)
+    # Starting 5 defaults to lineup order.
     start_home = [p.pid for p in home.lineup[:5]]
     start_away = [p.pid for p in away.lineup[:5]]
-    start_home = _enforce_initiator_primary_start(home, start_home, targets_home, rules)
-    start_away = _enforce_initiator_primary_start(away, start_away, targets_away, rules)
 
     # SSOT team identifiers for this game (fixed by external context).
     home_team_id = hid

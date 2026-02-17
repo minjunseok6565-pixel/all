@@ -56,7 +56,6 @@ from .offense_roles import (
     ROLE_SHORTROLL_HUB,
     ROLE_POP_THREAT,
     ROLE_POST_ANCHOR,
-    expand_role_keys_for_lookup,
 )
 
 # -------------------------
@@ -273,20 +272,15 @@ def _pid_to_player(lineup: List[Player]) -> Dict[str, Player]:
     return {p.pid: p for p in lineup}
 
 
-# --- Role lookup helpers (C13 SSOT + legacy compatible) ---
+# --- Role lookup helpers (C13 SSOT) ---
 
 def _role_pid(roles: Dict[str, Any], role_key: str) -> Optional[str]:
-    """Lookup pid for a role key, accepting canonical or legacy keys.
-
-    During migration, TeamState.roles may contain canonical C13 keys or legacy 12-role keys.
-    This helper tries both via expand_role_keys_for_lookup().
-    """
+    """Lookup pid for a canonical C13 role key."""
     if not isinstance(roles, dict):
         return None
-    for k in expand_role_keys_for_lookup([role_key]):
-        pid = roles.get(k)
-        if isinstance(pid, str) and pid:
-            return pid
+    pid = roles.get(str(role_key or "").strip())
+    if isinstance(pid, str) and pid:
+        return pid
     return None
 
 
@@ -343,11 +337,10 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
         primary_fallback = True
         # If roles dict is mutable, keep assignments consistent for downstream modules.
         if roles is getattr(off, "roles", None):
-                try:
-                    for k in expand_role_keys_for_lookup([ROLE_ENGINE_PRIMARY]):
-                        off.roles[k] = primary
-                except Exception:
-                    pass
+            try:
+                off.roles[ROLE_ENGINE_PRIMARY] = primary
+            except Exception:
+                pass
 
     # Secondary: prefer Engine_Secondary (on-court), else best onball excluding primary
     if role_is and role_is in pid_map and role_is != primary:
@@ -360,8 +353,7 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
             secondary_fallback = True
             if roles is getattr(off, "roles", None) and secondary != primary:
                 try:
-                    for k in expand_role_keys_for_lookup([ROLE_ENGINE_SECONDARY]):
-                        off.roles[k] = secondary
+                    off.roles[ROLE_ENGINE_SECONDARY] = secondary
                 except Exception:
                     pass
         else:

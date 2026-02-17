@@ -978,7 +978,7 @@ class TeamSituationEvaluator:
         }
 
     def _compute_role_fit_and_needs(self, team_id: str, roster: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[TeamNeed]]:
-        # Evaluate 12 roles using role_fit tables.
+        # Evaluate role fit using role_fit tables.
         try:
             # Project standard: matchengine_v3.*
             from matchengine_v3.role_fit_data import ROLE_FIT_WEIGHTS  # type: ignore
