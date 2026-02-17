@@ -187,6 +187,55 @@ def group_teams_by_win_fraction(
     return groups
 
 
+def iter_tie_groups_in_order(
+    records: Mapping[TeamId, TeamRecord],
+    team_order: Sequence[TeamId],
+) -> List[Tuple[Fraction, List[TeamId]]]:
+    """Return consecutive tie groups along a given team order.
+
+    This is useful when a caller has already constructed a deterministic
+    worst->best ordering (including any tie-break drawings) and wants to
+    operate on the *runs* of identical win fractions.
+
+    Parameters
+    ----------
+    records:
+        Mapping of team_id -> TeamRecord.
+    team_order:
+        Team ids in worst->best order.
+
+    Returns
+    -------
+    List[(Fraction, List[TeamId])]
+        A list of consecutive groups, each with the shared win_fraction and
+        the team ids (in the same order as `team_order`).
+    """
+    out: List[Tuple[Fraction, List[TeamId]]] = []
+    cur_frac: Optional[Fraction] = None
+    cur_ids: List[TeamId] = []
+
+    for t in list(team_order):
+        tid = norm_team_id(t)
+        if not tid or tid == "FA":
+            continue
+        rec = records.get(tid)
+        if rec is None:
+            raise ValueError(f"Missing TeamRecord for team_id={tid!r}")
+        frac = rec.win_fraction
+        if cur_frac is None or frac != cur_frac:
+            if cur_ids:
+                out.append((cur_frac, cur_ids))  # type: ignore[arg-type]
+            cur_frac = frac
+            cur_ids = [rec.team_id]
+        else:
+            cur_ids.append(rec.team_id)
+
+    if cur_ids:
+        out.append((cur_frac, cur_ids))  # type: ignore[arg-type]
+
+    return out
+
+
 def _stable_int_seed(*parts: str) -> int:
     """Cross-process stable seed (avoid Python's randomized hash())."""
     h = hashlib.md5(":".join(parts).encode("utf-8")).hexdigest()
