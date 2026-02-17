@@ -23,12 +23,26 @@ import logging
 import math
 import os
 import random
-from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import game_time
 from league_repo import LeagueRepo
-from ratings_2k import potential_grade_to_scalar
+from scouting.signals_v2 import (
+    SIGNALS,
+    SignalDef,
+    build_delta_since_last,
+    build_evidence_tags,
+    build_profile_tags,
+    build_watchlist_questions,
+    confidence_from_sigma,
+    compute_stat_weight,
+    compute_true_signals,
+    derive_college_notes,
+    num_str,
+    pct_str,
+    range_text_from_mu_sigma,
+    tier_from_mu,
+)
 
 from scouting.report_ai import ScoutingReportWriter
 
@@ -255,106 +269,13 @@ def _infer_college_season_year_from_date(d: _dt.date) -> int:
 
 
 # -----------------------------------------------------------------------------
-# Scouting axes
+# Scouting signals (v2)
 # -----------------------------------------------------------------------------
 
-@dataclass(frozen=True, slots=True)
-class AxisDef:
-    key: str
-    label: str
-    # Baseline measurement noise for one day of observation (lower => easier to evaluate)
-    base_meas_std: float
-    # Initial uncertainty (stddev) when the scout starts evaluating the player
-    init_sigma: float
-    # Lower bound on uncertainty (bias remains even when sigma is low)
-    sigma_floor: float
-    # Lower bound on measurement noise (irreducible noise)
-    meas_floor: float
-
-
-# Canonical axes used in reports. Values are in 0..100 (higher is better).
-AXES: Dict[str, AxisDef] = {
-    "overall": AxisDef(
-        key="overall",
-        label="Overall",
-        base_meas_std=18.0,
-        init_sigma=22.0,
-        sigma_floor=6.0,
-        meas_floor=4.0,
-    ),
-    "athleticism": AxisDef(
-        key="athleticism",
-        label="Athleticism",
-        base_meas_std=10.0,
-        init_sigma=16.0,
-        sigma_floor=4.0,
-        meas_floor=2.5,
-    ),
-    "shooting": AxisDef(
-        key="shooting",
-        label="Shooting",
-        base_meas_std=15.0,
-        init_sigma=18.0,
-        sigma_floor=5.0,
-        meas_floor=3.0,
-    ),
-    "finishing": AxisDef(
-        key="finishing",
-        label="Finishing",
-        base_meas_std=14.0,
-        init_sigma=18.0,
-        sigma_floor=5.0,
-        meas_floor=3.0,
-    ),
-    "playmaking": AxisDef(
-        key="playmaking",
-        label="Playmaking",
-        base_meas_std=16.0,
-        init_sigma=19.0,
-        sigma_floor=5.5,
-        meas_floor=3.2,
-    ),
-    "defense": AxisDef(
-        key="defense",
-        label="Defense",
-        base_meas_std=17.0,
-        init_sigma=20.0,
-        sigma_floor=6.0,
-        meas_floor=3.5,
-    ),
-    "rebounding": AxisDef(
-        key="rebounding",
-        label="Rebounding",
-        base_meas_std=13.0,
-        init_sigma=18.0,
-        sigma_floor=5.0,
-        meas_floor=3.0,
-    ),
-    "upside": AxisDef(
-        key="upside",
-        label="Upside",
-        base_meas_std=20.0,
-        init_sigma=24.0,
-        sigma_floor=7.0,
-        meas_floor=4.5,
-    ),
-    "durability": AxisDef(
-        key="durability",
-        label="Durability",
-        base_meas_std=24.0,
-        init_sigma=28.0,
-        sigma_floor=10.0,
-        meas_floor=6.0,
-    ),
-    "character": AxisDef(
-        key="character",
-        label="Character",
-        base_meas_std=26.0,
-        init_sigma=30.0,
-        sigma_floor=12.0,
-        meas_floor=6.5,
-    ),
-}
+# NOTE: Canonical signals are defined in scouting.signals_v2.SIGNALS.
+# This service module keeps only the Bayesian/Kalman update state (mu/sigma per signal).
+#
+# Legacy "overall/athleticism/shooting" axes have been fully removed.
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -366,178 +287,11 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def _clamp01(x: float) -> float:
-    return float(max(0.0, min(1.0, x)))
-
-
 def _clamp100(x: float) -> float:
     return float(max(0.0, min(100.0, x)))
 
 
-def _mean(values: Sequence[float], default: float = 50.0) -> float:
-    vs = [float(v) for v in values if v is not None]
-    if not vs:
-        return float(default)
-    return float(sum(vs) / float(len(vs)))
-
-
-def _compute_true_axis_values(*, ovr: int, attrs: Mapping[str, Any]) -> Dict[str, float]:
-    """Compute "true" axis values (0..100) from SSOT attrs_json.
-
-    Notes:
-      - We deliberately use gameplay-oriented derived metrics when available.
-      - Some axes (upside/durability/character) come from extended SSOT keys.
-    """
-    out: Dict[str, float] = {}
-
-    out["overall"] = _clamp100(float(ovr))
-
-    # Derived metrics (if available)
-    derived: Dict[str, float] = {}
-    if compute_derived is not None:
-        try:
-            derived = compute_derived(dict(attrs)) or {}
-        except Exception:
-            derived = {}
-
-    # Athleticism: first step + physical + endurance
-    if derived:
-        out["athleticism"] = _clamp100(
-            0.50 * _safe_float(derived.get("FIRST_STEP"), 50.0)
-            + 0.25 * _safe_float(derived.get("PHYSICAL"), 50.0)
-            + 0.25 * _safe_float(derived.get("ENDURANCE"), 50.0)
-        )
-        out["shooting"] = _clamp100(
-            0.40 * _safe_float(derived.get("SHOT_3_CS"), 50.0)
-            + 0.30 * _safe_float(derived.get("SHOT_MID_CS"), 50.0)
-            + 0.20 * _safe_float(derived.get("SHOT_TOUCH"), 50.0)
-            + 0.10 * _safe_float(derived.get("SHOT_FT"), 50.0)
-        )
-        out["finishing"] = _clamp100(
-            0.45 * _safe_float(derived.get("FIN_RIM"), 50.0)
-            + 0.30 * _safe_float(derived.get("FIN_DUNK"), 50.0)
-            + 0.25 * _safe_float(derived.get("FIN_CONTACT"), 50.0)
-        )
-        out["playmaking"] = _clamp100(
-            _mean(
-                [
-                    _safe_float(derived.get("PASS_CREATE"), 50.0),
-                    _safe_float(derived.get("PASS_SAFE"), 50.0),
-                    _safe_float(derived.get("PNR_READ"), 50.0),
-                    _safe_float(derived.get("HANDLE_SAFE"), 50.0),
-                    _safe_float(derived.get("DRIVE_CREATE"), 50.0),
-                ],
-                default=50.0,
-            )
-        )
-        out["defense"] = _clamp100(
-            _mean(
-                [
-                    _safe_float(derived.get("DEF_POA"), 50.0),
-                    _safe_float(derived.get("DEF_HELP"), 50.0),
-                    _safe_float(derived.get("DEF_RIM"), 50.0),
-                    _safe_float(derived.get("DEF_STEAL"), 50.0),
-                    _safe_float(derived.get("DEF_POST"), 50.0),
-                ],
-                default=50.0,
-            )
-        )
-        out["rebounding"] = _clamp100(
-            _mean(
-                [
-                    _safe_float(derived.get("REB_OR"), 50.0),
-                    _safe_float(derived.get("REB_DR"), 50.0),
-                ],
-                default=50.0,
-            )
-        )
-    else:
-        # Minimal fallback from base keys (still 0..100)
-        out["athleticism"] = _mean(
-            [
-                _safe_float(attrs.get("Speed"), 50.0),
-                _safe_float(attrs.get("Agility"), 50.0),
-                _safe_float(attrs.get("Vertical"), 50.0),
-                _safe_float(attrs.get("Strength"), 50.0),
-                _safe_float(attrs.get("Stamina"), 50.0),
-            ],
-            default=50.0,
-        )
-        out["shooting"] = _mean(
-            [
-                _safe_float(attrs.get("Three-Point Shot"), 50.0),
-                _safe_float(attrs.get("Mid-Range Shot"), 50.0),
-                _safe_float(attrs.get("Free Throw"), 50.0),
-                _safe_float(attrs.get("Shot IQ"), 50.0),
-            ],
-            default=50.0,
-        )
-        out["finishing"] = _mean(
-            [
-                _safe_float(attrs.get("Layup"), 50.0),
-                _safe_float(attrs.get("Driving Dunk"), 50.0),
-                _safe_float(attrs.get("Standing Dunk"), 50.0),
-                _safe_float(attrs.get("Close Shot"), 50.0),
-            ],
-            default=50.0,
-        )
-        out["playmaking"] = _mean(
-            [
-                _safe_float(attrs.get("Ball Handle"), 50.0),
-                _safe_float(attrs.get("Speed with Ball"), 50.0),
-                _safe_float(attrs.get("Pass Vision"), 50.0),
-                _safe_float(attrs.get("Pass Accuracy"), 50.0),
-                _safe_float(attrs.get("Pass IQ"), 50.0),
-            ],
-            default=50.0,
-        )
-        out["defense"] = _mean(
-            [
-                _safe_float(attrs.get("Perimeter Defense"), 50.0),
-                _safe_float(attrs.get("Interior Defense"), 50.0),
-                _safe_float(attrs.get("Steal"), 50.0),
-                _safe_float(attrs.get("Block"), 50.0),
-                _safe_float(attrs.get("Help Defense IQ"), 50.0),
-            ],
-            default=50.0,
-        )
-        out["rebounding"] = _mean(
-            [
-                _safe_float(attrs.get("Offensive Rebound"), 50.0),
-                _safe_float(attrs.get("Defensive Rebound"), 50.0),
-                _safe_float(attrs.get("Hustle"), 50.0),
-            ],
-            default=50.0,
-        )
-
-    # Upside: Potential grade (A+..F) -> scalar -> 40..100-ish
-    pot = attrs.get("Potential")
-    pot_scalar = potential_grade_to_scalar(pot)
-    out["upside"] = _clamp100(100.0 * _clamp01(float(pot_scalar)))
-
-    # Durability: blend of "Overall Durability" + inverse injury frequency
-    base_dur = _safe_float(attrs.get("Overall Durability"), 50.0)
-    inj = attrs.get("I_InjuryFreq")
-    try:
-        inj_i = int(inj) if inj is not None else 5
-    except Exception:
-        inj_i = 5
-    inj_i = int(max(1, min(10, inj_i)))
-    inv_inj = 100.0 - float(inj_i - 1) * 10.0  # 1->100, 10->10
-    out["durability"] = _clamp100(0.70 * base_dur + 0.30 * inv_inj)
-
-    # Character: blend of mental keys (Ego is inverted)
-    m_keys_pos = ["M_WorkEthic", "M_Coachability", "M_Ambition", "M_Adaptability", "M_Loyalty"]
-    m_pos = [_safe_float(attrs.get(k), 60.0) for k in m_keys_pos]
-    ego = _safe_float(attrs.get("M_Ego"), 55.0)
-    ego_inv = 100.0 - ego
-    out["character"] = _clamp100(_mean(m_pos + [ego_inv], default=60.0))
-
-    # Ensure all known axes exist (fallback to 50)
-    for k in AXES.keys():
-        if k not in out:
-            out[k] = 50.0
-    return out
+SIGNAL_KEYS = set(SIGNALS.keys())
 
 
 # -----------------------------------------------------------------------------
@@ -545,44 +299,18 @@ def _compute_true_axis_values(*, ovr: int, attrs: Mapping[str, Any]) -> Dict[str
 # -----------------------------------------------------------------------------
 
 
-def _grade_from_0_100(v: float) -> str:
-    x = float(v)
-    if x >= 90:
-        return "A+"
-    if x >= 85:
-        return "A"
-    if x >= 80:
-        return "A-"
-    if x >= 75:
-        return "B+"
-    if x >= 70:
-        return "B"
-    if x >= 65:
-        return "B-"
-    if x >= 60:
-        return "C+"
-    if x >= 55:
-        return "C"
-    if x >= 50:
-        return "C-"
-    if x >= 45:
-        return "D+"
-    if x >= 40:
-        return "D"
-    return "F"
-
-
-def _confidence_from_sigma(sigma: float) -> str:
-    s = float(sigma)
-    if s <= 5.0:
-        return "high"
-    if s <= 9.0:
-        return "medium"
-    return "low"
-
-
 def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
-    """Return scout templates used by ensure_scouts_seeded()."""
+    """Return scout templates used by ensure_scouts_seeded().
+
+    These templates define:
+      - which *signals* each scout focuses on (focus_axes)
+      - how quickly they learn each signal (learn_rate_by_axis)
+      - how noisy their observations are (acc_mult_by_axis)
+      - systematic bias (bias_offset_by_axis + conditional bias_rules)
+
+    IMPORTANT: We intentionally keep scout assignment mechanics unchanged.
+               Only the measurement axes/signals are replaced in v2.
+    """
     n = int(scouts_per_team)
     if n <= 0:
         return []
@@ -592,152 +320,170 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
         {
             "specialty_key": "ATHLETICS",
             "display_name": "Tools Scout",
-            "focus_axes": ["athleticism", "finishing"],
-            "style_tags": ["practical", "tools-focused", "concise"],
-            "acc": {"athleticism": 0.70, "finishing": 0.85},
-            "learn": {"athleticism": 1.50, "finishing": 1.10},
-            "bias": {"shooting": -2.0},
+            "focus_axes": ["downhill_pressure", "glass_physicality", "motor_compete"],
+            "style_tags": ["practical", "tools-focused", "contact"],
+            "acc": {
+                "downhill_pressure": 0.75,
+                "glass_physicality": 0.85,
+                "motor_compete": 0.70,
+            },
+            "learn": {
+                "downhill_pressure": 1.25,
+                "glass_physicality": 1.05,
+                "motor_compete": 0.90,
+            },
+            "bias": {
+                "space_bending": -1.0,
+            },
             "bias_rules": [
                 {
-                    "name": "small_guard_tools_skeptic",
+                    "name": "small_guard_contact_skeptic",
                     "when": {"pos_bucket": ["G"], "height_in_max": 73},
-                    "axis_delta": {"overall": -1.0, "defense": -1.5},
+                    "axis_delta": {"glass_physicality": -1.0, "downhill_pressure": -0.5},
                 },
                 {
                     "name": "big_wing_tools_hype",
                     "when": {"pos_bucket": ["W"], "height_in_min": 79},
-                    "axis_delta": {"athleticism": 1.5, "upside": 1.0},
+                    "axis_delta": {"glass_physicality": 1.0, "downhill_pressure": 0.5, "runway": 0.5},
                 },
                 {
-                    "name": "older_prospect_upside_discount",
+                    "name": "older_runway_discount",
                     "when": {"age_min": 22},
-                    "axis_delta": {"upside": -2.0},
+                    "axis_delta": {"runway": -2.0},
                 },
             ],
         },
         {
             "specialty_key": "SHOOTING",
             "display_name": "Shooting Specialist",
-            "focus_axes": ["shooting"],
-            "style_tags": ["detail-oriented", "shot-mechanics", "range"],
-            "acc": {"shooting": 0.70},
-            "learn": {"shooting": 1.60},
-            "bias": {"defense": -2.0},
+            "focus_axes": ["space_bending", "shotmaking_complexity"],
+            "style_tags": ["mechanics", "detail", "range"],
+            "acc": {"space_bending": 0.75, "shotmaking_complexity": 0.65},
+            "learn": {"space_bending": 1.40, "shotmaking_complexity": 1.20},
+            "bias": {"team_defense_rim_support": -1.0},
             "bias_rules": [
                 {
-                    "name": "bigs_shooting_skepticism",
+                    "name": "big_shooter_skeptic",
                     "when": {"pos_bucket": ["B"]},
-                    "axis_delta": {"shooting": -2.0},
+                    "axis_delta": {"space_bending": -1.5},
                 },
                 {
-                    "name": "guards_range_credit",
+                    "name": "guard_range_credit",
                     "when": {"pos_bucket": ["G"]},
-                    "axis_delta": {"shooting": 0.8},
+                    "axis_delta": {"shotmaking_complexity": 0.6},
                 },
             ],
         },
         {
             "specialty_key": "DEFENSE",
             "display_name": "Defense Scout",
-            "focus_axes": ["defense", "rebounding"],
+            "focus_axes": ["perimeter_containment", "team_defense_rim_support", "defensive_playmaking"],
             "style_tags": ["defense-first", "scheme", "matchups"],
-            "acc": {"defense": 0.75, "rebounding": 0.85},
-            "learn": {"defense": 1.35, "rebounding": 1.10},
-            "bias": {"shooting": -1.5},
+            "acc": {
+                "perimeter_containment": 0.75,
+                "team_defense_rim_support": 0.65,
+                "defensive_playmaking": 0.75,
+            },
+            "learn": {
+                "perimeter_containment": 1.25,
+                "team_defense_rim_support": 1.15,
+                "defensive_playmaking": 1.05,
+            },
+            "bias": {"shotmaking_complexity": -0.8},
             "bias_rules": [
                 {
                     "name": "small_guard_defense_skeptic",
                     "when": {"pos_bucket": ["G"], "height_in_max": 73},
-                    "axis_delta": {"defense": -2.0},
+                    "axis_delta": {"perimeter_containment": -1.5},
                 },
                 {
                     "name": "true_rim_size_hype",
                     "when": {"pos_bucket": ["B"], "height_in_min": 82},
-                    "axis_delta": {"defense": 1.2, "rebounding": 1.0},
+                    "axis_delta": {"team_defense_rim_support": 1.2, "glass_physicality": 0.6},
                 },
             ],
         },
         {
             "specialty_key": "PLAYMAKING",
             "display_name": "Playmaking Scout",
-            "focus_axes": ["playmaking"],
+            "focus_axes": ["playmaking_engine", "processing_safety"],
             "style_tags": ["processing", "reads", "decision-making"],
-            "acc": {"playmaking": 0.75},
-            "learn": {"playmaking": 1.45},
-            "bias": {"finishing": -1.0},
+            "acc": {"playmaking_engine": 0.75, "processing_safety": 0.70},
+            "learn": {"playmaking_engine": 1.35, "processing_safety": 1.15},
+            "bias": {"downhill_pressure": -0.5},
             "bias_rules": [
                 {
-                    "name": "bigs_playmaking_skepticism",
+                    "name": "big_playmaking_skeptic",
                     "when": {"pos_bucket": ["B"]},
-                    "axis_delta": {"playmaking": -1.5},
+                    "axis_delta": {"playmaking_engine": -1.0},
                 },
                 {
                     "name": "pg_processing_credit",
                     "when": {"pos_in": ["PG"]},
-                    "axis_delta": {"playmaking": 1.0},
+                    "axis_delta": {"playmaking_engine": 1.0, "processing_safety": 0.8},
                 },
             ],
         },
         {
             "specialty_key": "MEDICAL",
-            "display_name": "Medical Scout",
-            "focus_axes": ["durability"],
-            "style_tags": ["risk", "medical", "availability"],
-            "acc": {"durability": 0.85},
-            "learn": {"durability": 0.75},
-            "bias": {"durability": -2.0},  # conservative by default
+            "display_name": "Risk Scout",
+            "focus_axes": ["motor_compete"],
+            "style_tags": ["risk", "availability", "conservative"],
+            "acc": {"motor_compete": 0.90},
+            "learn": {"motor_compete": 0.70},
+            "bias": {"motor_compete": -1.5},
             "bias_rules": [
                 {
-                    "name": "heavy_body_durability_risk",
+                    "name": "heavy_body_mileage_skeptic",
                     "when": {"weight_lb_min": 255},
-                    "axis_delta": {"durability": -1.5},
+                    "axis_delta": {"motor_compete": -1.0, "glass_physicality": -0.5},
                 },
                 {
-                    "name": "older_mileage_assumption",
+                    "name": "older_mileage_skeptic",
                     "when": {"age_min": 22},
-                    "axis_delta": {"durability": -1.0},
+                    "axis_delta": {"motor_compete": -0.8},
                 },
             ],
         },
         {
             "specialty_key": "CHARACTER",
-            "display_name": "Character Scout",
-            "focus_axes": ["character"],
-            "style_tags": ["locker-room", "coachability", "intangibles"],
-            "acc": {"character": 0.90},
-            "learn": {"character": 0.65},
-            "bias": {"character": -1.0},
+            "display_name": "Intangibles Scout",
+            "focus_axes": ["runway", "motor_compete"],
+            "style_tags": ["intangibles", "coachability", "context"],
+            "acc": {"runway": 0.85, "motor_compete": 0.80},
+            "learn": {"runway": 0.65, "motor_compete": 0.80},
+            "bias": {},
             "bias_rules": [
                 {
                     "name": "upperclass_maturity_bump",
                     "when": {"class_year_min": 3},
-                    "axis_delta": {"character": 1.0},
+                    "axis_delta": {"processing_safety": 0.6, "motor_compete": 0.5, "runway": -0.5},
                 },
                 {
                     "name": "freshman_unknown_penalty",
                     "when": {"class_year_max": 1},
-                    "axis_delta": {"character": -1.5},
+                    "axis_delta": {"motor_compete": -0.5},
                 },
             ],
         },
         {
             "specialty_key": "ANALYTICS",
             "display_name": "Analytics Scout",
-            "focus_axes": ["overall", "upside"],
-            "style_tags": ["projection", "probabilistic", "context"],
-            "acc": {"overall": 0.85, "upside": 0.85},
-            "learn": {"overall": 1.00, "upside": 0.85},
-            "bias": {"athleticism": -1.0},
+            "focus_axes": ["space_bending", "processing_safety", "runway"],
+            "style_tags": ["projection", "context", "probabilistic"],
+            "acc": {"space_bending": 0.95, "processing_safety": 0.90, "runway": 0.90},
+            "learn": {"space_bending": 1.00, "processing_safety": 0.95, "runway": 0.85},
+            "bias": {"shotmaking_complexity": -0.8},
             "bias_rules": [
-                {
-                    "name": "older_upside_discount",
-                    "when": {"age_min": 22},
-                    "axis_delta": {"upside": -2.0},
-                },
                 {
                     "name": "young_upside_credit",
                     "when": {"age_max": 20},
-                    "axis_delta": {"upside": 1.5},
+                    "axis_delta": {"runway": 1.5},
+                },
+                {
+                    "name": "older_runway_discount",
+                    "when": {"age_min": 22},
+                    "axis_delta": {"runway": -2.0},
                 },
             ],
         },
@@ -756,10 +502,10 @@ def _default_scout_templates(*, scouts_per_team: int) -> List[Dict[str, Any]]:
             {
                 "specialty_key": f"GENERAL_{j+1}",
                 "display_name": "Regional Scout",
-                "focus_axes": ["overall", "shooting", "defense"],
+                "focus_axes": ["space_bending", "perimeter_containment", "runway"],
                 "style_tags": ["generalist"],
-                "acc": {"overall": 1.00, "shooting": 1.00, "defense": 1.00},
-                "learn": {"overall": 0.90, "shooting": 0.90, "defense": 0.90},
+                "acc": {"space_bending": 1.00, "perimeter_containment": 1.00, "runway": 1.00},
+                "learn": {"space_bending": 0.90, "perimeter_containment": 0.90, "runway": 0.90},
                 "bias": {},
                 "bias_rules": [],
             }
@@ -812,14 +558,18 @@ def ensure_scouts_seeded(
                     if row:
                         existing += 1
 
-                        # Non-destructive profile upgrades: add new keys if missing.
+                        # Profile upgrade policy:
+                        # - If the existing profile is from v1/v0 (schema_version < 3),
+                        #   we hard-upgrade the tuning fields to the v2 signal system.
+                        # - If schema_version >= 3, we keep a non-destructive policy
+                        #   (only fill missing keys), so manual edits remain intact.
                         cur_profile = _json_loads(row[0], default={})
                         if not isinstance(cur_profile, dict):
                             cur_profile = {}
 
                         # Desired defaults (only applied when the key is missing)
-                        defaults = {
-                            "schema_version": 2,
+                        desired = {
+                            "schema_version": 3,
                             "specialty_key": specialty_key,
                             "focus_axes": list(t.get("focus_axes") or []),
                             "acc_mult_by_axis": dict(t.get("acc") or {}),
@@ -831,19 +581,22 @@ def ensure_scouts_seeded(
                         }
 
                         patched = False
-                        for k, dv in defaults.items():
-                            if k not in cur_profile:
-                                cur_profile[k] = dv
-                                patched = True
-
-                        # Schema bump (only forward)
                         try:
                             cur_sv = int(cur_profile.get("schema_version") or 0)
                         except Exception:
                             cur_sv = 0
-                        if cur_sv < 2:
-                            cur_profile["schema_version"] = 2
+
+                        if cur_sv < 3:
+                            # Hard upgrade: replace tuning fields to match new signals.
+                            for k, dv in desired.items():
+                                cur_profile[k] = dv
                             patched = True
+                        else:
+                            # Non-destructive: only fill missing keys.
+                            for k, dv in desired.items():
+                                if k not in cur_profile:
+                                    cur_profile[k] = dv
+                                    patched = True
 
                         if patched:
                             cur.execute(
@@ -854,7 +607,7 @@ def ensure_scouts_seeded(
                         continue
 
                     profile = {
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "specialty_key": specialty_key,
                         "focus_axes": list(t.get("focus_axes") or []),
                         "acc_mult_by_axis": dict(t.get("acc") or {}),
@@ -935,7 +688,7 @@ def _kalman_update(*, mu: float, sigma: float, z: float, meas_sigma: float, sigm
 
 def _effective_meas_sigma(
     *,
-    axis: AxisDef,
+    axis: SignalDef,
     base_days: int,
     acc_mult: float,
     learn_rate: float,
@@ -1075,6 +828,25 @@ def run_monthly_scouting_checkpoints(
                     progress = _json_loads(r[7], default={})
                     if not isinstance(progress, dict):
                         progress = {}
+
+                    # Progress schema upgrade:
+                    #   - v1 stored per-axis state under "axes" (legacy).
+                    #   - v2 stores per-signal state under "signals".
+                    # We intentionally do NOT attempt to translate legacy axes into new signals.
+                    # Instead we reset the signal state when upgrading.
+                    try:
+                        psv = int(progress.get("schema_version") or 0)
+                    except Exception:
+                        psv = 0
+                    if psv < 2:
+                        progress = {
+                            "schema_version": 2,
+                            "signals": {},
+                            "last_obs_date": progress.get("last_obs_date"),
+                            "total_obs_days": progress.get("total_obs_days") or 0,
+                        }
+                    if not isinstance(progress.get("signals"), dict):
+                        progress["signals"] = {}
 
                     # Date gating
                     try:
@@ -1242,78 +1014,111 @@ def run_monthly_scouting_checkpoints(
                         skipped_no_days += 1
                         continue
 
-                    # Compute true axes
-                    true_axes = _compute_true_axis_values(ovr=p_ovr, attrs=p_attrs)
+                    # Compute true signals (attrs + college production)
+                    # NOTE: derived metrics are gameplay-oriented; college stats add context and reliability.
+                    derived: Dict[str, float] = {}
+                    if compute_derived is not None:
+                        try:
+                            derived = compute_derived(dict(p_attrs)) or {}
+                        except Exception:
+                            derived = {}
 
-                    # Prepare/update progress axes state
-                    axes_state = progress.get("axes")
-                    if not isinstance(axes_state, dict):
-                        axes_state = {}
+                    # Load current season college stats (if available)
+                    stats = {}
+                    try:
+                        srow2 = cur.execute(
+                            """
+                            SELECT stats_json
+                            FROM college_player_season_stats
+                            WHERE season_year=? AND player_id=?
+                            LIMIT 1;
+                            """,
+                            (int(season_year), str(player_id)),
+                        ).fetchone()
+                        if srow2:
+                            stats = _json_loads(srow2[0], default={}) or {}
+                    except Exception:
+                        stats = {}
+                    if not isinstance(stats, dict):
+                        stats = {}
 
-                    updated_axes: Dict[str, Any] = {}
-                    report_estimates: Dict[str, Any] = {}
+                    ctx = {
+                        "pos": p_pos,
+                        "pos_bucket": _pos_bucket(p_pos),
+                        "height_in": int(p_h),
+                        "weight_lb": int(p_w),
+                        "age": int(p_age),
+                        "class_year": int(p_class),
+                    }
 
-                    # Which axes this scout reports on (focus only).
-                    # NOTE: you can expand later to include "secondary" axes.
-                    axes_to_update: List[str] = []
+                    true_signals, prod_scores = compute_true_signals(
+                        ovr=int(p_ovr),
+                        attrs=p_attrs,
+                        derived=derived,
+                        college_stats=stats,
+                        context=ctx,
+                    )
+
+                    # Prepare/update progress signal state
+                    signals_state = progress.get("signals")
+                    if not isinstance(signals_state, dict):
+                        signals_state = {}
+
+                    updated_signals: Dict[str, Any] = {}
+                    signals_payload: List[Dict[str, Any]] = []
+
+                    # Which signals this scout reports on (focus only).
+                    signals_to_update: List[str] = []
                     for ax in focus_axes:
                         k = str(ax)
-                        if k in AXES and k not in axes_to_update:
-                            axes_to_update.append(k)
+                        if k in SIGNAL_KEYS and k not in signals_to_update:
+                            signals_to_update.append(k)
 
-                    # As a small baseline, analytics scouts (and only them) also report "overall" and "upside".
-                    # Other scouts may have focus without overall.
+                    # Analytics scouts add a small baseline set (scouting translation signals).
                     if str(specialty_key).upper() == "ANALYTICS":
-                        for k in ("overall", "upside"):
-                            if k in AXES and k not in axes_to_update:
-                                axes_to_update.append(k)
+                        for k in ("space_bending", "processing_safety", "runway"):
+                            if k in SIGNAL_KEYS and k not in signals_to_update:
+                                signals_to_update.append(k)
 
-                    # If still empty, default to overall.
-                    if not axes_to_update:
-                        axes_to_update = ["overall"]
+                    # If still empty (e.g., legacy scout profiles), default to runway so the report isn't blank.
+                    if not signals_to_update:
+                        signals_to_update = ["runway"]
 
-                    for axis_key in axes_to_update:
-                        axis_def = AXES.get(axis_key)
-                        if not axis_def:
+                    for signal_key in signals_to_update:
+                        sig_def = SIGNALS.get(signal_key)
+                        if not sig_def:
                             continue
 
-                        st = axes_state.get(axis_key)
+                        st = signals_state.get(signal_key)
                         if not isinstance(st, dict):
                             st = {}
                         mu0 = _safe_float(st.get("mu"), 50.0)
-                        sigma0 = _safe_float(st.get("sigma"), axis_def.init_sigma)
+                        sigma0 = _safe_float(st.get("sigma"), sig_def.init_sigma)
 
-                        true_v = _safe_float(true_axes.get(axis_key), 50.0)
-                        base_bias = _safe_float(bias_offset_by_axis.get(axis_key), 0.0)
-                        ctx = {
-                            "pos": p_pos,
-                            "pos_bucket": _pos_bucket(p_pos),
-                            "height_in": int(p_h),
-                            "weight_lb": int(p_w),
-                            "age": int(p_age),
-                            "class_year": int(p_class),
-                        }
+                        true_v = _safe_float(true_signals.get(signal_key), 50.0)
+
+                        base_bias = _safe_float(bias_offset_by_axis.get(signal_key), 0.0)
                         bias = base_bias + _bias_delta_from_rules(
                             bias_rules=bias_rules,
                             ctx=ctx,
-                            axis_key=axis_key,
+                            axis_key=signal_key,
                             scout_id=scout_id,
                             player_id=player_id,
                             period_key=pk,
                         )
 
-                        acc_mult = _safe_float(acc_mult_by_axis.get(axis_key), 1.0)
-                        learn = _safe_float(learn_rate_by_axis.get(axis_key), 1.0)
+                        acc_mult = _safe_float(acc_mult_by_axis.get(signal_key), 1.0)
+                        learn = _safe_float(learn_rate_by_axis.get(signal_key), 1.0)
 
                         meas_sigma = _effective_meas_sigma(
-                            axis=axis_def,
+                            axis=sig_def,
                             base_days=days_covered,
                             acc_mult=acc_mult,
                             learn_rate=learn,
                         )
 
-                        # Deterministic observation noise (seeded per axis / month / scout / player)
-                        rng = random.Random(_stable_seed("scout_obs", scout_id, player_id, pk, axis_key))
+                        # Deterministic observation noise (seeded per signal / month / scout / player)
+                        rng = random.Random(_stable_seed("scout_obs", scout_id, player_id, pk, signal_key))
                         z = true_v + bias + rng.gauss(0.0, meas_sigma)
                         z = _clamp100(z)
 
@@ -1322,37 +1127,112 @@ def run_monthly_scouting_checkpoints(
                             sigma=sigma0,
                             z=z,
                             meas_sigma=meas_sigma,
-                            sigma_floor=axis_def.sigma_floor,
+                            sigma_floor=sig_def.sigma_floor,
                         )
 
-                        updated_axes[axis_key] = {
+                        updated_signals[signal_key] = {
                             "mu": float(round(mu1, 2)),
                             "sigma": float(round(sigma1, 2)),
                             "last_meas_sigma": float(round(meas_sigma, 2)),
                         }
-                        report_estimates[axis_key] = {
-                            "label": axis_def.label,
-                            "value_est": float(round(mu1, 1)),
-                            "sigma": float(round(sigma1, 1)),
-                            "confidence": _confidence_from_sigma(sigma1),
-                            "grade": _grade_from_0_100(mu1),
-                            "range_2sigma": [
-                                float(round(_clamp100(mu1 - 2.0 * sigma1), 1)),
-                                float(round(_clamp100(mu1 + 2.0 * sigma1), 1)),
-                            ],
-                        }
+
+                        tier = tier_from_mu(mu1)
+                        conf = confidence_from_sigma(sigma1)
+                        range_text = range_text_from_mu_sigma(mu1, sigma1)
+
+                        evidence_tags = build_evidence_tags(
+                            axis=signal_key,
+                            estimate_mu=mu1,
+                            estimate_sigma=sigma1,
+                            prod_score=float(_safe_float(prod_scores.get(signal_key), 50.0)),
+                            derived=derived,
+                            attrs=p_attrs,
+                            stats=stats,
+                            context=ctx,
+                        )
+
+                        signals_payload.append(
+                            {
+                                "key": signal_key,
+                                "label": sig_def.label,
+                                "group": sig_def.group,
+                                "tier": tier,
+                                "confidence": conf,
+                                "range_text": range_text,
+                                "evidence_tags": evidence_tags,
+                            }
+                        )
 
                     # Update progress JSON
-                    axes_state.update(updated_axes)
-                    progress["axes"] = axes_state
+                    signals_state.update(updated_signals)
+                    progress["signals"] = signals_state
+                    progress["schema_version"] = 2
                     progress["last_obs_date"] = as_of
                     progress["total_obs_days"] = int(_safe_float(progress.get("total_obs_days"), 0.0) + days_covered)
                     progress["updated_at"] = now
 
+                    # College context summary (for grounded LLM writing)
+                    stat_weight = compute_stat_weight(
+                        games=int(_safe_float(stats.get("games"), 0.0)),
+                        mpg=float(_safe_float(stats.get("mpg"), 0.0)),
+                    )
+                    college_context = {
+                        "season_year": int(season_year),
+                        "college_team_id": str(p_team),
+                        "games": int(_safe_float(stats.get("games"), 0.0)),
+                        "mpg": float(_safe_float(stats.get("mpg"), 0.0)),
+                        "pts": float(_safe_float(stats.get("pts"), 0.0)),
+                        "reb": float(_safe_float(stats.get("reb"), 0.0)),
+                        "ast": float(_safe_float(stats.get("ast"), 0.0)),
+                        "stl": float(_safe_float(stats.get("stl"), 0.0)),
+                        "blk": float(_safe_float(stats.get("blk"), 0.0)),
+                        "tov": float(_safe_float(stats.get("tov"), 0.0)),
+                        "pf": float(_safe_float(stats.get("pf"), 0.0)),
+                        "tp_pct": float(_safe_float(stats.get("tp_pct"), 0.0)),
+                        "ft_pct": float(_safe_float(stats.get("ft_pct"), 0.0)),
+                        "ts_pct": float(_safe_float(stats.get("ts_pct"), 0.0)),
+                        "usg": float(_safe_float(stats.get("usg"), 0.0)),
+                        "pace": float(_safe_float(stats.get("pace"), 70.0)),
+                        "stat_weight": float(round(stat_weight, 3)),
+                        "notes": derive_college_notes(stats=stats),
+                    }
+
+                    college_context["stat_line"] = (
+                        f"{num_str(college_context['pts'])}P / {num_str(college_context['reb'])}R / {num_str(college_context['ast'])}A, "
+                        f"3P {pct_str(college_context['tp_pct'])}, FT {pct_str(college_context['ft_pct'])}, "
+                        f"TS {pct_str(college_context['ts_pct'])}, USG {num_str(college_context['usg']*100.0, digits=1)}%"
+                    )
+
+                    # Delta vs previous report (tier/confidence only)
+                    prev_signals = None
+                    try:
+                        prev_row = cur.execute(
+                            """
+                            SELECT payload_json
+                            FROM scouting_reports
+                            WHERE assignment_id=? AND as_of_date < ?
+                            ORDER BY as_of_date DESC
+                            LIMIT 1;
+                            """,
+                            (assignment_id, as_of),
+                        ).fetchone()
+                        if prev_row:
+                            prev_payload = _json_loads(prev_row[0], default={}) or {}
+                            if isinstance(prev_payload, dict):
+                                ps = prev_payload.get("signals")
+                                if isinstance(ps, list):
+                                    prev_signals = ps
+                    except Exception:
+                        prev_signals = None
+
+                    delta_since_last = build_delta_since_last(prev_signals=prev_signals, curr_signals=signals_payload)
+                    profile_tags = build_profile_tags(signal_summaries=signals_payload)
+                    watchlist_questions = build_watchlist_questions(signals_payload=signals_payload, limit=3)
+
                     # Build structured payload for LLM (text generation happens at month-end checkpoint)
                     payload = {
-                        "schema_version": 1,
-                        "method": "kalman_v1",
+                        "schema_version": 2,
+                        "method": "kalman_signals_v2",
                         "period_key": pk,
                         "as_of_date": as_of,
                         "days_covered": int(days_covered),
@@ -1361,7 +1241,7 @@ def run_monthly_scouting_checkpoints(
                             "display_name": scout_name,
                             "specialty_key": specialty_key,
                             "style_tags": style_tags,
-                            "focus_axes": list(axes_to_update),
+                            "focus_signals": list(signals_to_update),
                         },
                         "player": {
                             "player_id": str(player_id),
@@ -1375,12 +1255,15 @@ def run_monthly_scouting_checkpoints(
                             "entry_season_year": int(p_entry_sy),
                             "status": p_status,
                         },
-                        "estimates": report_estimates,
+                        "college_context": college_context,
+                        "signals": signals_payload,
+                        "profile_tags": profile_tags,
+                        "watchlist_questions": watchlist_questions,
+                        "delta_since_last": delta_since_last,
                         "meta": {
-                            "bias_note": "Scout reports include systematic biases; confidence indicates uncertainty, not correctness.",
+                            "note": "Scouting signals include systematic biases; confidence reflects uncertainty, not correctness.",
                         },
                     }
-
                     report_id = f"SREP_{assignment_id}_{pk}"
 
                     cur.execute(
