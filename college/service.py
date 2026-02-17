@@ -11,7 +11,7 @@ from league_repo import LeagueRepo
 from ratings_2k import validate_attrs
 
 from . import config
-from .declarations import declare_probability
+from .declarations import declare_probability, estimate_draft_score
 from .generation import build_college_teams, generate_initial_world_players, generate_players_for_team_class, sample_class_strength
 from .names import build_used_name_keys
 from .sim import simulate_college_season
@@ -460,6 +460,48 @@ def _load_teams(repo: LeagueRepo) -> List[CollegeTeam]:
     return teams
 
 
+
+def _compute_relative_draft_ranks(
+    *,
+    players: Sequence[CollegePlayer],
+    stats_by_pid: Dict[str, CollegeSeasonStats],
+    class_strength: float,
+) -> Tuple[Dict[str, int], int]:
+    """Compute eligible-pool relative ranks for draft declaration logic.
+
+    Returns:
+      - rank_by_pid: player_id -> 1..N rank within eligible pool (lower is better)
+      - eligible_count: N
+
+    Deterministic:
+      - Sort by (-draft_score, player_id) to break ties stably.
+    """
+    scored: List[Tuple[str, float]] = []
+    for p in players:
+        if int(p.age) < config.MIN_DRAFT_ELIGIBLE_AGE:
+            continue
+        potential_grade = str(p.attrs.get("Potential") or "C-")
+        season_stats = stats_by_pid.get(p.player_id)
+
+        score = estimate_draft_score(
+            ovr=int(p.ovr),
+            age=int(p.age),
+            class_year=int(p.class_year),
+            potential_grade=potential_grade,
+            season_stats=season_stats,
+            class_strength=float(class_strength),
+        )
+        scored.append((str(p.player_id), float(score)))
+
+    scored.sort(key=lambda t: (-float(t[1]), str(t[0])))
+
+    rank_by_pid: Dict[str, int] = {}
+    for i, (pid, _score) in enumerate(scored):
+        rank_by_pid[str(pid)] = int(i + 1)
+
+    return rank_by_pid, int(len(scored))
+
+
 def finalize_season_and_generate_entries(db_path: str, season_year: int, draft_year: int) -> None:
     """
     1) Simulate college season stats for season_year (fast)
@@ -553,6 +595,13 @@ def finalize_season_and_generate_entries(db_path: str, season_year: int, draft_y
                 d = {}
             stats_by_pid[str(pid)] = CollegeSeasonStats(**d)
 
+        # Compute relative draft ranks (eligible pool) for declaration logic (P0-2 fix)
+        rank_by_pid, eligible_n = _compute_relative_draft_ranks(
+            players=players,
+            stats_by_pid=stats_by_pid,
+            class_strength=float(strength),
+        )
+
         # Decide declarations
         now = game_time.now_utc_like_iso()
         declared: List[DraftEntryDecisionTrace] = []
@@ -564,6 +613,11 @@ def finalize_season_and_generate_entries(db_path: str, season_year: int, draft_y
 
             potential_grade = str(p.attrs.get("Potential") or "C-")
             season_stats = stats_by_pid.get(p.player_id)
+
+            rank = rank_by_pid.get(p.player_id)
+            if rank is None:
+                # Defensive: should not happen if eligibility gate and rank computation match.
+                continue
 
             # stable per-player RNG for reproducibility
             rng = random.Random(_stable_seed("declare", dy, p.player_id))
@@ -578,7 +632,8 @@ def finalize_season_and_generate_entries(db_path: str, season_year: int, draft_y
                 potential_grade=potential_grade,
                 season_stats=season_stats,
                 class_strength=float(strength),
-                projected_pick=None,
+                projected_pick=int(rank),
+                eligible_pool_size=int(eligible_n),
             )
             if trace.declared:
                 declared.append(trace)
@@ -1091,6 +1146,13 @@ def recompute_draft_watch_run(
 
         players = _load_active_players(repo)
 
+        # Compute relative draft ranks (eligible pool) for this watch run (P0-2 fix)
+        rank_by_pid, eligible_n = _compute_relative_draft_ranks(
+            players=players,
+            stats_by_pid=stats_by_pid,
+            class_strength=float(strength),
+        )
+
         written = 0
         # Persist run + probabilities
         with repo.transaction() as cur:
@@ -1123,6 +1185,11 @@ def recompute_draft_watch_run(
                 potential_grade = str(p.attrs.get("Potential") or "C-")
                 season_stats = stats_by_pid.get(p.player_id)
 
+                rank = rank_by_pid.get(p.player_id)
+                if rank is None:
+                    # Defensive: should not happen if eligibility gate and rank computation match.
+                    continue
+
                 # Stable per-run RNG for reproducibility
                 rng = random.Random(_stable_seed("draft_watch", run_id, p.player_id))
 
@@ -1136,7 +1203,8 @@ def recompute_draft_watch_run(
                     potential_grade=potential_grade,
                     season_stats=season_stats,
                     class_strength=float(strength),
-                    projected_pick=None,
+                    projected_pick=int(rank),
+                    eligible_pool_size=int(eligible_n),
                 )
 
                 cur.execute(

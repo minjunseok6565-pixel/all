@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Optional, Tuple
+from typing import Optional
 
 from .types import CollegeSeasonStats, DraftEntryDecisionTrace
 from ratings_2k import potential_grade_to_scalar
@@ -19,8 +19,76 @@ def _potential_points_from_grade(grade: str) -> int:
     x = float(_clamp(x, 60.0, 97.0))
     return int(round(x))
 
+
 def _sigmoid(x: float) -> float:
+    """Numerically-stable sigmoid.
+
+    NOTE: We clamp x because some declare-model helper computations use rank values that
+    can be in the thousands (large eligible pool). Without clamping, math.exp() can
+    overflow for very negative x.
+    """
+    x = float(_clamp(float(x), -20.0, 20.0))
     return 1.0 / (1.0 + math.exp(-x))
+
+
+def estimate_draft_score(
+    *,
+    ovr: int,
+    age: int,
+    class_year: int,
+    potential_grade: str,
+    season_stats: Optional[CollegeSeasonStats],
+    class_strength: float,
+) -> float:
+    """Internal draft stock score (higher is better).
+
+    IMPORTANT:
+    - This score is designed to be *ranked within the eligible pool*.
+    - It is NOT a pick number and should not be mapped to an absolute 1..N pick by a
+      fixed formula (that causes structural inflation when the eligible pool grows).
+
+    We keep this intentionally compact and stable so that:
+    - OVR / upside (potential) are primary drivers
+    - production (season stats) matters but is reliability-scaled in early snapshots
+    - younger prospects get a bonus
+
+    `class_strength` is included for backwards compatibility / tuning, but it is a
+    constant for a given draft year and does NOT affect ranking.
+    """
+
+    prod = 0.0
+    prod_rel = 1.0
+    if season_stats:
+        # A compact "production score" with diminishing returns
+        prod = 0.35 * season_stats.pts + 0.18 * season_stats.reb + 0.22 * season_stats.ast
+        prod += 6.0 * (season_stats.ts_pct - 0.52)
+        prod += 3.0 * (season_stats.usg - 0.18)
+        prod = float(_clamp(prod, -8.0, 22.0))
+
+        # Reliability scaling for in-season snapshots:
+        # early months (few games) should not swing *ranking* too hard.
+        try:
+            g = int(season_stats.games)
+        except Exception:
+            g = 0
+        prod_rel = float(_clamp((float(g) / 20.0), 0.25, 1.0))
+        prod = float(prod) * float(prod_rel)
+
+    # NBA preference: younger + upside (potential) matters
+    potential = _potential_points_from_grade(str(potential_grade))
+    youth_bonus = float(_clamp(21 - age, -2.0, 3.0))  # younger => positive
+    class_penalty = 0.45 * (class_year - 1)  # mild preference toward younger classes
+
+    score = (
+        1.00 * (ovr - 60)
+        + 0.55 * (potential - 70)
+        + 0.60 * prod
+        + 1.10 * youth_bonus
+        - 0.40 * class_penalty
+        + 2.0 * class_strength
+    )
+
+    return float(score)
 
 
 def estimate_projected_pick(
@@ -32,37 +100,32 @@ def estimate_projected_pick(
     season_stats: Optional[CollegeSeasonStats],
     class_strength: float,
 ) -> int:
-    """
-    Rough internal projection -> pick number.
-    Returns 1..90 ( >60 implies undrafted risk).
-    This is used ONLY for declare decision (not for actual draft order).
-    """
-    prod = 0.0
-    if season_stats:
-        # A compact "production score" with diminishing returns
-        prod = 0.35 * season_stats.pts + 0.18 * season_stats.reb + 0.22 * season_stats.ast
-        prod += 6.0 * (season_stats.ts_pct - 0.52)
-        prod += 3.0 * (season_stats.usg - 0.18)
-        prod = float(_clamp(prod, -8.0, 22.0))
+    """LEGACY: rough internal projection -> pseudo pick number.
 
-    # NBA preference: younger + upside (potential) matters
-    potential = _potential_points_from_grade(str(potential_grade))
-    youth_bonus = float(_clamp(21 - age, -2.0, 3.0))  # younger => positive
-    class_bonus = 0.45 * (class_year - 1)  # older have "need to go" pressure but draft likes youth; we keep small here
+    Returns 1..90 ( >60 implies undrafted risk) using a *fixed mapping*.
 
-    score = (
-        1.00 * (ovr - 60)
-        + 0.55 * (potential - 70)
-        + 0.60 * prod
-        + 1.10 * youth_bonus
-        - 0.40 * class_bonus
-        + 2.0 * class_strength
+    This function is kept only as a backwards-compatible fallback for cases where
+    the eligible pool ranking is not available.
+
+    For high-quality declaration logic, prefer:
+      - compute `estimate_draft_score(...)` for all eligible players
+      - rank them within the pool
+      - pass that rank into declare_probability(projected_pick=rank)
+    """
+
+    score = estimate_draft_score(
+        ovr=ovr,
+        age=age,
+        class_year=class_year,
+        potential_grade=str(potential_grade),
+        season_stats=season_stats,
+        class_strength=class_strength,
     )
 
     # Map score to pick: higher score => lower pick number
     # Tuned so typical good prospects land 10~45 range.
     # We allow >60 as undrafted risk zone.
-    pick = int(round(55 - 0.9 * score))
+    pick = int(round(55 - 0.9 * float(score)))
     pick = int(_clamp(pick, 1, 90))
     return pick
 
@@ -79,16 +142,22 @@ def declare_probability(
     season_stats: Optional[CollegeSeasonStats],
     class_strength: float,
     projected_pick: Optional[int] = None,
+    eligible_pool_size: Optional[int] = None,
 ) -> DraftEntryDecisionTrace:
-    """
-    Compute declare probability with a transparent factor breakdown.
+    """Compute declare probability with a transparent factor breakdown.
 
-    We intentionally separate:
-    - player's desire to declare (age/class pressure)
-    - draft outcome expectation (projected_pick / undrafted risk)
+    IMPORTANT (P0-2 fix):
+    - `projected_pick` should be the player's *rank within the eligible pool*.
+      (1 = best prospect, 60 = fringe draft pick, 61+ = increasingly likely undrafted)
+
+    If `projected_pick` is omitted, we fall back to a legacy absolute mapping.
     """
+
     proj = projected_pick
+    proj_style = "eligible_rank"
     if proj is None:
+        # Backwards-compatible fallback (NOT pool-relative).
+        proj_style = "legacy_absolute_pick"
         proj = estimate_projected_pick(
             ovr=ovr,
             age=age,
@@ -97,6 +166,8 @@ def declare_probability(
             season_stats=season_stats,
             class_strength=class_strength,
         )
+
+    rank = int(proj)
 
     pot_scalar = float(potential_grade_to_scalar(potential_grade))
     potential = _potential_points_from_grade(str(potential_grade))
@@ -129,16 +200,48 @@ def declare_probability(
     comp_class = 0.35 * (class_year - 1)
     comp_strength = 0.35 * class_strength
 
-    # Risk adjustment based on projected pick bucket
-    # - top 30: strongly encouraged
-    # - 31-60: modest encouragement
-    # - >60: discouraged (likely return)
-    if proj <= 30:
-        comp_risk = 1.10
-    elif proj <= 60:
-        comp_risk = 0.25
-    else:
-        comp_risk = -1.35
+    # ------------------------------------------------------------------
+    # Continuous draft outcome expectation (soft bucket membership)
+    # ------------------------------------------------------------------
+    # We model two "soft" membership probabilities driven by *eligible rank*.
+    # These are not meant to be the true probability of being drafted; they are
+    # a smooth approximation used for declaration behavior.
+    #
+    # - p_drafted: membership in "top 60-ish" (draftable)
+    # - p_first_round: membership in "top 30" (1st round)
+    #
+    # NOTE: We intentionally allow a small buffer beyond the hard cut (e.g. 60)
+    # so that fringe prospects (61~70) can still rationally "test" the draft.
+    DRAFT_SLOTS = 60
+    FIRST_ROUND_SLOTS = 30
+
+    # Softness / buffer knobs (tuning targets: stability + NBA-feel)
+    # - drafted cutoff: smoother, modest tail past 60
+    # - first round cutoff: sharper (top 30 is relatively distinct)
+    drafted_buffer = 10.0
+    drafted_k = 3.0
+    first_round_k = 0.20
+
+    p_drafted = float(_sigmoid(((DRAFT_SLOTS + drafted_buffer + 0.5) - float(rank)) / drafted_k))
+    p_first_round = float(_sigmoid(((FIRST_ROUND_SLOTS + 0.5) - float(rank)) / first_round_k))
+    # ensure invariant: first round implies drafted
+    if p_first_round > p_drafted:
+        p_first_round = float(p_drafted)
+
+    # Soft bucket blending using legacy bucket values as anchors:
+    # - top 30: +1.10
+    # - 31-60: +0.25
+    # - >60: -1.35
+    # This preserves prior tuning intuition while making the signal continuous.
+    risk_top30 = 1.10
+    risk_31_60 = 0.25
+    risk_undrafted = -1.35
+
+    comp_risk = (
+        risk_top30 * float(p_first_round)
+        + risk_31_60 * float(p_drafted - p_first_round)
+        + risk_undrafted * float(1.0 - p_drafted)
+    )
 
     # Base bias: most players do NOT declare
     bias = -2.10
@@ -156,7 +259,7 @@ def declare_probability(
         draft_year=int(draft_year),
         declared=bool(declared),
         declare_prob=float(p),
-        projected_pick=int(proj) if proj is not None else None,
+        projected_pick=int(rank) if rank is not None else None,
         factors={
             "bias": bias,
             "ovr": comp_ovr,
@@ -168,13 +271,29 @@ def declare_probability(
             "age": comp_age,
             "class_year": comp_class,
             "class_strength": comp_strength,
-            "risk_bucket": comp_risk,
+            # Continuous draft expectation terms
+            "rank_eligible": int(rank),
+            "eligible_pool_size": int(eligible_pool_size) if eligible_pool_size is not None else None,
+            "p_drafted": float(p_drafted),
+            "p_first_round": float(p_first_round),
+            # kept key name for backward compatibility with existing telemetry tooling
+            "risk_bucket": float(comp_risk),
             # in-season reliability factor (games-based)
             "prod_reliability": float(prod_rel),
             "logit": logit,
         },
         notes={
-            "risk_proj_pick": int(proj),
+            "projected_pick_style": str(proj_style),
+            "draft_slots": int(DRAFT_SLOTS),
+            "first_round_slots": int(FIRST_ROUND_SLOTS),
+            "drafted_buffer": float(drafted_buffer),
+            "drafted_k": float(drafted_k),
+            "first_round_k": float(first_round_k),
+            "risk_anchors": {
+                "top30": float(risk_top30),
+                "31_60": float(risk_31_60),
+                "undrafted": float(risk_undrafted),
+            },
             "prod_score": float(prod),
             "prod_score_raw": float(prod_raw),
             "prod_reliability": float(prod_rel),
