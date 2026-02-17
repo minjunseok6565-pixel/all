@@ -103,10 +103,54 @@ except ImportError:  # pragma: no cover
         ROLE_FIT_CUTS,
     )
 
+
+# -----------------------------
+# Role key SSOT (C13) + legacy compatibility
+# -----------------------------
+try:
+    # Package execution
+    from .offense_roles import (
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_TRANSITION_ENGINE,
+        ROLE_SHOT_CREATOR,
+        ROLE_RIM_PRESSURE,
+        ROLE_SPOTUP_SPACER,
+        ROLE_MOVEMENT_SHOOTER,
+        ROLE_CUTTER_FINISHER,
+        ROLE_CONNECTOR,
+        ROLE_ROLL_MAN,
+        ROLE_SHORTROLL_HUB,
+        ROLE_POP_THREAT,
+        ROLE_POST_ANCHOR,
+        canonical_offense_role,
+        expand_role_keys_for_lookup,
+    )
+except ImportError:  # pragma: no cover
+    # Script / flat-module execution
+    from offense_roles import (  # type: ignore
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_TRANSITION_ENGINE,
+        ROLE_SHOT_CREATOR,
+        ROLE_RIM_PRESSURE,
+        ROLE_SPOTUP_SPACER,
+        ROLE_MOVEMENT_SHOOTER,
+        ROLE_CUTTER_FINISHER,
+        ROLE_CONNECTOR,
+        ROLE_ROLL_MAN,
+        ROLE_SHORTROLL_HUB,
+        ROLE_POP_THREAT,
+        ROLE_POST_ANCHOR,
+        canonical_offense_role,
+        expand_role_keys_for_lookup,
+    )
+
 # -----------------------------
 # Fit score / grade
 # -----------------------------
 def role_fit_score(player: Player, role: str) -> float:
+    role = canonical_offense_role(role)
     w = ROLE_FIT_WEIGHTS.get(role)
     if not w:
         return 50.0
@@ -122,6 +166,7 @@ def role_fit_score(player: Player, role: str) -> float:
 
 
 def role_fit_grade(role: str, fit: float) -> str:
+    role = canonical_offense_role(role)
     cuts = ROLE_FIT_CUTS.get(role)
     if not cuts:
         return "B" if fit >= 60 else "C" if fit >= 52 else "D"
@@ -171,6 +216,7 @@ def _role_fit_default_cuts() -> Tuple[float, float, float, float]:
 
 def role_fit_g(role: str, fit: float) -> float:
     """Continuous grade coordinate in [-2, +2] for a given (role, fit)."""
+    role = canonical_offense_role(role)
     cuts = ROLE_FIT_CUTS.get(role) or _role_fit_default_cuts()
     try:
         s_min, a_min, b_min, c_min = [float(x) for x in cuts]
@@ -337,8 +383,14 @@ def _pid_is_on_court(offense: TeamState, pid: Any) -> bool:
 
 
 def _choose_best_role(offense: TeamState, roles: List[str]) -> Optional[Tuple[str, Player, float]]:
+    """Pick the best on-court player among the provided role keys.
+
+    Input role keys may be canonical C13 or legacy 12-role names.
+    """
     best: Optional[Tuple[str, Player, float]] = None
-    for r in roles:
+
+    roles_expanded = list(expand_role_keys_for_lookup(roles))
+    for r in roles_expanded:
         pid = getattr(offense, "roles", {}).get(r)
         if not pid:
             continue
@@ -347,143 +399,137 @@ def _choose_best_role(offense: TeamState, roles: List[str]) -> Optional[Tuple[st
         p = offense.find_player(pid)
         if not p:
             continue
-        fit = role_fit_score(p, r)
+        canon = canonical_offense_role(r)
+        fit = role_fit_score(p, canon)
         if best is None or fit > best[2]:
-            best = (r, p, fit)
+            best = (canon, p, fit)
+
     return best
 
 
 def _collect_roles_for_action_family(action_family: str, offense: TeamState) -> List[Tuple[str, Player, float]]:
-    """
-    Collect role participants for a possession 'action_family'.
-    This is the only place that should reference specific role keys.
+    """Collect role-fit participants for a possession action_family.
+
+    This is the only place that should reference specific *offensive* role keys.
+
+    Role keys are canonical C13 (see offense_roles.py), but legacy 12-role keys are
+    accepted via :func:`expand_role_keys_for_lookup` / :func:`canonical_offense_role`.
     """
     parts: List[Tuple[str, Player, float]] = []
-    fam = action_family
+    fam = str(action_family)
+    seen_pids: set[str] = set()
+
+    def _add_pick(pick: Optional[Tuple[str, Player, float]]) -> None:
+        if not pick:
+            return
+        role_key, p, fit = pick
+        pid = getattr(p, "pid", None)
+        if isinstance(pid, str) and pid:
+            if pid in seen_pids:
+                return
+            seen_pids.add(pid)
+        parts.append((canonical_offense_role(role_key), p, float(fit)))
+
+    def _add_best(group: List[str]) -> None:
+        _add_pick(_choose_best_role(offense, group))
+
+    def _add_assigned(role_key: str) -> None:
+        # Include a role participant if that role is explicitly assigned on-court.
+        for rk in expand_role_keys_for_lookup([role_key]):
+            pid = getattr(offense, "roles", {}).get(rk)
+            if not pid:
+                continue
+            if not _pid_is_on_court(offense, pid):
+                continue
+            p = offense.find_player(pid)
+            if not p:
+                continue
+            # Avoid double-counting the same player for a single action family.
+            if getattr(p, "pid", None) in seen_pids:
+                return
+            canon = canonical_offense_role(rk)
+            seen_pids.add(str(p.pid))
+            parts.append((canon, p, role_fit_score(p, canon)))
+            return
 
     if fam == "PnR":
-        pick = _choose_best_role(offense, ["Initiator_Primary"])
-        if pick:
-            parts.append(pick)
-        pick = _choose_best_role(offense, ["Initiator_Secondary"])
-        if pick:
-            parts.append(pick)
+        # Handler(s)
+        _add_best([ROLE_ENGINE_PRIMARY])
+        _add_best([ROLE_ENGINE_SECONDARY])
 
         # Roller / Short roll: evaluate both if assigned
-        for r in ["Roller_Finisher", "ShortRoll_Playmaker"]:
-            pid = offense.roles.get(r)
-            if pid and _pid_is_on_court(offense, pid):
-                p = offense.find_player(pid)
-                if p:
-                    parts.append((r, p, role_fit_score(p, r)))
+        _add_assigned(ROLE_ROLL_MAN)
+        _add_assigned(ROLE_SHORTROLL_HUB)
 
-        # Optional Pop big
-        pid = offense.roles.get("Pop_Spacer_Big")
-        if pid and _pid_is_on_court(offense, pid):
-            p = offense.find_player(pid)
-            if p:
-                parts.append(("Pop_Spacer_Big", p, role_fit_score(p, "Pop_Spacer_Big")))
+        # Optional Pop threat
+        _add_assigned(ROLE_POP_THREAT)
 
     elif fam == "PnP":
-        # Pick-and-pop: handler + pop threat big (PnR과 동급 액션으로 role-fit 참여자를 수집)
-        pick = _choose_best_role(offense, ["Initiator_Primary"])
-        if pick:
-            parts.append(pick)
-        pick = _choose_best_role(offense, ["Initiator_Secondary"])
-        if pick:
-            parts.append(pick)
+        # Pick-and-pop: handler + pop threat big
+        _add_best([ROLE_ENGINE_PRIMARY])
+        _add_best([ROLE_ENGINE_SECONDARY])
 
-        pick = _choose_best_role(offense, ["Pop_Spacer_Big", "Post_Hub"])
-        if pick:
-            parts.append(pick)
+        _add_best([ROLE_POP_THREAT, ROLE_POST_ANCHOR])
 
         # Optional: spacing/connector
-        pick = _choose_best_role(offense, ["Spacer_CatchShoot", "Spacer_Movement", "Connector_Playmaker"])
-        if pick:
-            parts.append(pick)
+        _add_best([ROLE_SPOTUP_SPACER, ROLE_MOVEMENT_SHOOTER, ROLE_CONNECTOR])
 
     elif fam == "DHO":
         for group in [
-            ["Initiator_Secondary", "Connector_Playmaker"],
-            ["Spacer_Movement"],
-            ["Post_Hub", "Pop_Spacer_Big"],
+            [ROLE_ENGINE_SECONDARY, ROLE_CONNECTOR],
+            [ROLE_MOVEMENT_SHOOTER],
+            [ROLE_POST_ANCHOR, ROLE_POP_THREAT],
         ]:
-            pick = _choose_best_role(offense, group)
-            if pick:
-                parts.append(pick)
+            _add_best(group)
 
     elif fam == "Drive":
-        pick = _choose_best_role(offense, ["Rim_Attacker", "Shot_Creator", "Initiator_Primary"])
-        if pick:
-            parts.append(pick)
+        _add_best([ROLE_RIM_PRESSURE, ROLE_SHOT_CREATOR, ROLE_ENGINE_PRIMARY])
 
     elif fam == "ISO":
-        # On-ball creator + spacing check (ISO도 다른 액션과 동일하게 role-fit 영향권에 들어오도록)
-        pick = _choose_best_role(offense, ["Shot_Creator", "Initiator_Primary", "Rim_Attacker", "Post_Hub"])
-        if pick:
-            parts.append(pick)
-        pick2 = _choose_best_role(offense, ["Spacer_CatchShoot", "Spacer_Movement"])
-        if pick2:
-            parts.append(pick2)
+        # On-ball creator + spacing check
+        _add_best([ROLE_SHOT_CREATOR, ROLE_ENGINE_PRIMARY, ROLE_RIM_PRESSURE, ROLE_POST_ANCHOR])
+        _add_best([ROLE_SPOTUP_SPACER, ROLE_MOVEMENT_SHOOTER])
 
     elif fam == "Kickout":
         for group in [
-            ["Rim_Attacker", "Shot_Creator", "Initiator_Primary"],
-            ["Spacer_CatchShoot", "Spacer_Movement"],
+            [ROLE_RIM_PRESSURE, ROLE_SHOT_CREATOR, ROLE_ENGINE_PRIMARY],
+            [ROLE_SPOTUP_SPACER, ROLE_MOVEMENT_SHOOTER],
         ]:
-            pick = _choose_best_role(offense, group)
-            if pick:
-                parts.append(pick)
+            _add_best(group)
 
     elif fam == "ExtraPass":
         for group in [
-            ["Connector_Playmaker"],
-            ["Initiator_Secondary", "Post_Hub"],
+            [ROLE_CONNECTOR],
+            [ROLE_ENGINE_SECONDARY, ROLE_POST_ANCHOR],
         ]:
-            pick = _choose_best_role(offense, group)
-            if pick:
-                parts.append(pick)
+            _add_best(group)
 
     elif fam == "PostUp":
-        pick = _choose_best_role(offense, ["Post_Hub"])
-        if pick:
-            parts.append(pick)
-        pick2 = _choose_best_role(offense, ["Spacer_CatchShoot", "Spacer_Movement"])
-        if pick2:
-            parts.append(pick2)
+        _add_best([ROLE_POST_ANCHOR])
+        _add_best([ROLE_SPOTUP_SPACER, ROLE_MOVEMENT_SHOOTER])
 
     elif fam == "HornsSet":
         for group in [
-            ["Initiator_Secondary", "Initiator_Primary"],
-            ["Post_Hub"],
-            ["Pop_Spacer_Big", "ShortRoll_Playmaker", "Roller_Finisher"],
+            [ROLE_ENGINE_SECONDARY, ROLE_ENGINE_PRIMARY],
+            [ROLE_POST_ANCHOR],
+            [ROLE_POP_THREAT, ROLE_SHORTROLL_HUB, ROLE_ROLL_MAN],
         ]:
-            pick = _choose_best_role(offense, group)
-            if pick:
-                parts.append(pick)
+            _add_best(group)
 
     elif fam == "SpotUp":
-        pick = _choose_best_role(offense, ["Spacer_CatchShoot", "Spacer_Movement"])
-        if pick:
-            parts.append(pick)
+        _add_best([ROLE_SPOTUP_SPACER, ROLE_MOVEMENT_SHOOTER])
 
     elif fam == "Cut":
-        pick = _choose_best_role(offense, ["Rim_Attacker", "Roller_Finisher"])
-        if pick:
-            parts.append(pick)
-        pick2 = _choose_best_role(offense, ["Connector_Playmaker", "Post_Hub", "Initiator_Secondary"])
-        if pick2:
-            parts.append(pick2)
+        _add_best([ROLE_CUTTER_FINISHER, ROLE_RIM_PRESSURE, ROLE_ROLL_MAN])
+        _add_best([ROLE_CONNECTOR, ROLE_POST_ANCHOR, ROLE_ENGINE_SECONDARY])
 
     elif fam == "TransitionEarly":
         for group in [
-            ["Transition_Handler"],
-            ["Roller_Finisher", "Rim_Attacker"],
-            ["Spacer_CatchShoot"],
+            [ROLE_TRANSITION_ENGINE, ROLE_ENGINE_PRIMARY],
+            [ROLE_ROLL_MAN, ROLE_RIM_PRESSURE, ROLE_CUTTER_FINISHER],
+            [ROLE_SPOTUP_SPACER, ROLE_POP_THREAT],
         ]:
-            pick = _choose_best_role(offense, group)
-            if pick:
-                parts.append(pick)
+            _add_best(group)
 
     return parts
 

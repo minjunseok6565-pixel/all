@@ -10,6 +10,24 @@ from typing import Any, Dict, List, Optional, Tuple, Set, Mapping
 from derived_formulas import compute_derived
 from league_repo import LeagueRepo
 from matchengine_v3.models import Player, TeamState
+from matchengine_v3.offense_roles import (
+    # Canonical C13 role keys (SSOT)
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
+    ROLE_SHOT_CREATOR,
+    ROLE_RIM_PRESSURE,
+    ROLE_SPOTUP_SPACER,
+    ROLE_MOVEMENT_SHOOTER,
+    ROLE_CUTTER_FINISHER,
+    ROLE_CONNECTOR,
+    ROLE_ROLL_MAN,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_POST_ANCHOR,
+    ALL_OFFENSE_ROLES,
+)
+from matchengine_v3.role_fit import role_fit_score
 from matchengine_v3.tactics import TacticsConfig
 import schema
 
@@ -240,53 +258,95 @@ def _build_tactics_config(raw: Optional[Dict[str, Any]]) -> TacticsConfig:
     return cfg
 
 
-def _build_roles_from_lineup(lineup: List[Player]) -> Dict[str, str]:
-    def score(player: Player, keys: List[str]) -> float:
-        return sum(float(player.derived.get(k, 50.0)) for k in keys)
+def _assign_rotation_offense_role_by_pid(players: List[Player]) -> Dict[str, str]:
+    """Assign a single canonical offensive role (C13) to each player.
 
-    ranked = sorted(
-        lineup,
-        key=lambda p: score(p, ["DRIVE_CREATE", "HANDLE_SAFE", "PASS_CREATE", "PASS_SAFE", "PNR_READ"]),
-        reverse=True,
-    )
-    ball_handler = ranked[0].pid if ranked else lineup[0].pid
-    secondary_handler = ranked[1].pid if len(ranked) > 1 else ball_handler
+    Output:
+      { pid: role_key }
 
-    screener = max(
-        lineup,
-        key=lambda p: score(p, ["PHYSICAL", "SEAL_POWER", "SHORTROLL_PLAY"]),
-        default=lineup[0],
-    ).pid
-    rim_runner = max(
-        lineup,
-        key=lambda p: score(p, ["FIN_DUNK", "FIN_RIM", "FIN_CONTACT"]),
-        default=lineup[0],
-    ).pid
-    post = max(
-        lineup,
-        key=lambda p: score(p, ["POST_SCORE", "POST_CONTROL", "SEAL_POWER"]),
-        default=lineup[0],
-    ).pid
-    cutter = max(
-        lineup,
-        key=lambda p: score(p, ["FIN_RIM", "FIN_DUNK", "FIRST_STEP"]),
-        default=lineup[0],
-    ).pid
-    shooter = max(
-        lineup,
-        key=lambda p: score(p, ["SHOT_3_CS", "SHOT_MID_CS", "SHOT_3_OD"]),
-        default=lineup[0],
-    ).pid
+    Notes:
+    - Uses matchengine_v3.role_fit.role_fit_score so tuning stays centralized in role_fit_data.py.
+    - This is the roster-level SSOT role identity (used by rotation/fatigue subsystems).
+    """
+    out: Dict[str, str] = {}
+    if not players:
+        return out
 
-    return {
-        "ball_handler": ball_handler,
-        "secondary_handler": secondary_handler,
-        "screener": screener,
-        "rim_runner": rim_runner,
-        "post": post,
-        "cutter": cutter,
-        "shooter": shooter,
-    }
+    for p in players:
+        best_role: Optional[str] = None
+        best_fit = -1.0
+        for role in ALL_OFFENSE_ROLES:
+            try:
+                fit = float(role_fit_score(p, role))
+            except Exception:
+                fit = 50.0
+            if fit > best_fit:
+                best_fit = fit
+                best_role = role
+        out[str(p.pid)] = str(best_role or ROLE_SPOTUP_SPACER)
+    return out
+
+
+def _build_offense_role_slots_for_on_court(
+    on_court: List[Player],
+    role_by_pid: Mapping[str, str],
+) -> Dict[str, str]:
+    """Build TeamState.roles (role->pid) mapping for the *current* on-court 5.
+
+    This mapping is consumed by shot_diet / participants subsystems.
+    We populate *all* canonical C13 role keys so the engine can always find a slot.
+
+    Duplicates are allowed (e.g., one player may be both SpotUp_Spacer and Movement_Shooter
+    if the lineup lacks specialists).
+    """
+    if not on_court:
+        return {}
+
+    # Small helper for robustness.
+    def _fit(p: Player, role: str) -> float:
+        try:
+            return float(role_fit_score(p, role))
+        except Exception:
+            return 50.0
+
+    def _best_pid_for_role(role: str, *, exclude: Optional[Set[str]] = None) -> str:
+        exclude = exclude or set()
+
+        # 1) Prefer players whose SSOT rotation role matches this role (if any).
+        preferred = [p for p in on_court if p.pid not in exclude and role_by_pid.get(p.pid) == role]
+        candidates = preferred if preferred else [p for p in on_court if p.pid not in exclude]
+        if not candidates:
+            candidates = list(on_court)
+
+        best = max(candidates, key=lambda p: _fit(p, role))
+        return best.pid
+
+    roles: Dict[str, str] = {}
+
+    # Handlers (try to avoid forcing the same pid for both primary/secondary when possible).
+    primary = _best_pid_for_role(ROLE_ENGINE_PRIMARY)
+    roles[ROLE_ENGINE_PRIMARY] = primary
+    secondary = _best_pid_for_role(ROLE_ENGINE_SECONDARY, exclude={primary})
+    roles[ROLE_ENGINE_SECONDARY] = secondary
+
+    # Creation / pressure
+    roles[ROLE_TRANSITION_ENGINE] = _best_pid_for_role(ROLE_TRANSITION_ENGINE)
+    roles[ROLE_SHOT_CREATOR] = _best_pid_for_role(ROLE_SHOT_CREATOR)
+    roles[ROLE_RIM_PRESSURE] = _best_pid_for_role(ROLE_RIM_PRESSURE)
+
+    # Spacing / off-ball
+    roles[ROLE_SPOTUP_SPACER] = _best_pid_for_role(ROLE_SPOTUP_SPACER)
+    roles[ROLE_MOVEMENT_SHOOTER] = _best_pid_for_role(ROLE_MOVEMENT_SHOOTER)
+    roles[ROLE_CUTTER_FINISHER] = _best_pid_for_role(ROLE_CUTTER_FINISHER)
+    roles[ROLE_CONNECTOR] = _best_pid_for_role(ROLE_CONNECTOR)
+
+    # Screen / big roles
+    roles[ROLE_ROLL_MAN] = _best_pid_for_role(ROLE_ROLL_MAN)
+    roles[ROLE_SHORTROLL_HUB] = _best_pid_for_role(ROLE_SHORTROLL_HUB)
+    roles[ROLE_POP_THREAT] = _best_pid_for_role(ROLE_POP_THREAT)
+    roles[ROLE_POST_ANCHOR] = _best_pid_for_role(ROLE_POST_ANCHOR)
+
+    return roles
 
 
 def _select_lineup(
@@ -478,7 +538,10 @@ def build_team_state_from_db(
     )
     max_players = max(5, min(max_players, len(players)))
     lineup = _select_lineup(players, starters, bench, max_players=max_players)
-    roles = _build_roles_from_lineup(lineup[:5])
+
+    # New canonical offensive roles (C13): roster-level SSOT + on-court role slots.
+    rotation_role_by_pid = _assign_rotation_offense_role_by_pid(lineup)
+    roles = _build_offense_role_slots_for_on_court(lineup[:5], rotation_role_by_pid)
     tactics_cfg = _build_tactics_config(tactics)
     _apply_default_coach_preset(str(tid), tactics_cfg)
     _apply_coach_preset_tactics(str(tid), tactics_cfg, tactics)
@@ -488,7 +551,14 @@ def build_team_state_from_db(
     if not display_name:
         display_name = str(tid)
 
-    team_state = TeamState(team_id=str(tid), name=display_name, lineup=lineup, tactics=tactics_cfg, roles=roles)
+    team_state = TeamState(
+        team_id=str(tid),
+        name=display_name,
+        lineup=lineup,
+        tactics=tactics_cfg,
+        roles=roles,
+        rotation_offense_role_by_pid=dict(rotation_role_by_pid),
+    )
     minutes = (tactics or {}).get("minutes") or {}
     if isinstance(minutes, dict) and minutes:
         team_state = replace(

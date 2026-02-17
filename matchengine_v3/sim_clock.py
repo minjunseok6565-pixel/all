@@ -11,6 +11,15 @@ from typing import Any, Dict
 from .core import clamp
 from .models import GameState, TeamState
 
+from .offense_roles import (
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
+    ROLE_CONNECTOR,
+    ROLE_SHOT_CREATOR,
+    expand_role_keys_for_lookup,
+)
+
 def apply_time_cost(game_state: GameState, cost: float, tempo_mult: float) -> None:
     adj = float(cost) * float(tempo_mult)
     game_state.shot_clock_sec -= adj
@@ -72,24 +81,27 @@ def simulate_inbound(
 
 
 def _pick_shot_clock_tov_pid(offense: TeamState) -> str:
-    """Pick who gets a shot-clock violation TOV using 12-role keys (no legacy)."""
-    # 12-role priority (ball handlers first)
-    for role in (
-        "Initiator_Primary",
-        "Initiator_Secondary",
-        "Transition_Handler",
-        "Connector_Playmaker",
-        "Shot_Creator",
+    """Pick who gets a shot-clock violation TOV using canonical C13 role keys (legacy-safe)."""
+    # Priority: on-ball / decision-makers first.
+    for role in expand_role_keys_for_lookup(
+        (
+            ROLE_ENGINE_PRIMARY,
+            ROLE_ENGINE_SECONDARY,
+            ROLE_TRANSITION_ENGINE,
+            ROLE_CONNECTOR,
+            ROLE_SHOT_CREATOR,
+        )
     ):
-        pid = getattr(offense, 'roles', {}).get(role) if hasattr(offense, 'roles') else None
+        pid = getattr(offense, "roles", {}).get(role) if hasattr(offense, "roles") else None
         if isinstance(pid, str) and pid:
             # ensure on-court
-            if any(getattr(p, 'pid', None) == pid for p in offense.on_court_players()):
+            if any(getattr(p, "pid", None) == pid for p in offense.on_court_players()):
                 return pid
+
     # Fallback: best passer on the floor
     offense_players = offense.on_court_players()
     if offense_players:
-        return max(offense_players, key=lambda p: p.get('PASS_CREATE')).pid
+        return max(offense_players, key=lambda p: p.get("PASS_CREATE")).pid
     return ''
 
 def commit_shot_clock_turnover(offense: TeamState) -> None:

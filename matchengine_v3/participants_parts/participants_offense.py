@@ -1,31 +1,32 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Tuple
 
 from ..core import weighted_choice
 from ..models import Player, TeamState
 
 from .participants_roles import (
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
     ROLE_SHOT_CREATOR,
-    ROLE_RIM_ATTACKER,
-    ROLE_SPACER_CS,
-    ROLE_SPACER_MOVE,
+    ROLE_RIM_PRESSURE,
+    ROLE_MOVEMENT_SHOOTER,
+    ROLE_CUTTER_FINISHER,
     ROLE_CONNECTOR,
-    ROLE_ROLLER,
-    ROLE_SHORTROLL,
-    ROLE_POP_BIG,
-    ROLE_POST_HUB,
+    ROLE_ROLL_MAN,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_POST_ANCHOR,
+    canonical_offense_role,
+    expand_role_keys_for_lookup,
 )
 
 from .participants_common import (
     _active,
     _clamp,
     _fill_candidates_with_top_k,
-    _pid_role_mult,
     _players_from_roles,
     _role_player,
     _shot_diet_info,
@@ -33,6 +34,7 @@ from .participants_common import (
 )
 
 # ---- Shooter selection (catch & shoot) ----
+
 
 def choose_shooter_for_three(rng: random.Random, offense: TeamState, style: Optional[object] = None) -> Player:
     # Allow any on-court player to be the shooter; keep weighting by SHOT_3_CS.
@@ -72,18 +74,30 @@ def choose_shooter_for_mid(rng: random.Random, offense: TeamState, style: Option
 
 # ---- Creator selection (pull-up / off-dribble) ----
 
+
 _CREATOR_ROLE_PRIORITY: Tuple[str, ...] = (
     ROLE_SHOT_CREATOR,
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_RIM_PRESSURE,
+    ROLE_TRANSITION_ENGINE,
     ROLE_CONNECTOR,
 )
 
-def choose_creator_for_pulloff(rng: random.Random, offense: TeamState, outcome: str, style: Optional[object] = None) -> Player:
-    # 12-role candidates first, then fill so that ALL on-court players can be selected.
+
+def choose_creator_for_pulloff(
+    rng: random.Random,
+    offense: TeamState,
+    outcome: str,
+    style: Optional[object] = None,
+) -> Player:
+    # 13-role candidates first, then fill so that ALL on-court players can be selected.
     key = "SHOT_3_OD" if outcome == "SHOT_3_OD" else "SHOT_MID_PU"
-    cand = _players_from_roles(offense, _CREATOR_ROLE_PRIORITY)
+
+    # During migration, offense.roles may contain canonical C13 keys or legacy 12-role keys.
+    # Expand role keys for robust lookup.
+    cand = _players_from_roles(offense, expand_role_keys_for_lookup(_CREATOR_ROLE_PRIORITY))
+
     # Previously capped to 3, which hard-limited distribution.
     # Use the on-court count (normally 5) so every player becomes a candidate.
     on_court_cap = len(_active(offense))
@@ -104,37 +118,65 @@ def choose_creator_for_pulloff(rng: random.Random, offense: TeamState, outcome: 
 
 # ---- Rim finisher selection ----
 
+
 _FINISH_ROLE_BASE: Tuple[str, ...] = (
-    ROLE_RIM_ATTACKER,
-    ROLE_ROLLER,
-    ROLE_SPACER_MOVE,
+    ROLE_RIM_PRESSURE,
+    ROLE_CUTTER_FINISHER,
+    ROLE_ROLL_MAN,
+    ROLE_MOVEMENT_SHOOTER,
     ROLE_SHOT_CREATOR,
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
 )
 
 _FINISH_ROLE_PNR: Tuple[str, ...] = (
-    ROLE_ROLLER,
-    ROLE_SHORTROLL,
-    ROLE_POP_BIG,
-    ROLE_RIM_ATTACKER,
-    ROLE_SPACER_MOVE,
+    ROLE_ROLL_MAN,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_RIM_PRESSURE,
+    ROLE_CUTTER_FINISHER,
     ROLE_SHOT_CREATOR,
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
 )
+
+_FINISH_ROLE_CUT: Tuple[str, ...] = (
+    ROLE_CUTTER_FINISHER,
+    ROLE_RIM_PRESSURE,
+    ROLE_ROLL_MAN,
+    ROLE_MOVEMENT_SHOOTER,
+    ROLE_SHOT_CREATOR,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+)
+
 
 # Conservative dunk role multipliers (optional realism tuning).
 # These are only applied when dunk_bias=True, on top of the FIN_* stat.
 _DUNK_ROLE_MULT = {
-    ROLE_RIM_ATTACKER: 1.10,
-    ROLE_ROLLER: 1.15,
-    ROLE_SHORTROLL: 1.00,
-    ROLE_SPACER_MOVE: 1.00,
-    ROLE_POP_BIG: 0.80,
+    ROLE_RIM_PRESSURE: 1.10,
+    ROLE_CUTTER_FINISHER: 1.06,
+    ROLE_ROLL_MAN: 1.15,
+    ROLE_SHORTROLL_HUB: 1.00,
+    ROLE_MOVEMENT_SHOOTER: 1.00,
+    ROLE_POP_THREAT: 0.80,
 }
+
 _MULT_MIN = 0.70
 _MULT_MAX = 1.40
+
+
+def _pid_role_mult_canon(team: TeamState, pid: str, role_mult: Dict[str, float]) -> float:
+    """Version of _pid_role_mult() that canonicalizes role keys first."""
+    mult = 1.0
+    roles = getattr(team, "roles", {}) or {}
+    for role, rpid in roles.items():
+        if str(rpid) != str(pid):
+            continue
+        canon = canonical_offense_role(str(role))
+        mult = max(mult, float(role_mult.get(canon, 1.0)))
+    return mult
+
 
 def choose_finisher_rim(
     rng: random.Random,
@@ -143,12 +185,19 @@ def choose_finisher_rim(
     style: Optional[object] = None,
     base_action: Optional[str] = None,
 ) -> Player:
-    # Choose who finishes at the rim. Candidates are role-driven (12-role only),
-    # then filled with best rim-finishers from the lineup to ensure robustness.
+    # Choose who finishes at the rim.
+    # Candidates are role-driven (C13), then filled with best rim-finishers from the
+    # lineup to ensure robustness.
     key = "FIN_DUNK" if dunk_bias else "FIN_RIM"
-    role_priority = _FINISH_ROLE_PNR if base_action == "PnR" else _FINISH_ROLE_BASE
 
-    cand = _players_from_roles(offense, role_priority)
+    if base_action == "PnR":
+        role_priority = _FINISH_ROLE_PNR
+    elif base_action == "Cut":
+        role_priority = _FINISH_ROLE_CUT
+    else:
+        role_priority = _FINISH_ROLE_BASE
+
+    cand = _players_from_roles(offense, expand_role_keys_for_lookup(role_priority))
     cand = _fill_candidates_with_top_k(offense, cand, cap=4, stat_key=key)
 
     info = _shot_diet_info(style)
@@ -165,7 +214,7 @@ def choose_finisher_rim(
 
         # Optional dunk realism: discourage pop-big dunk dominance.
         if dunk_bias:
-            mult *= _pid_role_mult(offense, p.pid, _DUNK_ROLE_MULT)
+            mult *= _pid_role_mult_canon(offense, p.pid, _DUNK_ROLE_MULT)
 
         extra[p.pid] = _clamp(mult, _MULT_MIN, _MULT_MAX)
 
@@ -174,22 +223,25 @@ def choose_finisher_rim(
 
 # ---- Post target selection ----
 
+
 _POST_FALLBACK_ROLES: Tuple[str, ...] = (
-    ROLE_SHORTROLL,
-    ROLE_POP_BIG,
-    ROLE_ROLLER,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_ROLL_MAN,
 )
 
-def choose_post_target(offense: TeamState) -> Player:
-    # Prefer the Post_Hub. If missing, fall back to the most post-capable big-ish option.
-    p = _role_player(offense, ROLE_POST_HUB)
-    if p:
-        return p
 
-    cand = _players_from_roles(offense, _POST_FALLBACK_ROLES)
+def choose_post_target(offense: TeamState) -> Player:
+    # Prefer the Post_Anchor. If missing, fall back to the most post-capable big-ish option.
+    for role_key in expand_role_keys_for_lookup((ROLE_POST_ANCHOR,)):
+        p = _role_player(offense, role_key)
+        if p:
+            return p
+
+    cand = _players_from_roles(offense, expand_role_keys_for_lookup(_POST_FALLBACK_ROLES))
     if cand:
         # Deterministic: choose the best by POST_CONTROL (then POST_SCORE).
         return max(cand, key=lambda x: (x.get("POST_CONTROL"), x.get("POST_SCORE")))
 
-    # Final fallback: pick best post controller from lineup (or simply the "biggest" by proxy).
+    # Final fallback: pick best post controller from lineup.
     return max(_active(offense), key=lambda x: (x.get("POST_CONTROL"), x.get("POST_SCORE"), x.get("REB")))
