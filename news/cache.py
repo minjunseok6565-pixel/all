@@ -11,7 +11,7 @@ from state import (
 
 # Cache generator versions (used for invalidation when logic changes)
 WEEKLY_GENERATOR_VERSION = "news.weekly.v2"
-PLAYOFF_GENERATOR_VERSION = "news.playoffs.v2"
+PLAYOFF_GENERATOR_VERSION = "news.playoffs.v3"
 
 
 _WEEKLY_KEYS = {
@@ -26,7 +26,6 @@ _WEEKLY_KEYS = {
 _WEEKLY_LLM_KEYS = {"used", "model", "error"}
 
 _PLAYOFF_KEYS = {
-    "series_game_counts",
     "processed_game_ids",
     "built_from_turn",
     "season_id",
@@ -82,8 +81,6 @@ def _assert_playoff_cache(cache: Any) -> Dict[str, Any]:
 
     _require_exact_keys(cache, _PLAYOFF_KEYS, path="cached_views.playoff_news")
 
-    if not isinstance(cache["series_game_counts"], dict):
-        raise ValueError("cached_views.playoff_news.series_game_counts must be dict")
     if not isinstance(cache["processed_game_ids"], list):
         raise ValueError("cached_views.playoff_news.processed_game_ids must be list")
     if not isinstance(cache["built_from_turn"], int):

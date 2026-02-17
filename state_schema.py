@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from state_modules.state_constants import DEFAULT_TRADE_RULES, _DEFAULT_TRADE_MARKET, _DEFAULT_TRADE_MEMORY
 
-STATE_SCHEMA_VERSION = "4.1"
+STATE_SCHEMA_VERSION = "4.2"
 ALLOWED_PHASES = {"regular", "preseason", "play_in", "playoffs"}
 NON_REGULAR_PHASES = {"preseason", "play_in", "playoffs"}
 ALLOWED_TOP_LEVEL_KEYS = {
@@ -72,7 +72,6 @@ ALLOWED_WEEKLY_NEWS_KEYS = {
 }
 ALLOWED_WEEKLY_NEWS_LLM_KEYS = {"used", "model", "error"}
 ALLOWED_PLAYOFF_NEWS_KEYS = {
-    "series_game_counts",
     "processed_game_ids",
     "built_from_turn",
     "season_id",
@@ -131,11 +130,10 @@ def create_default_game_state() -> Dict[str, Any]:
                 "items": [],
             },
             "playoff_news": {
-                "series_game_counts": {},
                 "processed_game_ids": [],
                 "built_from_turn": -1,
                 "season_id": None,
-                "generator_version": "news.playoffs.v2",
+                "generator_version": "news.playoffs.v3",
                 "items": [],
             },
         },
@@ -330,8 +328,6 @@ def validate_game_state(state: dict) -> None:
 
     playoff_news = _require_nested_container(cached_views, "playoff_news", dict, "dict")
     _require_exact_keys(playoff_news, ALLOWED_PLAYOFF_NEWS_KEYS, "cached_views.playoff_news")
-    if not isinstance(playoff_news.get("series_game_counts"), dict):
-        raise ValueError("GameState invalid: cached_views.playoff_news.series_game_counts must be dict")
     if not isinstance(playoff_news.get("processed_game_ids"), list):
         raise ValueError("GameState invalid: cached_views.playoff_news.processed_game_ids must be list")
     if not isinstance(playoff_news.get("built_from_turn"), int):

@@ -140,7 +140,7 @@ def refresh_weekly_news(api_key: str) -> Dict[str, Any]:
     Output is compatible with the existing frontend:
       {"current_date": "YYYY-MM-DD", "items": [ {title, summary, ...}, ... ]}
 
-    Cache policy (state_schema 4.1):
+    Cache policy (state_schema 4.2):
       - Cached per week_start (Monday)
       - Regenerated when as_of_date advances, season changes, or generator_version changes
       - Stores LLM metadata in cache['llm']
@@ -242,7 +242,7 @@ def refresh_playoff_news() -> Dict[str, Any]:
     Output is compatible with the existing frontend:
       {"items": [...], "new_items": [...]} 
 
-    Cache policy (state_schema 4.1):
+    Cache policy (state_schema 4.2):
       - Dedup using processed_game_ids (deterministic)
       - Store generator_version/season_id/built_from_turn for debugging
 
@@ -257,7 +257,6 @@ def refresh_playoff_news() -> Dict[str, Any]:
     season_id = get_active_season_id()
 
     cache = get_playoff_cache()
-    prev_counts = cache["series_game_counts"]
     items = cache["items"]
 
     processed_list = cache["processed_game_ids"]
@@ -273,9 +272,9 @@ def refresh_playoff_news() -> Dict[str, Any]:
     workflow = export_workflow_state()
     box_lookup = _build_playoffs_boxscore_lookup(workflow)
 
-    events, new_counts = extract_playoff_events(
+    events = extract_playoff_events(
         playoffs,
-        previous_counts=prev_counts,
+        processed_game_ids=processed_set,
         boxscore_lookup=box_lookup,
     )
 
@@ -301,7 +300,6 @@ def refresh_playoff_news() -> Dict[str, Any]:
         processed_set.add(sgid)
         processed_list.append(sgid)
 
-    cache["series_game_counts"] = new_counts
     cache["processed_game_ids"] = processed_list
     cache["built_from_turn"] = int(workflow.get("turn") or -1)
     cache["season_id"] = season_id
