@@ -24,7 +24,7 @@ from news.cache import (
     weekly_cache_is_fresh,
 )
 from news.editorial import select_top_events
-from news.extractors.playoffs import extract_playoff_events, iter_series, series_key
+from news.extractors.playoffs import extract_playoff_events, iter_series
 from news.extractors.weekly import build_week_window, extract_weekly_events
 from news.ids import make_event_id
 from news.models import NewsArticle, NewsEvent
@@ -157,7 +157,7 @@ def refresh_weekly_news(api_key: str) -> Dict[str, Any]:
 
     cache = get_weekly_cache()
     if weekly_cache_is_fresh(cache, week_start=week_key, as_of_date=current_iso, season_id=season_id):
-        return {"current_date": current_iso, "items": cache.get("items", [])}
+        return {"current_date": current_iso, "items": cache["items"]}
 
     snapshot = export_workflow_state()
 
@@ -236,42 +236,6 @@ def _collect_final_playoff_game_ids(playoffs: Dict[str, Any]) -> List[str]:
     return ids
 
 
-def _backfill_processed_ids_from_counts(
-    playoffs: Dict[str, Any], previous_counts: Dict[str, Any]
-) -> List[str]:
-    """Best-effort backfill processed_game_ids using legacy series_game_counts.
-
-    This prevents duplicate news spam on the first refresh after upgrading to schema 4.1.
-    """
-    out: List[str] = []
-    if not isinstance(previous_counts, dict) or not previous_counts:
-        return out
-
-    for s in iter_series(playoffs):
-        key = series_key(s)
-        prev_count = int(previous_counts.get(key, 0) or 0)
-        games = s.get("games") or []
-        if not isinstance(games, list):
-            continue
-        for g in games[:prev_count]:
-            if not isinstance(g, dict):
-                continue
-            gid = g.get("game_id")
-            winner = g.get("winner")
-            if gid and winner:
-                out.append(str(gid))
-
-    # preserve insertion order and uniqueness
-    seen = set()
-    uniq: List[str] = []
-    for gid in out:
-        if gid in seen:
-            continue
-        seen.add(gid)
-        uniq.append(gid)
-    return uniq
-
-
 def refresh_playoff_news() -> Dict[str, Any]:
     """Append newly completed playoff games as news articles.
 
@@ -279,9 +243,11 @@ def refresh_playoff_news() -> Dict[str, Any]:
       {"items": [...], "new_items": [...]} 
 
     Cache policy (state_schema 4.1):
-      - Dedup using processed_game_ids (deterministic, resilient)
-      - Keep legacy series_game_counts as an additional guard
-      - Store generator_version/season_id/built_from_turn for debugging + invalidation
+      - Dedup using processed_game_ids (deterministic)
+      - Store generator_version/season_id/built_from_turn for debugging
+
+    NOTE:
+      - No legacy/backfill logic: cache is assumed to always be schema 4.1.
     """
     postseason = get_postseason_snapshot()
     playoffs = postseason.get("playoffs")
@@ -291,31 +257,17 @@ def refresh_playoff_news() -> Dict[str, Any]:
     season_id = get_active_season_id()
 
     cache = get_playoff_cache()
-    prev_counts = cache.get("series_game_counts") or {}
-    items = cache.get("items") or []
+    prev_counts = cache["series_game_counts"]
+    items = cache["items"]
 
-    processed_list = cache.get("processed_game_ids") or []
-    if not isinstance(processed_list, list):
-        processed_list = []
-
-    # Backfill processed_game_ids once if coming from legacy cache
+    processed_list = cache["processed_game_ids"]
     processed_set = {str(x) for x in processed_list if x}
-    if not processed_set and prev_counts and items:
-        backfilled = _backfill_processed_ids_from_counts(playoffs, prev_counts)
-        processed_list = list(backfilled)
-        processed_set = set(processed_list)
 
     # Detect whether there are any new completed games
     final_ids = _collect_final_playoff_game_ids(playoffs)
     new_game_ids = [gid for gid in final_ids if gid not in processed_set]
 
     if not new_game_ids:
-        # Persist backfill + meta once (no content regen)
-        if cache.get("processed_game_ids") != processed_list or cache.get("season_id") != season_id:
-            cache["processed_game_ids"] = processed_list
-            cache["season_id"] = season_id
-            cache["generator_version"] = PLAYOFF_GENERATOR_VERSION
-            set_playoff_cache(cache)
         return {"items": items, "new_items": []}
 
     workflow = export_workflow_state()
@@ -343,10 +295,11 @@ def refresh_playoff_news() -> Dict[str, Any]:
 
     # Update processed ids (append in order)
     for gid in new_game_ids:
-        if gid in processed_set:
+        sgid = str(gid)
+        if sgid in processed_set:
             continue
-        processed_set.add(gid)
-        processed_list.append(gid)
+        processed_set.add(sgid)
+        processed_list.append(sgid)
 
     cache["series_game_counts"] = new_counts
     cache["processed_game_ids"] = processed_list
