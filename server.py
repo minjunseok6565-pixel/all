@@ -286,6 +286,7 @@ class SignFreeAgentRequest(BaseModel):
     signed_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
     years: int = 1
     salary_by_year: Optional[Dict[int, int]] = None  # {season_year: salary}
+    team_option_last_year: bool = False  # If True, last year is a TEAM option (PENDING)
 
 
 class ReSignOrExtendRequest(BaseModel):
@@ -294,6 +295,7 @@ class ReSignOrExtendRequest(BaseModel):
     signed_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
     years: int = 1
     salary_by_year: Optional[Dict[int, int]] = None  # {season_year: salary}
+    team_option_last_year: bool = False  # If True, last year is a TEAM option (PENDING)
 
 
 # -------------------------------------------------------------------------
@@ -2316,6 +2318,7 @@ async def api_contracts_sign_free_agent(req: SignFreeAgentRequest):
                 signed_date=req.signed_date or in_game_date,
                 years=req.years,
                 salary_by_year=req.salary_by_year,
+                team_option_last_year=bool(req.team_option_last_year),
             )
         _validate_repo_integrity(db_path)
         event_dict = event.to_dict()
@@ -2344,6 +2347,7 @@ async def api_contracts_re_sign_or_extend(req: ReSignOrExtendRequest):
                 signed_date=req.signed_date or in_game_date,
                 years=req.years,
                 salary_by_year=req.salary_by_year,
+                team_option_last_year=bool(req.team_option_last_year),
             )
         _validate_repo_integrity(db_path)
         event_dict = event.to_dict()
@@ -2770,7 +2774,6 @@ async def state_summary():
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
 
 
 
