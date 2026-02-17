@@ -16,6 +16,7 @@ from ...errors import (
     TradeError,
 )
 from ...models import FixedAsset, PickAsset, PlayerAsset, SwapAsset
+from ...swap_integrity import validate_swap_asset_snapshot
 from ..base import TradeContext
 
 
@@ -134,49 +135,9 @@ class OwnershipRule:
                             {"asset_id": asset.asset_id, "team_id": team_id},
                         )
                 if isinstance(asset, SwapAsset):
-                    pick_a = draft_picks.get(asset.pick_id_a)
-                    pick_b = draft_picks.get(asset.pick_id_b)
-                    if not pick_a or not pick_b:
-                        raise TradeError(
-                            SWAP_INVALID,
-                            "Swap picks must exist",
-                            {
-                                "swap_id": asset.swap_id,
-                                "pick_id_a": asset.pick_id_a,
-                                "pick_id_b": asset.pick_id_b,
-                            },
-                        )
-                    if pick_a.get("year") != pick_b.get("year") or pick_a.get("round") != pick_b.get("round"):
-                        raise TradeError(
-                            SWAP_INVALID,
-                            "Swap picks must match year and round",
-                            {
-                                "swap_id": asset.swap_id,
-                                "pick_a": {"year": pick_a.get("year"), "round": pick_a.get("round")},
-                                "pick_b": {"year": pick_b.get("year"), "round": pick_b.get("round")},
-                            },
-                        )
-                    swap = swap_rights.get(asset.swap_id)
-                    if swap:
-                        if str(swap.get("owner_team", "")).upper() != team_id_normalized:
-                            raise TradeError(
-                                SWAP_NOT_OWNED,
-                                "Swap right not owned by team",
-                                {"swap_id": asset.swap_id, "team_id": team_id},
-                            )
-                    else:
-                        owner_a = str(pick_a.get("owner_team", "")).upper()
-                        owner_b = str(pick_b.get("owner_team", "")).upper()
-                        if owner_a != team_id_normalized and owner_b != team_id_normalized:
-                            raise TradeError(
-                                SWAP_INVALID,
-                                "Swap right cannot be created by team",
-                                {
-                                    "swap_id": asset.swap_id,
-                                    "team_id": team_id,
-                                    "pick_id_a": asset.pick_id_a,
-                                    "pick_id_b": asset.pick_id_b,
-                                    "pick_owner_a": owner_a,
-                                    "pick_owner_b": owner_b,
-                                },
-                            )
+                    validate_swap_asset_snapshot(
+                        asset,
+                        from_team=team_id_normalized,
+                        draft_picks=draft_picks,
+                        swap_rights=swap_rights,
+                    )
