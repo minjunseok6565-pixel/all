@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..models import Player, TeamState
 
 from .participants_roles import (
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
     ROLE_SHOT_CREATOR,
-    ROLE_RIM_ATTACKER,
-    ROLE_SPACER_CS,
-    ROLE_SPACER_MOVE,
+    ROLE_RIM_PRESSURE,
+    ROLE_SPOTUP_SPACER,
+    ROLE_MOVEMENT_SHOOTER,
+    ROLE_CUTTER_FINISHER,
     ROLE_CONNECTOR,
-    ROLE_ROLLER,
-    ROLE_SHORTROLL,
-    ROLE_POP_BIG,
-    ROLE_POST_HUB,
+    ROLE_ROLL_MAN,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_POST_ANCHOR,
+    canonical_offense_role,
+    expand_role_keys_for_lookup,
 )
 
 from .participants_common import (
@@ -31,6 +34,7 @@ from .participants_common import (
     choose_weighted_player,
 )
 
+
 def _role_of_pid(team: TeamState, pid: str) -> str:
     pid = str(pid or "")
     if not pid:
@@ -38,7 +42,7 @@ def _role_of_pid(team: TeamState, pid: str) -> str:
     roles = getattr(team, "roles", {}) or {}
     for role_name, rpid in roles.items():
         if str(rpid) == pid:
-            return str(role_name)
+            return canonical_offense_role(str(role_name))
     return ""
 
 
@@ -68,13 +72,57 @@ def _pass_family(base_action: str, outcome: str) -> str:
 
 
 _PASSER_ROLE_PRIORITY: Dict[str, List[str]] = {
-    "default": [ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_CONNECTOR, ROLE_TRANSITION_HANDLER, ROLE_SHOT_CREATOR, ROLE_SHORTROLL, ROLE_POST_HUB],
-    "drive": [ROLE_RIM_ATTACKER, ROLE_SHOT_CREATOR, ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_CONNECTOR],
-    "swing": [ROLE_CONNECTOR, ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_SHOT_CREATOR, ROLE_TRANSITION_HANDLER],
-    "pnr": [ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_SHORTROLL, ROLE_CONNECTOR, ROLE_ROLLER],
-    "transition": [ROLE_TRANSITION_HANDLER, ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_CONNECTOR, ROLE_RIM_ATTACKER],
-    "posthub": [ROLE_POST_HUB, ROLE_CONNECTOR, ROLE_INITIATOR_PRIMARY, ROLE_INITIATOR_SECONDARY, ROLE_SHORTROLL],
-    "shortroll": [ROLE_SHORTROLL, ROLE_ROLLER, ROLE_POP_BIG, ROLE_POST_HUB, ROLE_CONNECTOR],
+    "default": [
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_CONNECTOR,
+        ROLE_TRANSITION_ENGINE,
+        ROLE_SHOT_CREATOR,
+        ROLE_SHORTROLL_HUB,
+        ROLE_POST_ANCHOR,
+    ],
+    "drive": [
+        ROLE_RIM_PRESSURE,
+        ROLE_SHOT_CREATOR,
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_CONNECTOR,
+    ],
+    "swing": [
+        ROLE_CONNECTOR,
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_SHOT_CREATOR,
+        ROLE_TRANSITION_ENGINE,
+    ],
+    "pnr": [
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_SHORTROLL_HUB,
+        ROLE_CONNECTOR,
+        ROLE_ROLL_MAN,
+    ],
+    "transition": [
+        ROLE_TRANSITION_ENGINE,
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_CONNECTOR,
+        ROLE_RIM_PRESSURE,
+    ],
+    "posthub": [
+        ROLE_POST_ANCHOR,
+        ROLE_CONNECTOR,
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_SHORTROLL_HUB,
+    ],
+    "shortroll": [
+        ROLE_SHORTROLL_HUB,
+        ROLE_ROLL_MAN,
+        ROLE_POP_THREAT,
+        ROLE_POST_ANCHOR,
+        ROLE_CONNECTOR,
+    ],
 }
 
 _PASSER_CAND_CAP: Dict[str, int] = {
@@ -99,77 +147,78 @@ _PASSER_KEY_POWER: Dict[str, Tuple[str, float]] = {
 
 _PASSER_ROLE_MULT: Dict[str, Dict[str, float]] = {
     "default": {
-        ROLE_INITIATOR_PRIMARY: 1.25,
-        ROLE_INITIATOR_SECONDARY: 1.15,
+        ROLE_ENGINE_PRIMARY: 1.25,
+        ROLE_ENGINE_SECONDARY: 1.15,
         ROLE_CONNECTOR: 1.12,
-        ROLE_TRANSITION_HANDLER: 1.08,
+        ROLE_TRANSITION_ENGINE: 1.08,
         ROLE_SHOT_CREATOR: 1.05,
-        ROLE_SHORTROLL: 1.03,
-        ROLE_POST_HUB: 1.03,
-        ROLE_RIM_ATTACKER: 0.98,
-        ROLE_ROLLER: 0.96,
-        ROLE_POP_BIG: 0.96,
-        ROLE_SPACER_CS: 0.92,
-        ROLE_SPACER_MOVE: 0.92,
+        ROLE_SHORTROLL_HUB: 1.03,
+        ROLE_POST_ANCHOR: 1.03,
+        ROLE_RIM_PRESSURE: 0.98,
+        ROLE_ROLL_MAN: 0.96,
+        ROLE_POP_THREAT: 0.96,
+        ROLE_CUTTER_FINISHER: 0.94,
+        ROLE_SPOTUP_SPACER: 0.92,
+        ROLE_MOVEMENT_SHOOTER: 0.92,
         "_DEFAULT_": 0.95,
     },
     "drive": {
-        ROLE_RIM_ATTACKER: 1.30,
+        ROLE_RIM_PRESSURE: 1.30,
         ROLE_SHOT_CREATOR: 1.12,
-        ROLE_INITIATOR_PRIMARY: 1.10,
-        ROLE_INITIATOR_SECONDARY: 1.05,
+        ROLE_ENGINE_PRIMARY: 1.10,
+        ROLE_ENGINE_SECONDARY: 1.05,
         ROLE_CONNECTOR: 1.05,
-        ROLE_TRANSITION_HANDLER: 1.02,
+        ROLE_TRANSITION_ENGINE: 1.02,
         "_DEFAULT_": 0.95,
     },
     "swing": {
         ROLE_CONNECTOR: 1.25,
-        ROLE_INITIATOR_PRIMARY: 1.18,
-        ROLE_INITIATOR_SECONDARY: 1.10,
+        ROLE_ENGINE_PRIMARY: 1.18,
+        ROLE_ENGINE_SECONDARY: 1.10,
         ROLE_SHOT_CREATOR: 1.06,
-        ROLE_TRANSITION_HANDLER: 1.05,
+        ROLE_TRANSITION_ENGINE: 1.05,
         "_DEFAULT_": 0.95,
     },
     "pnr": {
-        ROLE_INITIATOR_PRIMARY: 1.28,
-        ROLE_INITIATOR_SECONDARY: 1.16,
+        ROLE_ENGINE_PRIMARY: 1.28,
+        ROLE_ENGINE_SECONDARY: 1.16,
         ROLE_CONNECTOR: 1.08,
-        ROLE_SHORTROLL: 1.05,
-        ROLE_ROLLER: 1.02,
+        ROLE_SHORTROLL_HUB: 1.05,
+        ROLE_ROLL_MAN: 1.02,
         ROLE_SHOT_CREATOR: 1.05,
         "_DEFAULT_": 0.95,
     },
     "transition": {
-        ROLE_TRANSITION_HANDLER: 1.35,
-        ROLE_INITIATOR_PRIMARY: 1.20,
-        ROLE_INITIATOR_SECONDARY: 1.10,
+        ROLE_TRANSITION_ENGINE: 1.35,
+        ROLE_ENGINE_PRIMARY: 1.20,
+        ROLE_ENGINE_SECONDARY: 1.10,
         ROLE_CONNECTOR: 1.05,
-        ROLE_RIM_ATTACKER: 1.05,
+        ROLE_RIM_PRESSURE: 1.05,
         "_DEFAULT_": 0.95,
     },
     "posthub": {
-        ROLE_POST_HUB: 1.50,
+        ROLE_POST_ANCHOR: 1.50,
         ROLE_CONNECTOR: 1.12,
-        ROLE_INITIATOR_PRIMARY: 1.00,
-        ROLE_INITIATOR_SECONDARY: 0.95,
-        ROLE_SHORTROLL: 1.05,
+        ROLE_ENGINE_PRIMARY: 1.00,
+        ROLE_ENGINE_SECONDARY: 0.95,
+        ROLE_SHORTROLL_HUB: 1.05,
         "_DEFAULT_": 0.95,
     },
     "shortroll": {
-        ROLE_SHORTROLL: 1.55,
-        ROLE_ROLLER: 1.18,
-        ROLE_POP_BIG: 1.10,
-        ROLE_POST_HUB: 1.08,
+        ROLE_SHORTROLL_HUB: 1.55,
+        ROLE_ROLL_MAN: 1.18,
+        ROLE_POP_THREAT: 1.10,
+        ROLE_POST_ANCHOR: 1.08,
         ROLE_CONNECTOR: 1.05,
         "_DEFAULT_": 0.95,
     },
 }
 
 _PASS_OUTCOME_ROLE_BONUS: Dict[str, Dict[str, float]] = {
-    "PASS_KICKOUT": {ROLE_RIM_ATTACKER: 1.08, ROLE_SHOT_CREATOR: 1.05},
-    "PASS_SKIP": {ROLE_CONNECTOR: 1.05, ROLE_INITIATOR_PRIMARY: 1.05},
-    "PASS_EXTRA": {ROLE_CONNECTOR: 1.12, ROLE_INITIATOR_PRIMARY: 1.05, ROLE_INITIATOR_SECONDARY: 1.03},
-    "PASS_SHORTROLL": {ROLE_SHORTROLL: 1.15, ROLE_ROLLER: 1.08, ROLE_POP_BIG: 1.05},
+    "PASS_KICKOUT": {ROLE_RIM_PRESSURE: 1.08, ROLE_SHOT_CREATOR: 1.05},
+    "PASS_SKIP": {ROLE_CONNECTOR: 1.05, ROLE_ENGINE_PRIMARY: 1.05},
+    "PASS_EXTRA": {ROLE_CONNECTOR: 1.12, ROLE_ENGINE_PRIMARY: 1.05, ROLE_ENGINE_SECONDARY: 1.03},
+    "PASS_SHORTROLL": {ROLE_SHORTROLL_HUB: 1.15, ROLE_ROLL_MAN: 1.08, ROLE_POP_THREAT: 1.05},
 }
 
 
@@ -178,8 +227,10 @@ def _role_mult_with_default(team: TeamState, pid: str, role_mult: Dict[str, floa
     base = float(role_mult.get("_DEFAULT_", 1.0))
     out = base
     for role, rpid in roles.items():
-        if str(rpid) == str(pid):
-            out = max(out, float(role_mult.get(role, base)))
+        if str(rpid) != str(pid):
+            continue
+        canon = canonical_offense_role(str(role))
+        out = max(out, float(role_mult.get(canon, base)))
     return out
 
 
@@ -190,8 +241,10 @@ def _role_bonus_for_outcome(team: TeamState, pid: str, outcome: str) -> float:
     roles = getattr(team, "roles", {}) or {}
     out = 1.0
     for role, rpid in roles.items():
-        if str(rpid) == str(pid):
-            out = max(out, float(bonus_map.get(role, 1.0)))
+        if str(rpid) != str(pid):
+            continue
+        canon = canonical_offense_role(str(role))
+        out = max(out, float(bonus_map.get(canon, 1.0)))
     return out
 
 
@@ -221,7 +274,13 @@ def _style_initiator_mult(p: Player, style: Optional[object]) -> float:
     return 1.0
 
 
-def choose_passer(rng: random.Random, offense: TeamState, base_action: str, outcome: str, style: Optional[object] = None) -> Player:
+def choose_passer(
+    rng: random.Random,
+    offense: TeamState,
+    base_action: str,
+    outcome: str,
+    style: Optional[object] = None,
+) -> Player:
     """Pick a passer using role pools + weighted sampling.
 
     This removes deterministic passer lock-in while preserving:
@@ -230,10 +289,11 @@ def choose_passer(rng: random.Random, offense: TeamState, base_action: str, outc
     """
     fam = _pass_family(base_action, outcome)
     role_priority = _PASSER_ROLE_PRIORITY.get(fam, _PASSER_ROLE_PRIORITY["default"])
+    role_priority_exp = expand_role_keys_for_lookup(role_priority)
     cap = int(_PASSER_CAND_CAP.get(fam, 5))
 
     # 1) Start from role-based candidates
-    cand: List[Player] = _players_from_roles(offense, role_priority)
+    cand: List[Player] = _players_from_roles(offense, role_priority_exp)
 
     # 2) Fill with top-k by relevant stats (family-specific), keeping uniqueness
     if fam == "drive":
@@ -280,18 +340,20 @@ def choose_passer(rng: random.Random, offense: TeamState, base_action: str, outc
 
 # ---- Assister selection (deterministic) ----
 
+
 _ASSIST_ROLE_PRIORITY: Tuple[str, ...] = (
     ROLE_CONNECTOR,
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_SHORTROLL,
-    ROLE_POST_HUB,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POST_ANCHOR,
+    ROLE_TRANSITION_ENGINE,
 )
+
 
 def choose_assister_deterministic(team: TeamState, shooter_pid: str) -> Optional[Player]:
     # Prefer primary playmakers, but never return the shooter.
-    for role in _ASSIST_ROLE_PRIORITY:
+    for role in expand_role_keys_for_lookup(_ASSIST_ROLE_PRIORITY):
         pid = team.roles.get(role)
         if pid and pid != shooter_pid:
             p = team.find_player(pid)
@@ -305,6 +367,7 @@ def choose_assister_deterministic(team: TeamState, shooter_pid: str) -> Optional
 
 
 # ---- Assister selection (weighted; for implied assists) ----
+
 
 def _assist_group(shot_outcome: str) -> str:
     o = str(shot_outcome or "")
@@ -322,46 +385,46 @@ def _assist_group(shot_outcome: str) -> str:
 _ASSISTER_ROLE_MULT: Dict[str, Dict[str, float]] = {
     "cs": {
         ROLE_CONNECTOR: 1.28,
-        ROLE_INITIATOR_PRIMARY: 1.22,
-        ROLE_INITIATOR_SECONDARY: 1.12,
-        ROLE_POST_HUB: 1.10,
-        ROLE_SHORTROLL: 1.08,
-        ROLE_TRANSITION_HANDLER: 1.06,
+        ROLE_ENGINE_PRIMARY: 1.22,
+        ROLE_ENGINE_SECONDARY: 1.12,
+        ROLE_POST_ANCHOR: 1.10,
+        ROLE_SHORTROLL_HUB: 1.08,
+        ROLE_TRANSITION_ENGINE: 1.06,
         ROLE_SHOT_CREATOR: 1.02,
         "_DEFAULT_": 0.95,
     },
     "rim": {
-        ROLE_INITIATOR_PRIMARY: 1.28,
-        ROLE_INITIATOR_SECONDARY: 1.14,
-        ROLE_SHORTROLL: 1.16,
+        ROLE_ENGINE_PRIMARY: 1.28,
+        ROLE_ENGINE_SECONDARY: 1.14,
+        ROLE_SHORTROLL_HUB: 1.16,
         ROLE_CONNECTOR: 1.08,
-        ROLE_POST_HUB: 1.06,
-        ROLE_TRANSITION_HANDLER: 1.08,
+        ROLE_POST_ANCHOR: 1.06,
+        ROLE_TRANSITION_ENGINE: 1.08,
         ROLE_SHOT_CREATOR: 1.04,
         "_DEFAULT_": 0.95,
     },
     "post": {
-        ROLE_POST_HUB: 1.35,
+        ROLE_POST_ANCHOR: 1.35,
         ROLE_CONNECTOR: 1.12,
-        ROLE_INITIATOR_PRIMARY: 1.10,
-        ROLE_INITIATOR_SECONDARY: 1.02,
-        ROLE_SHORTROLL: 1.06,
+        ROLE_ENGINE_PRIMARY: 1.10,
+        ROLE_ENGINE_SECONDARY: 1.02,
+        ROLE_SHORTROLL_HUB: 1.06,
         "_DEFAULT_": 0.95,
     },
     "pullup": {
-        ROLE_INITIATOR_PRIMARY: 1.22,
+        ROLE_ENGINE_PRIMARY: 1.22,
         ROLE_SHOT_CREATOR: 1.18,
-        ROLE_INITIATOR_SECONDARY: 1.10,
+        ROLE_ENGINE_SECONDARY: 1.10,
         ROLE_CONNECTOR: 1.02,
         "_DEFAULT_": 0.95,
     },
     "default": {
-        ROLE_INITIATOR_PRIMARY: 1.20,
-        ROLE_INITIATOR_SECONDARY: 1.10,
+        ROLE_ENGINE_PRIMARY: 1.20,
+        ROLE_ENGINE_SECONDARY: 1.10,
         ROLE_CONNECTOR: 1.10,
-        ROLE_SHORTROLL: 1.06,
-        ROLE_POST_HUB: 1.06,
-        ROLE_TRANSITION_HANDLER: 1.04,
+        ROLE_SHORTROLL_HUB: 1.06,
+        ROLE_POST_ANCHOR: 1.06,
+        ROLE_TRANSITION_ENGINE: 1.04,
         ROLE_SHOT_CREATOR: 1.04,
         "_DEFAULT_": 0.95,
     },
@@ -369,11 +432,11 @@ _ASSISTER_ROLE_MULT: Dict[str, Dict[str, float]] = {
 
 _ASSISTER_ROLE_PRIORITY_WEIGHTED: Tuple[str, ...] = (
     ROLE_CONNECTOR,
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_POST_HUB,
-    ROLE_SHORTROLL,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_POST_ANCHOR,
+    ROLE_SHORTROLL_HUB,
+    ROLE_TRANSITION_ENGINE,
     ROLE_SHOT_CREATOR,
 )
 
@@ -400,7 +463,7 @@ def choose_assister_weighted(
     # Role-first candidates
     cand: List[Player] = []
     roles = getattr(offense, "roles", {}) or {}
-    for role in _ASSISTER_ROLE_PRIORITY_WEIGHTED:
+    for role in expand_role_keys_for_lookup(_ASSISTER_ROLE_PRIORITY_WEIGHTED):
         pid = roles.get(role)
         if not pid:
             continue
@@ -440,22 +503,22 @@ def choose_assister_weighted(
 
 # Default actor selection for outcomes that don't have a specific chooser.
 _DEFAULT_ACTOR_ROLE_PRIORITY: Tuple[str, ...] = (
-    ROLE_INITIATOR_PRIMARY,
-    ROLE_INITIATOR_SECONDARY,
-    ROLE_TRANSITION_HANDLER,
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
     ROLE_CONNECTOR,
     ROLE_SHOT_CREATOR,
 )
 
 
 def choose_default_actor(offense: TeamState) -> Player:
-    """Pick the most reasonable on-ball actor (12-role first, then best passer).
+    """Pick the most reasonable on-ball actor (role-first, then best passer).
 
     Used for generic outcomes (e.g., shot clock, generic turnover/reset) where
     a specific participant chooser is not defined.
     """
     roles = getattr(offense, "roles", {}) or {}
-    for role in _DEFAULT_ACTOR_ROLE_PRIORITY:
+    for role in expand_role_keys_for_lookup(_DEFAULT_ACTOR_ROLE_PRIORITY):
         pid = roles.get(role)
         if isinstance(pid, str) and pid:
             p = offense.find_player(pid)

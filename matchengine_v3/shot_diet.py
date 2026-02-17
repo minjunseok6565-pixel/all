@@ -19,18 +19,18 @@ Design principles (as agreed):
 
 Integration conditions (so you can use this file "as-is" with a UI-driven role system):
 - TeamState.roles must be a dict[str, str] mapping role_fit role names -> on-court player pid strings.
-  Example: roles["Initiator_Primary"] = "p123" (must match Player.pid on-court).
-- Primary handler selection reads ONLY roles["Initiator_Primary"].
-  If no Initiator_Primary is on-court, this module falls back to max(_onball_score) and may try to write
-  roles["Initiator_Primary"] = <pid> (best effort; safe to ignore if roles is read-only).
-- Secondary handler selection prefers roles["Initiator_Secondary"].
-  If missing on-court, falls back to max(_onball_score) excluding primary and may try to write roles["Initiator_Secondary"].
+  Example: roles["Engine_Primary"] = "p123" (must match Player.pid on-court).
+- Primary handler selection reads ONLY roles["Engine_Primary"].
+  If no Engine_Primary is on-court, this module falls back to max(_onball_score) and may try to write
+  roles["Engine_Primary"] = <pid> (best effort; safe to ignore if roles is read-only).
+- Secondary handler selection prefers roles["Engine_Secondary"].
+  If missing on-court, falls back to max(_onball_score) excluding primary and may try to write roles["Engine_Secondary"].
 - Scheme-specific screener priorities require passing a scheme name into compute_shot_diet_style() via either:
     * ctx["tactic_name"|"tactic"|"scheme_name"|"scheme"] (string), or
     * game_state.<tactic_name|tactic|scheme_name|scheme> (string).
   If no scheme is provided (or it doesn't match the table), screeners fall back to _screen_score().
 - This module intentionally ignores legacy keys roles["ball_handler"], roles["secondary_handler"], roles["screener"].
-  (So you should NOT rely on those keys once you adopt the 12-role system.)
+  (So you should NOT rely on those keys once you adopt the canonical C13 role system.)
 - If your UI stores roles as Player objects, indices, or other types, convert them to pid strings before calling.
 """
 
@@ -41,6 +41,23 @@ import math
 
 from .core import clamp
 from .models import Player, TeamState
+
+from .offense_roles import (
+    ROLE_ENGINE_PRIMARY,
+    ROLE_ENGINE_SECONDARY,
+    ROLE_TRANSITION_ENGINE,
+    ROLE_SHOT_CREATOR,
+    ROLE_RIM_PRESSURE,
+    ROLE_SPOTUP_SPACER,
+    ROLE_MOVEMENT_SHOOTER,
+    ROLE_CUTTER_FINISHER,
+    ROLE_CONNECTOR,
+    ROLE_ROLL_MAN,
+    ROLE_SHORTROLL_HUB,
+    ROLE_POP_THREAT,
+    ROLE_POST_ANCHOR,
+    expand_role_keys_for_lookup,
+)
 
 # -------------------------
 # Data imports (tables moved to shot_diet_data.py to keep this module logic-focused)
@@ -256,6 +273,23 @@ def _pid_to_player(lineup: List[Player]) -> Dict[str, Player]:
     return {p.pid: p for p in lineup}
 
 
+# --- Role lookup helpers (C13 SSOT + legacy compatible) ---
+
+def _role_pid(roles: Dict[str, Any], role_key: str) -> Optional[str]:
+    """Lookup pid for a role key, accepting canonical or legacy keys.
+
+    During migration, TeamState.roles may contain canonical C13 keys or legacy 12-role keys.
+    This helper tries both via expand_role_keys_for_lookup().
+    """
+    if not isinstance(roles, dict):
+        return None
+    for k in expand_role_keys_for_lookup([role_key]):
+        pid = roles.get(k)
+        if isinstance(pid, str) and pid:
+            return pid
+    return None
+
+
 # -------------------------
 # Role selection (Spec v1)
 # -------------------------
@@ -289,18 +323,18 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
     Map role_fit roles -> shot_diet initiators.
 
     Rules:
-    - ball_handler == Initiator_Primary (must be on-court). If none on-court, assign best _onball_score as Initiator_Primary.
-    - secondary_handler prefers Initiator_Secondary (on-court). If none on-court, pick best _onball_score excluding primary.
+    - ball_handler == Engine_Primary (must be on-court). If none on-court, assign best _onball_score as Engine_Primary.
+    - secondary_handler prefers Engine_Secondary (on-court). If none on-court, pick best _onball_score excluding primary.
     """
     lineup = off.on_court_players()
     pid_map = _pid_to_player(lineup)
 
     # roles values are expected to be on-court player pid strings (not Player objects).
     roles = off.roles if isinstance(getattr(off, "roles", None), dict) else {}
-    role_ip = roles.get("Initiator_Primary")
-    role_is = roles.get("Initiator_Secondary")
+    role_ip = _role_pid(roles, ROLE_ENGINE_PRIMARY)
+    role_is = _role_pid(roles, ROLE_ENGINE_SECONDARY)
 
-    # Primary == Initiator_Primary (must be on-court)
+    # Primary == Engine_Primary (must be on-court)
     if role_ip and role_ip in pid_map:
         primary = role_ip
         primary_fallback = False
@@ -309,12 +343,13 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
         primary_fallback = True
         # If roles dict is mutable, keep assignments consistent for downstream modules.
         if roles is getattr(off, "roles", None):
-            try:
-                off.roles["Initiator_Primary"] = primary
-            except Exception:
-                pass
+                try:
+                    for k in expand_role_keys_for_lookup([ROLE_ENGINE_PRIMARY]):
+                        off.roles[k] = primary
+                except Exception:
+                    pass
 
-    # Secondary: prefer Initiator_Secondary (on-court), else best onball excluding primary
+    # Secondary: prefer Engine_Secondary (on-court), else best onball excluding primary
     if role_is and role_is in pid_map and role_is != primary:
         secondary = role_is
         secondary_fallback = False
@@ -325,7 +360,8 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
             secondary_fallback = True
             if roles is getattr(off, "roles", None) and secondary != primary:
                 try:
-                    off.roles["Initiator_Secondary"] = secondary
+                    for k in expand_role_keys_for_lookup([ROLE_ENGINE_SECONDARY]):
+                        off.roles[k] = secondary
                 except Exception:
                     pass
         else:
@@ -348,8 +384,8 @@ def _pick_primary_secondary(off: TeamState) -> Tuple[str, str, float, float, Dic
         w2 = 1.0 - w1
 
     meta = {
-        "role_Initiator_Primary": role_ip,
-        "role_Initiator_Secondary": role_is,
+        "role_Engine_Primary": role_ip,
+        "role_Engine_Secondary": role_is,
         "primary_fallback": primary_fallback,
         "secondary_fallback": secondary_fallback,
         "onball_primary": s1,
@@ -380,7 +416,7 @@ def _pick_screeners(
 
     def _first_pid_by_role_priority(exclude: Tuple[str, ...]) -> Optional[str]:
         for r in prio_roles:
-            pid = roles.get(r)
+            pid = _role_pid(roles, r)
             if pid and pid in pid_map and pid not in exclude:
                 return pid
         return None
@@ -471,21 +507,23 @@ def compute_shot_diet_style(
     scheme_norm = _normalize_scheme_name(scheme_name)
 
     # Include role assignments in cache key so initiator/screener selection stays coherent.
-    _ROLE_KEYS = (
-        "Initiator_Primary",
-        "Initiator_Secondary",
-        "Transition_Handler",
-        "Shot_Creator",
-        "Rim_Attacker",
-        "Spacer_CatchShoot",
-        "Spacer_Movement",
-        "Connector_Playmaker",
-        "Roller_Finisher",
-        "ShortRoll_Playmaker",
-        "Pop_Spacer_Big",
-        "Post_Hub",
+    # Cache uses a *canonical snapshot* (C13 keys), but lookup accepts legacy keys too.
+    _ROLE_KEYS_CANON = (
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_TRANSITION_ENGINE,
+        ROLE_SHOT_CREATOR,
+        ROLE_RIM_PRESSURE,
+        ROLE_SPOTUP_SPACER,
+        ROLE_MOVEMENT_SHOOTER,
+        ROLE_CUTTER_FINISHER,
+        ROLE_CONNECTOR,
+        ROLE_ROLL_MAN,
+        ROLE_SHORTROLL_HUB,
+        ROLE_POP_THREAT,
+        ROLE_POST_ANCHOR,
     )
-    role_key = (scheme_norm,) + tuple(roles.get(k) for k in _ROLE_KEYS)
+    role_key = (scheme_norm,) + tuple(_role_pid(roles, k) for k in _ROLE_KEYS_CANON)
     cache_key = (off_pids, def_pids, off_energy, def_energy, role_key)
     if cache_key in _STYLE_CACHE:
         style = _STYLE_CACHE.pop(cache_key)

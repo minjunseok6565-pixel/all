@@ -10,12 +10,15 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .models import GameState, TeamState
 
 
-# Prefer to reuse the same role->group mapping as sim_rotation (keeps rotation + fatigue consistent).
+# Prefer to reuse the same role->group mapping as offense_roles (SSOT; keeps rotation + fatigue consistent).
 try:
-    # ROLE_TO_GROUPS maps offensive role names (12 roles) to rotation groups (Handler/Wing/Big).
-    from .sim_rotation import ROLE_TO_GROUPS  # type: ignore
+    # ROLE_TO_GROUPS maps canonical offensive role names (C13) to rotation groups (Handler/Wing/Big).
+    from .offense_roles import ROLE_TO_GROUPS, canonical_offense_role  # type: ignore
 except Exception:  # pragma: no cover
     ROLE_TO_GROUPS = {}  # type: ignore
+
+    def canonical_offense_role(role_key: str) -> str:  # type: ignore
+        return str(role_key or '').strip()
 
 
 # Primary-group semantics:
@@ -24,8 +27,8 @@ _GROUP_PRIORITY: Dict[str, int] = {"Handler": 3, "Wing": 2, "Big": 1}
 
 
 def _primary_group_for_role(role_name: str) -> str:
-    """Return the primary rotation group for a 12-role name, or "" if unknown."""
-    rn = str(role_name or "").strip()
+    """Return the primary rotation group for a role name (canonical C13 or legacy), or "" if unknown."""
+    rn = canonical_offense_role(str(role_name or '').strip())
     if not rn or not isinstance(ROLE_TO_GROUPS, dict):
         return ""
     groups = ROLE_TO_GROUPS.get(rn)
@@ -44,26 +47,26 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
     Priority:
     1) TeamState.rotation_offense_role_by_pid (explicit pid->role map)
     2) tactics.context (ROTATION_OFFENSE_ROLE_BY_PID / OFFENSE_ROLE_BY_PID)
-    3) team.roles (role->pid), inverted (12-role only; primary-group semantics on conflicts)
+    3) team.roles (role->pid), inverted (canonical roles; primary-group semantics on conflicts)
     """
     m = getattr(team, "rotation_offense_role_by_pid", None)
     if isinstance(m, dict) and m:
-        return {str(k): str(v) for k, v in m.items()}
+        return {str(k): canonical_offense_role(v) for k, v in m.items()}
 
     ctx = getattr(getattr(team, "tactics", None), "context", None)
     if isinstance(ctx, dict):
         rm = ctx.get("ROTATION_OFFENSE_ROLE_BY_PID") or ctx.get("OFFENSE_ROLE_BY_PID")
         if isinstance(rm, dict) and rm:
-            return {str(k): str(v) for k, v in rm.items()}
+            return {str(k): canonical_offense_role(v) for k, v in rm.items()}
 
-    # Invert team.roles (12-role keys) -> pid -> role.
+    # Invert team.roles (canonical role keys) -> pid -> role.
     roles = getattr(team, "roles", None)
     if isinstance(roles, dict) and roles and isinstance(ROLE_TO_GROUPS, dict) and ROLE_TO_GROUPS:
         pid_to_role_candidates: Dict[str, List[str]] = {}
         for role_name, pid in roles.items():
             if not pid:
                 continue
-            rn = str(role_name)
+            rn = canonical_offense_role(str(role_name))
             if rn not in ROLE_TO_GROUPS:
                 # Ignore legacy keys (ball_handler, screener, etc.) and unknown entries.
                 continue
@@ -92,7 +95,7 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
 def _fatigue_archetype_for_pid(team: TeamState, pid: str, role_by_pid: Mapping[str, str]) -> str:
     """Classify a player as handler/wing/big for fatigue drain.
 
-    If offensive roles are configured (12-role system), we derive archetype from ROLE_TO_GROUPS
+    If offensive roles are configured (C13 system), we derive archetype from ROLE_TO_GROUPS
     using ONLY the primary group (index 0):
       - primary == Handler => handler
       - primary == Big     => big
@@ -102,7 +105,7 @@ def _fatigue_archetype_for_pid(team: TeamState, pid: str, role_by_pid: Mapping[s
       - team.roles (ball_handler/secondary_handler/screener/post)
       - position override (C/F => big)
     """
-    role_name = str(role_by_pid.get(pid, "") or "").strip()
+    role_name = canonical_offense_role(str(role_by_pid.get(pid, "") or "").strip())
     if role_name and isinstance(ROLE_TO_GROUPS, dict) and role_name in ROLE_TO_GROUPS:
         primary = _primary_group_for_role(role_name)
         if primary == "Handler":

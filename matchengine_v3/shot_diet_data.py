@@ -348,80 +348,80 @@ TACTIC_ALPHA: Dict[str, Tuple[float, float]] = {
 
 
 
-# Screener role priorities per scheme (role_fit role names)
+# Screener role priorities per scheme (canonical offensive role keys)
 # NOTE: scheme name normalization is handled by _normalize_scheme_name().
 SCREENER_ROLE_PRIORITY: Dict[str, List[str]] = {
     # Spread PnR: roll pressure -> short roll / pop as next layer
     "Spread_HeavyPnR": [
-        "Roller_Finisher",
-        "ShortRoll_Playmaker",
-        "Pop_Spacer_Big",
-        "Post_Hub",
-        "Connector_Playmaker",
-        "Spacer_Movement",
+        "Roll_Man",
+        "ShortRoll_Hub",
+        "Pop_Threat",
+        "Post_Anchor",
+        "Connector",
+        "Movement_Shooter",
     ],
     # Drive & Kick: pop/ghost to clear lane -> roll to pin help
     "Drive_Kick": [
-        "Pop_Spacer_Big",
-        "Roller_Finisher",
-        "Connector_Playmaker",
-        "ShortRoll_Playmaker",
-        "Spacer_Movement",
-        "Post_Hub",
+        "Pop_Threat",
+        "Roll_Man",
+        "Connector",
+        "ShortRoll_Hub",
+        "Movement_Shooter",
+        "Post_Anchor",
     ],
     # 5-out: pop/slip/riscreen to force switches & break help line
     "FiveOut": [
-        "Pop_Spacer_Big",
-        "ShortRoll_Playmaker",
-        "Connector_Playmaker",
-        "Spacer_Movement",
-        "Roller_Finisher",
-        "Post_Hub",
+        "Pop_Threat",
+        "ShortRoll_Hub",
+        "Connector",
+        "Movement_Shooter",
+        "Roll_Man",
+        "Post_Anchor",
     ],
     # DHO + Chicago: handoff hub (delivery + decision + rescreen)
     "DHO_Chicago": [
-        "Connector_Playmaker",
-        "Pop_Spacer_Big",
-        "Post_Hub",
-        "Spacer_Movement",
-        "ShortRoll_Playmaker",
-        "Roller_Finisher",
+        "Connector",
+        "Pop_Threat",
+        "Post_Anchor",
+        "Movement_Shooter",
+        "ShortRoll_Hub",
+        "Roll_Man",
     ],
     # Motion split-cut: off-ball screening by guards/wings
     "Motion_SplitCut": [
-        "Connector_Playmaker",
-        "Spacer_Movement",
-        "Post_Hub",
-        "Pop_Spacer_Big",
-        "ShortRoll_Playmaker",
-        "Roller_Finisher",
+        "Connector",
+        "Movement_Shooter",
+        "Post_Anchor",
+        "Pop_Threat",
+        "ShortRoll_Hub",
+        "Roll_Man",
     ],
     # Post inside-out: anchor post hub, then free shooters
     "Post_InsideOut": [
-        "Post_Hub",
-        "Spacer_Movement",
-        "Connector_Playmaker",
-        "Roller_Finisher",
-        "Pop_Spacer_Big",
-        "ShortRoll_Playmaker",
+        "Post_Anchor",
+        "Movement_Shooter",
+        "Connector",
+        "Roll_Man",
+        "Pop_Threat",
+        "ShortRoll_Hub",
     ],
     # Horns elbow: elbow short roll reads first
     "Horns_Elbow": [
-        "ShortRoll_Playmaker",
-        "Pop_Spacer_Big",
-        "Post_Hub",
-        "Roller_Finisher",
-        "Connector_Playmaker",
-        "Spacer_Movement",
+        "ShortRoll_Hub",
+        "Pop_Threat",
+        "Post_Anchor",
+        "Roll_Man",
+        "Connector",
+        "Movement_Shooter",
     ],
     # Transition early/drag: speed & rim threat first
     "Transition_Early": [
-        "Roller_Finisher",
-        "Pop_Spacer_Big",
-        "ShortRoll_Playmaker",
-        "Spacer_Movement",
-        "Connector_Playmaker",
-        "Post_Hub",
+        "Roll_Man",
+        "Pop_Threat",
+        "ShortRoll_Hub",
+        "Movement_Shooter",
+        "Connector",
+        "Post_Anchor",
     ],
 }
 

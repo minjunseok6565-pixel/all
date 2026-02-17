@@ -20,33 +20,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 from .core import clamp
 from .models import GameState, TeamState
 from .replay import emit_event
+from .offense_roles import ROLE_TO_GROUPS, canonical_offense_role
 
 
-# -------------------------
-# Role -> Group mapping
-# -------------------------
-# Primary group is listed first; additional entries represent "hybrid" eligibility.
-ROLE_TO_GROUPS: Dict[str, Tuple[str, ...]] = {
-    # Handlers
-    "Initiator_Primary": ("Handler",),
-    "Transition_Handler": ("Handler",),
-
-    # Handler/Wing hybrids
-    "Initiator_Secondary": ("Handler", "Wing"),
-    "Shot_Creator": ("Wing", "Handler"),
-    "Connector_Playmaker": ("Wing", "Handler"),
-    "Rim_Attacker": ("Wing", "Handler"),
-
-    # Wings
-    "Spacer_CatchShoot": ("Wing",),
-    "Spacer_Movement": ("Wing",),
-
-    # Bigs
-    "Roller_Finisher": ("Big",),
-    "ShortRoll_Playmaker": ("Big",),
-    "Pop_Spacer_Big": ("Big",),
-    "Post_Hub": ("Big",),
-}
+# Role->group mapping is SSOT in offense_roles.py (C13).
 
 
 def _get_tactics_context(team: TeamState) -> Dict[str, Any]:
@@ -174,16 +151,17 @@ def pick_desired_five_bruteforce(
     role_by_pid: Dict[str, str] = {}
     team_roles = getattr(team, "rotation_offense_role_by_pid", None)
     if isinstance(team_roles, dict) and team_roles:
-        role_by_pid = {str(pid): str(role) for pid, role in team_roles.items()}
+        role_by_pid = {str(pid): canonical_offense_role(role) for pid, role in team_roles.items()}
     else:
         raw_roles = ctx.get("ROTATION_OFFENSE_ROLE_BY_PID") or ctx.get("OFFENSE_ROLE_BY_PID")
         if isinstance(raw_roles, dict):
-            role_by_pid = {str(pid): str(role) for pid, role in raw_roles.items()}
+            role_by_pid = {str(pid): canonical_offense_role(role) for pid, role in raw_roles.items()}
 
     def groups_for(pid: str) -> Tuple[str, ...]:
         role = role_by_pid.get(pid)
-        if role and role in ROLE_TO_GROUPS:
-            return ROLE_TO_GROUPS[role]
+        canon = canonical_offense_role(role) if role else ""
+        if canon and canon in ROLE_TO_GROUPS:
+            return ROLE_TO_GROUPS[canon]
         pos = getattr(player_by_pid.get(pid), "pos", "G")
         return _fallback_groups_from_pos(pos)
 
@@ -1323,18 +1301,19 @@ def maybe_substitute_deadball_v1(
     role_by_pid: Dict[str, str] = {}
     team_roles = getattr(team, "rotation_offense_role_by_pid", None)
     if isinstance(team_roles, dict) and team_roles:
-        role_by_pid = {str(pid): str(role) for pid, role in team_roles.items()}
+        role_by_pid = {str(pid): canonical_offense_role(role) for pid, role in team_roles.items()}
     else:
         raw_roles = ctx.get("ROTATION_OFFENSE_ROLE_BY_PID") or ctx.get("OFFENSE_ROLE_BY_PID")
         if isinstance(raw_roles, dict):
-            role_by_pid = {str(pid): str(role) for pid, role in raw_roles.items()}
+            role_by_pid = {str(pid): canonical_offense_role(role) for pid, role in raw_roles.items()}
 
     player_by_pid = {p.pid: p for p in team.lineup}
 
     def groups_for(pid: str) -> Tuple[str, ...]:
         role = role_by_pid.get(pid)
-        if role and role in ROLE_TO_GROUPS:
-            return ROLE_TO_GROUPS[role]
+        canon = canonical_offense_role(role) if role else ""
+        if canon and canon in ROLE_TO_GROUPS:
+            return ROLE_TO_GROUPS[canon]
         pos = getattr(player_by_pid.get(pid), "pos", "G")
         return _fallback_groups_from_pos(pos)
 
