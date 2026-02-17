@@ -197,9 +197,22 @@ def simulate_single_game(
     game_date_str = game_date or get_current_date_as_date().isoformat()
 
     # Ensure monthly growth tick is applied (idempotent).
-    from training.checkpoints import maybe_run_monthly_growth_tick
+    try:
+        from training.checkpoints import maybe_run_monthly_growth_tick
 
-    maybe_run_monthly_growth_tick(db_path=get_db_path(), game_date_iso=game_date_str)
+        maybe_run_monthly_growth_tick(db_path=get_db_path(), game_date_iso=game_date_str)
+    except Exception:
+        # Growth tick must never crash games.
+        logger.warning("MONTHLY_GROWTH_TICK_FAILED date=%s", game_date_str, exc_info=True)
+
+    # Ensure monthly agency tick is applied (idempotent).
+    try:
+        from agency.checkpoints import maybe_run_monthly_agency_tick
+
+        maybe_run_monthly_agency_tick(db_path=get_db_path(), game_date_iso=game_date_str)
+    except Exception:
+        # Agency tick must never crash games.
+        logger.warning("MONTHLY_AGENCY_TICK_FAILED date=%s", game_date_str, exc_info=True)
 
     game_id = f"single_{home_team_id}_{away_team_id}_{uuid4().hex[:8]}"
 

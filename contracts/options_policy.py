@@ -18,7 +18,8 @@ NOTE:
 from __future__ import annotations
 
 import hashlib
-from typing import Callable, Literal, Optional
+import sqlite3
+from typing import Any, Callable, Dict, Literal, Mapping, Optional, Tuple
 
 from config import (
     CAP_ANNUAL_GROWTH_RATE,
@@ -31,10 +32,105 @@ from schema import normalize_player_id
 Decision = Literal["EXERCISE", "DECLINE"]
 
 
+# NOTE: This module is invoked inside LeagueService.expire_contracts_for_season_transition,
+# which runs inside a DB transaction. Option policies MUST be:
+# - fast
+# - deterministic
+# - side-effect free
+# - resilient (never crash the offseason pipeline)
+
+
+_PLAYER_ROW_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_PLAYER_ROW_CACHE_MAX = 4096
+
+
+def _safe_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return int(default)
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+def _get_db_path_from_game_state(game_state: Mapping[str, Any]) -> Optional[str]:
+    league = game_state.get("league") if isinstance(game_state, Mapping) else None
+    if not isinstance(league, Mapping):
+        return None
+    db_path = league.get("db_path")
+    return str(db_path) if db_path else None
+
+
+def _get_ui_player_meta(game_state: Mapping[str, Any], player_id: str) -> Dict[str, Any]:
+    ui_cache = game_state.get("ui_cache") if isinstance(game_state, Mapping) else None
+    if not isinstance(ui_cache, Mapping):
+        return {}
+    players = ui_cache.get("players")
+    if not isinstance(players, Mapping):
+        return {}
+    row = players.get(str(player_id))
+    return dict(row) if isinstance(row, Mapping) else {}
+
+
+def _load_player_row_ro(db_path: str, player_id: str) -> Dict[str, Any]:
+    """Load minimal player info from DB (read-only) with a small in-process cache."""
+    key = (str(db_path), str(player_id))
+    cached = _PLAYER_ROW_CACHE.get(key)
+    if isinstance(cached, dict):
+        return cached
+
+    if len(_PLAYER_ROW_CACHE) >= _PLAYER_ROW_CACHE_MAX:
+        # Simple protection against unbounded memory growth.
+        _PLAYER_ROW_CACHE.clear()
+
+    # Read-only connection to avoid interacting with the active write txn.
+    # WAL mode (enabled in LeagueRepo) allows readers during writes.
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        r = conn.execute(
+            "SELECT age, ovr, attrs_json FROM players WHERE player_id=?;",
+            (str(player_id),),
+        ).fetchone()
+        if not r:
+            out: Dict[str, Any] = {}
+        else:
+            out = {
+                "age": _safe_int(r["age"], 0),
+                "ovr": _safe_int(r["ovr"], 0),
+                "attrs_json": r["attrs_json"],
+            }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    _PLAYER_ROW_CACHE[key] = out
+    return out
+
+
+def _extract_mental_map(attrs_json: Any) -> Mapping[str, Any]:
+    """Return logical mental mapping expected by agency.options (0..100 ints)."""
+    try:
+        from agency.config import DEFAULT_CONFIG
+        from agency.utils import extract_mental_from_attrs
+
+        return extract_mental_from_attrs(attrs_json, keys=DEFAULT_CONFIG.mental_attr_keys)
+    except Exception:
+        # Be conservative: missing mental => neutral defaults in agency.options.
+        return {}
+
+
 def normalize_option_type(value: str) -> str:
     normalized = str(value).strip().upper()
     if normalized not in {"TEAM", "PLAYER", "ETO"}:
-        raise ValueError(f"Invalid option type: {value}")
+        return "PLAYER"
     return normalized
 
 
@@ -44,16 +140,94 @@ def default_option_decision_policy(
     contract: dict,
     game_state: dict,
 ) -> Decision:
-    """Minimal default policy for stability.
+    """Default policy for contract options.
 
-    - TEAM option: EXERCISE
-    - PLAYER option: EXERCISE
-    - ETO: EXERCISE
+    Design intent
+    -------------
+    - TEAM option: always EXERCISE (user-facing decisions are handled elsewhere).
+    - PLAYER option / ETO: use agency.options (market-aware, deterministic, mental-modulated).
 
-    This exists to keep DB transitions deterministic even if no AI logic is wired.
+    Safety
+    ------
+    - Never crash the offseason pipeline.
+    - If required context is missing, fall back to EXERCISE for stability.
     """
     normalize_player_id(player_id, strict=False, allow_legacy_numeric=True)
-    return "EXERCISE"
+
+    try:
+        option_type = normalize_option_type(str(option.get("type") or option.get("option_type") or ""))
+    except Exception:
+        return "EXERCISE"
+
+    # TEAM options are handled explicitly for the user team; for AI we keep it simple.
+    if option_type == "TEAM":
+        return "EXERCISE"
+
+    # Resolve option salary from the contract salary_by_year for that season.
+    season_year = _safe_int(option.get("season_year"), 0)
+    if season_year <= 0:
+        return "EXERCISE"
+
+    salary_by_year = contract.get("salary_by_year") if isinstance(contract, Mapping) else None
+    if not isinstance(salary_by_year, Mapping):
+        return "EXERCISE"
+
+    option_salary = _safe_float(salary_by_year.get(str(season_year)), 0.0)
+    if option_salary <= 0.0:
+        # If salary is missing/invalid, exercising is the safest non-destructive choice.
+        return "EXERCISE"
+
+    # Prefer UI cache for speed; fall back to DB read when necessary.
+    ui = _get_ui_player_meta(game_state, str(player_id))
+    age = _safe_int(ui.get("age"), 0)
+    ovr = _safe_int(ui.get("overall") or ui.get("ovr"), 0)
+    team_id = str(ui.get("team_id") or "") or None
+
+    # If a future UI cache includes mental values, prefer it.
+    mental: Mapping[str, Any] = ui.get("mental") if isinstance(ui.get("mental"), Mapping) else {}
+
+    # Use DB fallback for missing age/ovr and to extract mental from attrs_json.
+    db_path = _get_db_path_from_game_state(game_state)
+    if db_path and (age <= 0 or ovr <= 0 or not mental):
+        try:
+            row = _load_player_row_ro(db_path, str(player_id))
+            if age <= 0:
+                age = _safe_int(row.get("age"), age)
+            if ovr <= 0:
+                ovr = _safe_int(row.get("ovr"), ovr)
+            if not mental:
+                mental = _extract_mental_map(row.get("attrs_json"))
+        except Exception:
+            mental = mental or {}
+
+    # Still missing critical values -> stable fallback.
+    if age <= 0 or ovr <= 0:
+        return "EXERCISE"
+
+    # Agency-driven decision.
+    try:
+        from agency.config import DEFAULT_CONFIG
+        from agency.options import decide_player_option
+        from agency.types import PlayerOptionInputs
+
+        res = decide_player_option(
+            PlayerOptionInputs(
+                player_id=str(player_id),
+                ovr=int(ovr),
+                age=int(age),
+                option_salary=float(option_salary),
+                team_id=str(team_id).upper() if team_id else None,
+                team_win_pct=None,
+                injury_risk=0.0,
+                mental=mental or {},
+            ),
+            cfg=DEFAULT_CONFIG.options,
+            seed_salt=str(season_year),
+        )
+        return res.decision
+    except Exception:
+        # Never crash option processing.
+        return "EXERCISE"
 
 
 # ---------------------------------------------------------------------------
