@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from state_modules.state_constants import DEFAULT_TRADE_RULES, _DEFAULT_TRADE_MARKET, _DEFAULT_TRADE_MEMORY
 
-STATE_SCHEMA_VERSION = "4.0"
+STATE_SCHEMA_VERSION = "4.1"
 ALLOWED_PHASES = {"regular", "preseason", "play_in", "playoffs"}
 NON_REGULAR_PHASES = {"preseason", "play_in", "playoffs"}
 ALLOWED_TOP_LEVEL_KEYS = {
@@ -61,8 +61,24 @@ ALLOWED_META_SCHEDULE_KEYS = {"built_from_turn_by_team", "season_id"}
 ALLOWED_SCORES_VIEW_KEYS = {"latest_date", "games"}
 ALLOWED_SCHEDULE_VIEW_KEYS = {"teams"}
 ALLOWED_STATS_VIEW_KEYS = {"leaders"}
-ALLOWED_WEEKLY_NEWS_KEYS = {"last_generated_week_start", "items"}
-ALLOWED_PLAYOFF_NEWS_KEYS = {"series_game_counts", "items"}
+ALLOWED_WEEKLY_NEWS_KEYS = {
+    "last_generated_week_start",
+    "last_generated_as_of_date",
+    "built_from_turn",
+    "season_id",
+    "generator_version",
+    "llm",
+    "items",
+}
+ALLOWED_WEEKLY_NEWS_LLM_KEYS = {"used", "model", "error"}
+ALLOWED_PLAYOFF_NEWS_KEYS = {
+    "series_game_counts",
+    "processed_game_ids",
+    "built_from_turn",
+    "season_id",
+    "generator_version",
+    "items",
+}
 ALLOWED_SEASON_HISTORY_RECORD_KEYS = {"regular", "phase_results", "postseason", "archived_at_turn", "archived_at_date"}
 ALLOWED_MIGRATIONS_KEYS = {
     "db_initialized",
@@ -107,10 +123,19 @@ def create_default_game_state() -> Dict[str, Any]:
             },
             "weekly_news": {
                 "last_generated_week_start": None,
+                "last_generated_as_of_date": None,
+                "built_from_turn": -1,
+                "season_id": None,
+                "generator_version": "news.weekly.v2",
+                "llm": {"used": False, "model": None, "error": None},
                 "items": [],
             },
             "playoff_news": {
                 "series_game_counts": {},
+                "processed_game_ids": [],
+                "built_from_turn": -1,
+                "season_id": None,
+                "generator_version": "news.playoffs.v2",
                 "items": [],
             },
         },
@@ -275,6 +300,31 @@ def validate_game_state(state: dict) -> None:
 
     weekly_news = _require_nested_container(cached_views, "weekly_news", dict, "dict")
     _require_exact_keys(weekly_news, ALLOWED_WEEKLY_NEWS_KEYS, "cached_views.weekly_news")
+    w_week_start = weekly_news.get("last_generated_week_start")
+    if w_week_start is not None and not isinstance(w_week_start, str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.last_generated_week_start must be str or None")
+    w_as_of = weekly_news.get("last_generated_as_of_date")
+    if w_as_of is not None and not isinstance(w_as_of, str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.last_generated_as_of_date must be str or None")
+    if not isinstance(weekly_news.get("built_from_turn"), int):
+        raise ValueError("GameState invalid: cached_views.weekly_news.built_from_turn must be int")
+    w_season_id = weekly_news.get("season_id")
+    if w_season_id is not None and not isinstance(w_season_id, str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.season_id must be str or None")
+    if not isinstance(weekly_news.get("generator_version"), str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.generator_version must be str")
+    w_llm = weekly_news.get("llm")
+    if not isinstance(w_llm, dict):
+        raise ValueError("GameState invalid: cached_views.weekly_news.llm must be dict")
+    _require_exact_keys(w_llm, ALLOWED_WEEKLY_NEWS_LLM_KEYS, "cached_views.weekly_news.llm")
+    if not isinstance(w_llm.get("used"), bool):
+        raise ValueError("GameState invalid: cached_views.weekly_news.llm.used must be bool")
+    w_model = w_llm.get("model")
+    if w_model is not None and not isinstance(w_model, str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.llm.model must be str or None")
+    w_err = w_llm.get("error")
+    if w_err is not None and not isinstance(w_err, str):
+        raise ValueError("GameState invalid: cached_views.weekly_news.llm.error must be str or None")
     if not isinstance(weekly_news.get("items"), list):
         raise ValueError("GameState invalid: cached_views.weekly_news.items must be list")
 
@@ -282,6 +332,15 @@ def validate_game_state(state: dict) -> None:
     _require_exact_keys(playoff_news, ALLOWED_PLAYOFF_NEWS_KEYS, "cached_views.playoff_news")
     if not isinstance(playoff_news.get("series_game_counts"), dict):
         raise ValueError("GameState invalid: cached_views.playoff_news.series_game_counts must be dict")
+    if not isinstance(playoff_news.get("processed_game_ids"), list):
+        raise ValueError("GameState invalid: cached_views.playoff_news.processed_game_ids must be list")
+    if not isinstance(playoff_news.get("built_from_turn"), int):
+        raise ValueError("GameState invalid: cached_views.playoff_news.built_from_turn must be int")
+    p_season_id = playoff_news.get("season_id")
+    if p_season_id is not None and not isinstance(p_season_id, str):
+        raise ValueError("GameState invalid: cached_views.playoff_news.season_id must be str or None")
+    if not isinstance(playoff_news.get("generator_version"), str):
+        raise ValueError("GameState invalid: cached_views.playoff_news.generator_version must be str")
     if not isinstance(playoff_news.get("items"), list):
         raise ValueError("GameState invalid: cached_views.playoff_news.items must be list")
 
