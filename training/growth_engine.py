@@ -196,6 +196,7 @@ def apply_growth_tick(
     age: int,
     height_in: int,
     minutes: float,
+    growth_mult: float = 1.0,
     profile: Mapping[str, Any],
     team_plan: Mapping[str, Any],
     player_plan: Mapping[str, Any],
@@ -208,6 +209,10 @@ def apply_growth_tick(
     ----------
     tick_kind:
         "offseason" or "monthly" (controls magnitude).
+
+    growth_mult:
+        Optional multiplier (0..1) applied to positive growth only.
+        Used by the injury system to suppress growth while a player is OUT.
 
     Returns
     -------
@@ -278,7 +283,14 @@ def apply_growth_tick(
     noise = max(float(cfg.NOISE_MULT_MIN), min(float(cfg.NOISE_MULT_MAX), rng.gauss(1.0, sigma)))
 
     # Positive & negative point budgets.
-    pos_points_f = base_pos * g_age * drive * intensity_mult * m_mult * cap_mult * noise
+    try:
+        gm = float(growth_mult)
+    except Exception:
+        gm = 1.0
+    # Injury-driven growth suppression is expected to be in 0..1.
+    # Clamp to avoid accidental amplification.
+    gm = max(0.0, min(1.0, gm))
+    pos_points_f = base_pos * g_age * drive * intensity_mult * m_mult * cap_mult * noise * gm
 
     # Work ethic reduces decline (maintenance).
     maintenance = float(cfg.MAINTENANCE_BASE) + float(cfg.MAINTENANCE_W_WORK) * work + float(cfg.MAINTENANCE_W_COACH) * coach
@@ -376,6 +388,7 @@ def apply_growth_tick(
         "tick_id": str(tick_id),
         "age": int(age),
         "minutes": float(minutes),
+        "growth_mult": float(gm),
         "proxy_before": float(cur_proxy),
         "proxy_after": float(final_proxy),
         "delta_proxy": float(final_proxy - cur_proxy),

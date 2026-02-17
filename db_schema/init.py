@@ -9,14 +9,14 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
-from . import core, training, fatigue, trade_assets, draft, gm, college, scouting
+from . import core, training, fatigue, injury, trade_assets, draft, gm, college, scouting
 from .registry import EnsureColumnsFn, apply_all
 
 
 # Order matters:
 # - core must come first (players table is referenced by other modules)
 # - training references core.players
-DEFAULT_MODULES = (core, training, fatigue, trade_assets, draft, gm, college, scouting)
+DEFAULT_MODULES = (core, training, fatigue, injury, trade_assets, draft, gm, college, scouting)
 
 
 def apply_schema(

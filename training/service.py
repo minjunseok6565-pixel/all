@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 import json
 import logging
 from datetime import date
@@ -140,6 +142,142 @@ def _load_minutes_from_workflow_state(workflow_state: Mapping[str, Any]) -> Dict
     return out
 
 
+# ---------------------------------------------------------------------------
+# Injury-aware growth suppression
+# ---------------------------------------------------------------------------
+
+def _month_period_bounds(month_key: str) -> Tuple[date, date]:
+    """Return (start_inclusive, end_exclusive) for a YYYY-MM month key."""
+    mk = str(month_key)
+    # Normalize: accept 'YYYY-MM' only (safe default to Jan if malformed).
+    try:
+        y = int(mk.split("-")[0])
+        m = int(mk.split("-")[1])
+        if m < 1 or m > 12:
+            raise ValueError("bad month")
+    except Exception:
+        y, m = 2000, 1
+    start = date(y, m, 1)
+    if m == 12:
+        end = date(y + 1, 1, 1)
+    else:
+        end = date(y, m + 1, 1)
+    return (start, end)
+
+
+def _merge_and_count_days(intervals: list[Tuple[date, date]]) -> int:
+    """Merge [start,end) intervals and return union length in days."""
+    if not intervals:
+        return 0
+    ivs = sorted(intervals, key=lambda x: (x[0], x[1]))
+    total = 0
+    cur_s, cur_e = ivs[0]
+    for s, e in ivs[1:]:
+        if s <= cur_e:
+            if e > cur_e:
+                cur_e = e
+            continue
+        total += max(0, (cur_e - cur_s).days)
+        cur_s, cur_e = s, e
+    total += max(0, (cur_e - cur_s).days)
+    return int(total)
+
+
+def _compute_growth_mult_by_pid(
+    *,
+    repo: LeagueRepo,
+    tick_kind: str,
+    tick_id: str,
+    player_ids: list[str],
+    now_iso: str,
+) -> Dict[str, float]:
+    """Compute growth_mult (0..1) per player based on injury tables.
+
+    Rules (v1):
+      - monthly: growth is suppressed proportionally to OUT days overlapping the month.
+      - offseason: if a player is currently OUT on now_iso, suppress growth (mult=0).
+    """
+    kind = str(tick_kind).lower().strip()
+    if not player_ids:
+        return {}
+
+    # Default to full growth.
+    out: Dict[str, float] = {str(pid): 1.0 for pid in player_ids}
+
+    try:
+        if kind == "monthly":
+            start, end = _month_period_bounds(str(tick_id))
+            days_total = max(1, (end - start).days)
+
+            # Bulk query overlapping injury events.
+            placeholders = ",".join(["?"] * len(player_ids))
+            rows = repo._conn.execute(
+                f"""
+                SELECT player_id, date, out_until_date
+                FROM injury_events
+                WHERE date < ? AND out_until_date > ?
+                  AND player_id IN ({placeholders})
+                """,
+                [end.isoformat(), start.isoformat(), *player_ids],
+            ).fetchall()
+
+            intervals_by_pid: Dict[str, list[Tuple[date, date]]] = defaultdict(list)
+            for pid, s_iso, e_iso in rows:
+                pid_s = str(pid)
+                try:
+                    s = date.fromisoformat(str(s_iso)[:10])
+                    e = date.fromisoformat(str(e_iso)[:10])
+                except Exception:
+                    continue
+                # Clamp to period bounds.
+                if s < start:
+                    s = start
+                if e > end:
+                    e = end
+                if e <= s:
+                    continue
+                intervals_by_pid[pid_s].append((s, e))
+
+            for pid_s, intervals in intervals_by_pid.items():
+                miss_days = _merge_and_count_days(intervals)
+                miss_days = max(0, min(days_total, miss_days))
+                out[pid_s] = max(0.0, 1.0 - (float(miss_days) / float(days_total)))
+
+            return out
+
+        if kind == "offseason":
+            today_iso = str(now_iso)[:10]
+            placeholders = ",".join(["?"] * len(player_ids))
+            rows = repo._conn.execute(
+                f"""
+                SELECT player_id, out_until_date
+                FROM player_injury_state
+                WHERE player_id IN ({placeholders})
+                """,
+                [*player_ids],
+            ).fetchall()
+
+            for pid, out_until in rows:
+                pid_s = str(pid)
+                if not out_until:
+                    continue
+                try:
+                    out_until_iso = str(out_until)[:10]
+                except Exception:
+                    continue
+                # out_until_date is treated as exclusive (first playable date).
+                if out_until_iso > today_iso:
+                    out[pid_s] = 0.0
+            return out
+
+    except Exception:
+        # Commercial safety: do not break growth if injury tables are missing or malformed.
+        logger.debug("injury growth_mult computation failed; defaulting to 1.0", exc_info=True)
+        return out
+
+    return out
+
+
 def _apply_leaguewide_growth_tick(
     *,
     repo: LeagueRepo,
@@ -179,6 +317,16 @@ def _apply_leaguewide_growth_tick(
         """ + pid_filter_sql + "\n        ORDER BY p.player_id ASC;",
         pid_filter_args,
     ).fetchall()
+
+    # Injury-aware growth suppression (0..1). Defaults to 1.0 if injury tables are absent.
+    player_ids_all = [str(x[0]) for x in rows]
+    growth_mult_by_pid = _compute_growth_mult_by_pid(
+        repo=repo,
+        tick_kind=str(tick_kind),
+        tick_id=str(tick_id),
+        player_ids=player_ids_all,
+        now_iso=str(now_iso),
+    )
 
     updated_player_ids: list[str] = []
     tick_results: list[dict] = []
@@ -233,6 +381,7 @@ def _apply_leaguewide_growth_tick(
                 age=int(age),
                 height_in=int(height_in),
                 minutes=float(minutes),
+                growth_mult=float(growth_mult_by_pid.get(pid, 1.0) or 1.0),
                 profile=prof,
                 team_plan=team_plan,
                 player_plan=player_plan,

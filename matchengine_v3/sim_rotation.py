@@ -201,8 +201,20 @@ def pick_desired_five_bruteforce(
         return any(is_handler(pid) for pid in lineup) and any(is_big(pid) for pid in lineup)
 
     def is_eligible(pid: str) -> bool:
-        # Today: foul-out only. (Injury/unavailable hook can be added later.)
-        return pf_map.get(pid, 0) < foul_out
+        # Eligible if not fouled out and not marked OUT for this game (injury, etc.).
+        if pf_map.get(pid, 0) >= foul_out:
+            return False
+        inj_map = getattr(game_state, "injured_out", {}) or {}
+        team_inj = inj_map.get(team_id, set()) if isinstance(inj_map, dict) else set()
+        # Support dict/list/set payloads defensively.
+        if isinstance(team_inj, dict):
+            team_inj_set = set(team_inj.keys())
+        else:
+            try:
+                team_inj_set = set(team_inj)
+            except Exception:
+                team_inj_set = set()
+        return pid not in team_inj_set
 
     # -------------------------
     # 1) Normalize pools
@@ -1138,6 +1150,68 @@ def maybe_substitute_deadball_v1(
             _emit_substitution(
                 game_state=game_state, rules=rules, home=home, away=away, team=team,
                 pos_start=pos_start, reason="FOUL_OUT",
+                before_on=before, after_on=after,
+                lineup_version_before=lv_before, lineup_version_after=lv_after
+            )
+            return True
+
+    # -------------------------
+    # 2) Forced substitution: injury OUT
+    # -------------------------
+    inj_map = getattr(game_state, "injured_out", {}) or {}
+    team_inj = inj_map.get(key, set()) if isinstance(inj_map, dict) else set()
+    if isinstance(team_inj, dict):
+        team_inj_set = set(team_inj.keys())
+    else:
+        try:
+            team_inj_set = set(team_inj)
+        except Exception:
+            team_inj_set = set()
+
+    forced_inj = [pid for pid in on_court if pid in team_inj_set]
+    if forced_inj:
+        must_keep = {
+            pid
+            for pid in on_court
+            if pid not in forced_inj
+            and int(pf_map.get(pid, 0)) < foul_out
+            and pid not in team_inj_set
+        }
+        try:
+            desired5, _dbg = pick_desired_five_bruteforce(
+                team,
+                home,
+                game_state,
+                rules,
+                current_on_court=on_court,
+                eligible_pool=eligible_pool,
+                must_keep=must_keep,
+                mode=mode,
+                level=level,
+                index=index,
+                template_lineup=template_lineup,
+                lock_mult=lock_mult,
+                ignore_shape_constraint=True,  # injury OUT must override roster shape constraints
+            )
+        except Exception:
+            # Commercial safety: if something goes wrong, do not crash the sim.
+            return False
+
+        desired_set = set(desired5)
+        if desired_set != current_set:
+            before = list(on_court)
+            lv_before = int(getattr(game_state, "lineup_version", 0) or 0)
+            _set_on_court(game_state, team, list(desired5))
+            lv_after = int(getattr(game_state, "lineup_version", 0) or 0)
+            game_state.rotation_last_sub_game_sec[key] = int(now)
+            last_in = game_state.rotation_last_in_game_sec.setdefault(key, {})
+            for pid in desired5:
+                if pid not in current_set:
+                    last_in[str(pid)] = int(now)
+            after = list(_get_on_court(team))
+            _emit_substitution(
+                game_state=game_state, rules=rules, home=home, away=away, team=team,
+                pos_start=pos_start, reason="INJURY_OUT",
                 before_on=before, after_on=after,
                 lineup_version_before=lv_before, lineup_version_after=lv_after
             )
