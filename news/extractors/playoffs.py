@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..ids import make_event_id
 from ..models import NewsEvent
@@ -34,33 +34,23 @@ def _playoff_round_label(round_name: Optional[str]) -> str:
 
 
 def iter_series(playoffs: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Best-effort iterator for legacy bracket shapes."""
-    bracket = playoffs.get("bracket") or {}
+    """Iterate series dicts in the standard bracket shape produced by `postseason.bracket`."""
+    bracket = playoffs["bracket"]
+    east = bracket["east"]
+    west = bracket["west"]
+
     out: List[Dict[str, Any]] = []
-
-    def _add(series: Any) -> None:
-        if isinstance(series, dict):
-            out.append(series)
-
-    for series in (bracket.get("east", {}) or {}).get("quarterfinals", []) or []:
-        _add(series)
-    for series in (bracket.get("west", {}) or {}).get("quarterfinals", []) or []:
-        _add(series)
-    for series in (bracket.get("east", {}) or {}).get("semifinals", []) or []:
-        _add(series)
-    for series in (bracket.get("west", {}) or {}).get("semifinals", []) or []:
-        _add(series)
-    _add((bracket.get("east", {}) or {}).get("finals"))
-    _add((bracket.get("west", {}) or {}).get("finals"))
-    _add(bracket.get("finals"))
-
-    # Newer shapes may store series lists directly
-    if not out and isinstance(bracket.get("series"), list):
-        for s in bracket.get("series"):
-            _add(s)
-
+    out.extend(east["quarterfinals"])
+    out.extend(west["quarterfinals"])
+    out.extend(east["semifinals"])
+    out.extend(west["semifinals"])
+    if east.get("finals"):
+        out.append(east["finals"])
+    if west.get("finals"):
+        out.append(west["finals"])
+    if bracket.get("finals"):
+        out.append(bracket["finals"])
     return out
-
 
 def series_key(series: Dict[str, Any]) -> str:
     return f"{series.get('round')}::{series.get('home_court')}::{series.get('road')}"
@@ -88,7 +78,7 @@ def _is_match_point(best_of: int, wins_home: int, wins_road: int) -> bool:
 def extract_playoff_events(
     playoffs: Dict[str, Any],
     *,
-    previous_counts: Dict[str, Any] | None,
+    previous_counts: Dict[str, int],
     boxscore_lookup: Dict[Tuple[str, str, str, int, int], Dict[str, Any]] | None = None,
 ) -> Tuple[List[NewsEvent], Dict[str, int]]:
     """Extract new playoff events since last cache update.
@@ -102,7 +92,7 @@ def extract_playoff_events(
     Returns:
         (events, updated_series_counts)
     """
-    prev = previous_counts or {}
+    prev = previous_counts
     series_counts: Dict[str, int] = {}
     events: List[NewsEvent] = []
 
