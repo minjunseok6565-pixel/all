@@ -1333,6 +1333,7 @@ async def api_offseason_contracts_process(req: OffseasonContractsProcessRequest)
 
     try:
         from contracts.offseason import process_offseason
+        from contracts.options_policy import make_ai_team_option_decision_policy
 
         # Use in-game date for all contract/offseason decisions & transaction logs.
         # Fail-loud: do NOT fall back to OS date (timeline immersion).
@@ -1351,7 +1352,7 @@ async def api_offseason_contracts_process(req: OffseasonContractsProcessRequest)
             from_season_year=int(from_year),
             to_season_year=int(to_year),
             decision_date_iso=str(decision_date_iso),
-            decision_policy=None,
+            decision_policy=make_ai_team_option_decision_policy(user_team_id=str(team_id)),
         )
         return {"ok": True, "from_season_year": int(from_year), "to_season_year": int(to_year), "result": result}
     except ValueError as e:
