@@ -9,7 +9,6 @@ Key features:
 - Applies qualifiers (min GP, min attempts, ...)
 - Deterministic ordering and tie handling
 - Produces a rich bundle suitable for caching
-- Also exposes a flat legacy mapping used by current UI endpoints
 """
 
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -26,8 +25,6 @@ from .types import (
     normalized_player_lines,
 )
 
-
-DEFAULT_LEGACY_KEYS: Tuple[str, ...] = ("PTS", "AST", "REB", "3PM")
 
 
 def _default_config() -> LeaderboardConfig:
@@ -119,7 +116,6 @@ def build_row(
         "name": name,
         "team_id": team_id,
         "games": gp,
-        "GP": gp,
         "MIN": coerce_float(totals.get("MIN"), 0.0),
         "value": value,
         "qualifies": player_qualifies(metric, totals, gp, rules),
@@ -249,30 +245,3 @@ def compute_leaderboards(
 
     return {"meta": meta, "per_game": out_per_game, "totals": out_totals, "per_36": out_per_36, "advanced": out_adv}
 
-
-def compute_flat_legacy_leaders(
-    player_stats: Mapping[str, Any],
-    team_stats: Mapping[str, Any] | None = None,
-    *,
-    top_n: int = 5,
-    include_ties: bool = True,
-    phase: str = "regular",
-) -> Dict[str, List[LeaderboardRow]]:
-    """Compute the legacy flat leaders mapping.
-
-    Intended for endpoints that expect:
-        { "PTS": [...], "AST": [...], "REB": [...], "3PM": [...] }
-    """
-
-    cfg: LeaderboardConfig = {
-        "top_n": top_n,
-        "include_ties": include_ties,
-        "qualifier_profile": "auto",
-        "modes": ["per_game"],
-        "categories": ["traditional"],
-        "metric_keys": list(DEFAULT_LEGACY_KEYS),
-    }
-    bundle = compute_leaderboards(player_stats, team_stats, phase=phase, config=cfg)
-    per_game = bundle.get("per_game") or {}
-    # Ensure stable keys for existing UI expectations.
-    return {k: list(per_game.get(k) or []) for k in DEFAULT_LEGACY_KEYS}

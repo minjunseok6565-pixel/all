@@ -3,18 +3,17 @@
 This package is designed to be:
 - Deterministic
 - Defensive to missing/partial data
-- Backwards compatible with existing server endpoints
 
-Most callers should use `stats_util.py` (facade) which re-exports stable functions.
+Most callers should prefer importing from `analytics.stats` (or the small
+`stats_util.py` facade) rather than reaching into module internals.
 """
 
 from __future__ import annotations
 
 from .cache import get_or_build_cached_leaderboards
-from .leaders import compute_flat_legacy_leaders, compute_leaderboards
+from .leaders import compute_leaderboards
 
 __all__ = [
     "compute_leaderboards",
-    "compute_flat_legacy_leaders",
     "get_or_build_cached_leaderboards",
 ]
