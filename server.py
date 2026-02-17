@@ -2157,14 +2157,6 @@ async def api_news_week(req: WeeklyNewsRequest):
     try:
         payload = refresh_weekly_news(req.apiKey)
 
-        # Some endpoints previously wrapped the news payload like
-        # `{ "news": { "current_date": ..., "items": [...] } }`, which the
-        # frontend does not expect. Normalize it back to the raw shape.
-        if isinstance(payload, dict) and "news" in payload and isinstance(
-            payload["news"], dict
-        ):
-            payload = payload["news"]
-
         return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Weekly news generation failed: {e}")
