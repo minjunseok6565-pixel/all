@@ -882,7 +882,7 @@ class LeagueService:
         Steps (atomic):
           1) validate (rules/validator)
           2) idempotency guard by deal_id (transactions_log)
-          3) commit order: players -> picks -> swaps -> fixed_assets -> log
+          3) commit order: players -> swaps -> picks -> fixed_assets -> log
         """
         # Local imports to avoid circular deps (state/trades may import service elsewhere).
         try:
@@ -898,6 +898,7 @@ class LeagueService:
                 serialize_deal,
                 asset_key,
             )
+            from trades.swap_integrity import validate_swap_asset_in_cur
             from trades.errors import (
                 TradeError,
                 DEAL_ALREADY_EXECUTED,
@@ -971,11 +972,23 @@ class LeagueService:
         if not callable(validate_deal):
             raise TypeError("trades.validator.validate_deal must be callable")
 
-        validate_deal(
-            deal_obj,
+        # Validate using the *same* repo/DB as execution.
+        # This prevents "validator passes, execute fails" caused by
+        # state.get_db_path() pointing at a different DB than this service.
+        from trades.rules.tick_context import build_trade_rule_tick_context
+
+        with build_trade_rule_tick_context(
+            repo=self.repo,
             current_date=trade_date_as_date,
-            allow_locked_by_deal_id=str(deal_id),
-        )
+            validate_integrity=True,
+        ) as tick_ctx:
+            validate_deal(
+                deal_obj,
+                current_date=trade_date_as_date,
+                allow_locked_by_deal_id=str(deal_id),
+                db_path=self.repo.db_path,
+                tick_ctx=tick_ctx,
+            )
 
         # SSOT: season_year must come from league context snapshot (state["league"]["season_year"])
         season_year_i = _current_season_year_ssot()
@@ -1090,7 +1103,59 @@ class LeagueService:
                 )
                 self._move_player_team_in_cur(cur, pid, to_team_u)
 
-            # 2) Picks (ownership + protection_json)
+            # 2) Swaps (update owner or create right)
+            for swap_id, from_team_u, to_team_u, pick_id_a, pick_id_b in swap_moves:
+                info = validate_swap_asset_in_cur(
+                    cur=cur,
+                    swap_id=str(swap_id),
+                    pick_id_a=str(pick_id_a),
+                    pick_id_b=str(pick_id_b),
+                    from_team=str(from_team_u),
+                )
+                swap_exists = bool(info.get("swap_exists"))
+                swap_year = int(info.get("year"))
+                swap_round = int(info.get("round"))
+
+                if swap_exists:
+                    cur.execute(
+                        "UPDATE swap_rights SET owner_team=?, updated_at=? WHERE swap_id=?;",
+                        (str(to_team_u).upper(), now, str(swap_id)),
+                    )
+                else:
+                    # Create a new swap right.
+                    # The creation gate is validated in the same way as validator rules
+                    # (see trades.swap_integrity.validate_swap_asset_*).
+                    cur.execute(
+                        """
+                        INSERT INTO swap_rights(
+                            swap_id, pick_id_a, pick_id_b, year, round,
+                            owner_team, active, created_by_deal_id, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                        ON CONFLICT(swap_id) DO UPDATE SET
+                            pick_id_a=excluded.pick_id_a,
+                            pick_id_b=excluded.pick_id_b,
+                            year=excluded.year,
+                            round=excluded.round,
+                            owner_team=excluded.owner_team,
+                            active=excluded.active,
+                            created_by_deal_id=excluded.created_by_deal_id,
+                            updated_at=excluded.updated_at;
+                        """,
+                        (
+                            str(swap_id),
+                            str(pick_id_a),
+                            str(pick_id_b),
+                            int(swap_year),
+                            int(swap_round),
+                            str(to_team_u).upper(),
+                            str(deal_id),
+                            str(trade_date_iso),
+                            now,
+                        ),
+                    )
+
+            # 3) Picks (ownership + protection_json)
             for pick_id, from_team_u, to_team_u, protection in pick_moves:
                 pick_row = cur.execute(
                     "SELECT pick_id, owner_team, original_team, year, round, protection_json FROM draft_picks WHERE pick_id=?;",
@@ -1127,77 +1192,6 @@ class LeagueService:
                         str(pick_id),
                     ),
                 )
-
-            # 3) Swaps (update owner or create right)
-            for swap_id, from_team_u, to_team_u, pick_id_a, pick_id_b in swap_moves:
-                # Validate picks exist and match year/round
-                a = cur.execute(
-                    "SELECT year, round, owner_team FROM draft_picks WHERE pick_id=?;",
-                    (str(pick_id_a),),
-                ).fetchone()
-                b = cur.execute(
-                    "SELECT year, round, owner_team FROM draft_picks WHERE pick_id=?;",
-                    (str(pick_id_b),),
-                ).fetchone()
-                if not a or not b:
-                    raise TradeError(
-                        SWAP_INVALID,
-                        "Swap picks must exist",
-                        {"swap_id": swap_id, "pick_id_a": pick_id_a, "pick_id_b": pick_id_b},
-                    )
-                if int(a["year"]) != int(b["year"]) or int(a["round"]) != int(b["round"]):
-                    raise TradeError(
-                        SWAP_INVALID,
-                        "Swap picks must match year and round",
-                        {"swap_id": swap_id, "pick_a": dict(a), "pick_b": dict(b)},
-                    )
-                swap_row = cur.execute(
-                    "SELECT owner_team FROM swap_rights WHERE swap_id=?;",
-                    (str(swap_id),),
-                ).fetchone()
-                if swap_row:
-                    current_owner = str(swap_row["owner_team"]).upper()
-                    if current_owner != from_team_u:
-                        raise TradeError(
-                            SWAP_NOT_OWNED,
-                            "Swap right not owned by team",
-                            {"swap_id": swap_id, "team_id": from_team_u, "owner_team": current_owner},
-                        )
-                    cur.execute(
-                        "UPDATE swap_rights SET owner_team=?, updated_at=? WHERE swap_id=?;",
-                        (str(to_team_u).upper(), now, str(swap_id)),
-                    )
-                else:
-                    # Create a new swap right (validator should ensure this is legal)
-                    cur.execute(
-                        """
-                        INSERT INTO swap_rights(
-                            swap_id, pick_id_a, pick_id_b, year, round,
-                            owner_team, active, created_by_deal_id, created_at, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                        ON CONFLICT(swap_id) DO UPDATE SET
-                            pick_id_a=excluded.pick_id_a,
-                            pick_id_b=excluded.pick_id_b,
-                            year=excluded.year,
-                            round=excluded.round,
-                            owner_team=excluded.owner_team,
-                            active=excluded.active,
-                            created_by_deal_id=excluded.created_by_deal_id,
-                            updated_at=excluded.updated_at;
-                        """,
-                        (
-                            str(swap_id),
-                            str(pick_id_a),
-                            str(pick_id_b),
-                            int(a["year"]),
-                            int(a["round"]),
-                            str(to_team_u).upper(),
-                            str(deal_id),
-                            str(trade_date_iso),
-                            now,
-                        ),
-                    )
 
             # 4) Fixed assets
             for asset_id, from_team_u, to_team_u in fixed_moves:
@@ -1338,6 +1332,7 @@ class LeagueService:
         signed_date: date | str | None = None,
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
+        team_option_last_year: bool = False,
     ) -> ServiceEvent:
         """Sign an FA (DB): roster.team_id + contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1347,6 +1342,10 @@ class LeagueService:
         years_i = int(years)
         if years_i <= 0:
             raise ValueError("years must be >= 1")
+
+        team_option_last_year_b = bool(team_option_last_year)
+        if team_option_last_year_b and years_i < 2:
+            raise ValueError("team_option_last_year requires years >= 2")
 
         def _infer_start_season_year_from_date(d_iso: str) -> int:
             try:
@@ -1391,6 +1390,17 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
+            options: List[dict] = []
+            if team_option_last_year_b:
+                option_year = int(start_season_year) + years_i - 1
+                if str(option_year) not in salary_norm:
+                    raise ValueError(
+                        "team_option_last_year requires salary_by_year to include the last season year "
+                        f"(missing year={option_year})"
+                    )
+                options = [
+                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
+                ]
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1401,7 +1411,7 @@ class LeagueService:
                 start_season_year=int(start_season_year),
                 years=years_i,
                 salary_by_year=salary_norm,
-                options=[],
+                options=options,
                 status="ACTIVE",
             )
 
@@ -1486,6 +1496,7 @@ class LeagueService:
         signed_date: date | str | None = None,
         years: int = 1,
         salary_by_year: Optional[Mapping[int, int]] = None,
+        team_option_last_year: bool = False,
     ) -> ServiceEvent:
         """Re-sign / extend a player (DB): contracts + active contract + salary."""
         team_norm = self._norm_team_id(team_id, strict=True)
@@ -1495,6 +1506,10 @@ class LeagueService:
         years_i = int(years)
         if years_i <= 0:
             raise ValueError("years must be >= 1")
+
+        team_option_last_year_b = bool(team_option_last_year)
+        if team_option_last_year_b and years_i < 2:
+            raise ValueError("team_option_last_year requires years >= 2")
 
         def _infer_start_season_year_from_date(d_iso: str) -> int:
             try:
@@ -1542,6 +1557,17 @@ class LeagueService:
                     str(y): float(base_salary)
                     for y in range(int(start_season_year), int(start_season_year) + years_i)
                 }
+            options: List[dict] = []
+            if team_option_last_year_b:
+                option_year = int(start_season_year) + years_i - 1
+                if str(option_year) not in salary_norm:
+                    raise ValueError(
+                        "team_option_last_year requires salary_by_year to include the last season year "
+                        f"(missing year={option_year})"
+                    )
+                options = [
+                    normalize_option_record({"season_year": option_year, "type": "TEAM", "status": "PENDING"})
+                ]
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(
@@ -1552,7 +1578,7 @@ class LeagueService:
                 start_season_year=int(start_season_year),
                 years=years_i,
                 salary_by_year=salary_norm,
-                options=[],
+                options=options,
                 status="ACTIVE",
             )
 
