@@ -168,7 +168,7 @@ class FitEngine:
         supply: Dict[str, float] = {}
 
         # (A) role_fit 기반 공급 (있다면 가장 신뢰)
-        # 기대 형태: snap.meta["role_fit"] = {"Initiator_Primary": 0.72, ...}
+        # 기대 형태: snap.meta["role_fit"] = {"Engine_Primary": 0.72, ...}
         role_fit = None
         if isinstance(snap.meta, dict):
             role_fit = snap.meta.get("role_fit")

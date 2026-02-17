@@ -24,9 +24,7 @@ C13 role system (Modern NBA Offensive Role System v1):
   Roll_Man, ShortRoll_Hub, Pop_Threat, Post_Anchor
 
 Note:
-- Legacy 12-role keys are supported at runtime via canonicalization helpers
-  in offense_roles.py (see role_fit.py). These tables themselves are keyed by
-  *canonical* C13 names.
+- These tables are keyed by *canonical* C13 names.
 """
 
 from __future__ import annotations

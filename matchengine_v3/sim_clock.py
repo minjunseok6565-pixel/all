@@ -17,7 +17,6 @@ from .offense_roles import (
     ROLE_TRANSITION_ENGINE,
     ROLE_CONNECTOR,
     ROLE_SHOT_CREATOR,
-    expand_role_keys_for_lookup,
 )
 
 def apply_time_cost(game_state: GameState, cost: float, tempo_mult: float) -> None:
@@ -81,16 +80,14 @@ def simulate_inbound(
 
 
 def _pick_shot_clock_tov_pid(offense: TeamState) -> str:
-    """Pick who gets a shot-clock violation TOV using canonical C13 role keys (legacy-safe)."""
+    """Pick who gets a shot-clock violation TOV using canonical C13 role keys."""
     # Priority: on-ball / decision-makers first.
-    for role in expand_role_keys_for_lookup(
-        (
-            ROLE_ENGINE_PRIMARY,
-            ROLE_ENGINE_SECONDARY,
-            ROLE_TRANSITION_ENGINE,
-            ROLE_CONNECTOR,
-            ROLE_SHOT_CREATOR,
-        )
+    for role in (
+        ROLE_ENGINE_PRIMARY,
+        ROLE_ENGINE_SECONDARY,
+        ROLE_TRANSITION_ENGINE,
+        ROLE_CONNECTOR,
+        ROLE_SHOT_CREATOR,
     ):
         pid = getattr(offense, "roles", {}).get(role) if hasattr(offense, "roles") else None
         if isinstance(pid, str) and pid:

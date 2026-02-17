@@ -17,7 +17,7 @@ from .participants_common import _active, _clamp
 #
 # Design goals:
 # - Robust: always returns a reasonable on-court defender.
-# - Role-agnostic: uses stats (and current fatigue scaling) rather than 12-role keys.
+# - Role-agnostic: uses stats (and current fatigue scaling) rather than role keys.
 # - Tunable: tactics.context can override minimum weight and exponent.
 
 _EVENT_ASSIGN_NORM_LO: float = 60.0

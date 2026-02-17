@@ -451,6 +451,37 @@ def validate_and_sanitize_team(
             else:
                 report.warn(msg + " (will fallback automatically)")
 
+
+    # Role key validation (C13 SSOT)
+    try:
+        from .offense_roles import ALL_OFFENSE_ROLES  # type: ignore
+
+        allowed = set(ALL_OFFENSE_ROLES)
+
+        # Validate TeamState.roles keys
+        for rk in list(getattr(team, 'roles', {}) or {}):
+            key = str(rk or "").strip()
+            if key and key not in allowed:
+                msg = f"{label}.roles: unknown role key '{rk}'"
+                if cfg.strict:
+                    report.error(msg)
+                else:
+                    report.warn(msg)
+
+        # Validate optional pid->role map overrides
+        rbp = getattr(team, 'rotation_offense_role_by_pid', None)
+        if isinstance(rbp, dict):
+            for pid, rname in rbp.items():
+                key = str(rname or "").strip()
+                if key and key not in allowed:
+                    msg = f"{label}.rotation_offense_role_by_pid[{pid}]: unknown role key '{rname}'"
+                    if cfg.strict:
+                        report.error(msg)
+                    else:
+                        report.warn(msg)
+    except Exception:
+        # Keep validation import-light; role keys may be validated elsewhere.
+        pass
     # Tactics sanity + clamp
     if team.tactics is None:
         report.error(f"{label}: tactics missing")

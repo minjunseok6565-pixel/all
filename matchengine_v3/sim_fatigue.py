@@ -13,12 +13,13 @@ from .models import GameState, TeamState
 # Prefer to reuse the same role->group mapping as offense_roles (SSOT; keeps rotation + fatigue consistent).
 try:
     # ROLE_TO_GROUPS maps canonical offensive role names (C13) to rotation groups (Handler/Wing/Big).
-    from .offense_roles import ROLE_TO_GROUPS, canonical_offense_role  # type: ignore
+    from .offense_roles import ROLE_TO_GROUPS  # type: ignore
 except Exception:  # pragma: no cover
     ROLE_TO_GROUPS = {}  # type: ignore
 
-    def canonical_offense_role(role_key: str) -> str:  # type: ignore
-        return str(role_key or '').strip()
+
+def _norm_role(role: Any) -> str:
+    return str(role or "").strip()
 
 
 # Primary-group semantics:
@@ -27,8 +28,8 @@ _GROUP_PRIORITY: Dict[str, int] = {"Handler": 3, "Wing": 2, "Big": 1}
 
 
 def _primary_group_for_role(role_name: str) -> str:
-    """Return the primary rotation group for a role name (canonical C13 or legacy), or "" if unknown."""
-    rn = canonical_offense_role(str(role_name or '').strip())
+    """Return the primary rotation group for a canonical C13 role name, or "" if unknown."""
+    rn = _norm_role(role_name)
     if not rn or not isinstance(ROLE_TO_GROUPS, dict):
         return ""
     groups = ROLE_TO_GROUPS.get(rn)
@@ -51,13 +52,13 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
     """
     m = getattr(team, "rotation_offense_role_by_pid", None)
     if isinstance(m, dict) and m:
-        return {str(k): canonical_offense_role(v) for k, v in m.items()}
+        return {str(k): _norm_role(v) for k, v in m.items()}
 
     ctx = getattr(getattr(team, "tactics", None), "context", None)
     if isinstance(ctx, dict):
         rm = ctx.get("ROTATION_OFFENSE_ROLE_BY_PID") or ctx.get("OFFENSE_ROLE_BY_PID")
         if isinstance(rm, dict) and rm:
-            return {str(k): canonical_offense_role(v) for k, v in rm.items()}
+            return {str(k): _norm_role(v) for k, v in rm.items()}
 
     # Invert team.roles (canonical role keys) -> pid -> role.
     roles = getattr(team, "roles", None)
@@ -66,7 +67,7 @@ def _get_offense_role_by_pid(team: TeamState) -> Dict[str, str]:
         for role_name, pid in roles.items():
             if not pid:
                 continue
-            rn = canonical_offense_role(str(role_name))
+            rn = _norm_role(role_name)
             if rn not in ROLE_TO_GROUPS:
                 # Ignore legacy keys (ball_handler, screener, etc.) and unknown entries.
                 continue
@@ -101,11 +102,9 @@ def _fatigue_archetype_for_pid(team: TeamState, pid: str, role_by_pid: Mapping[s
       - primary == Big     => big
       - otherwise          => wing
 
-    If no role is configured for this pid, fallback to legacy heuristics:
-      - team.roles (ball_handler/secondary_handler/screener/post)
-      - position override (C/F => big)
+    If no role is configured for this pid, fallback to position (C/F => big).
     """
-    role_name = canonical_offense_role(str(role_by_pid.get(pid, "") or "").strip())
+    role_name = _norm_role(role_by_pid.get(pid, ""))
     if role_name and isinstance(ROLE_TO_GROUPS, dict) and role_name in ROLE_TO_GROUPS:
         primary = _primary_group_for_role(role_name)
         if primary == "Handler":
@@ -114,19 +113,11 @@ def _fatigue_archetype_for_pid(team: TeamState, pid: str, role_by_pid: Mapping[s
             return "big"
         return "wing"
 
-    # --- legacy fallback ---
-    role = "wing"
-    if getattr(team, "roles", {}).get("ball_handler") == pid:
-        role = "handler"
-    elif getattr(team, "roles", {}).get("secondary_handler") == pid:
-        role = "handler"
-    elif getattr(team, "roles", {}).get("screener") == pid or getattr(team, "roles", {}).get("post") == pid:
-        role = "big"
-
+    # Fallback: use player position if available.
     p = team.find_player(pid)
     if p and p.pos in ("C", "F"):
-        role = "big"
-    return role
+        return "big"
+    return "wing"
 
 
 
@@ -209,7 +200,7 @@ def _apply_fatigue_loss(
         return float(x)
 
     for pid in on_court:
-        # Use configured offensive roles if available; otherwise fallback to legacy role+position heuristics.
+        # Use configured offensive roles if available; otherwise fallback to position heuristics.
         role = _fatigue_archetype_for_pid(team, pid, role_by_pid)
 
         # 기존 룰(포제션당 소모)을 시간 비례로 변환
