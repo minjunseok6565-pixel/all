@@ -40,7 +40,7 @@ This builder therefore:
 (Alternatively, fix to_jsonable() or Deal.to_jsonable in the main codebase.)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import hashlib
 import random
@@ -854,13 +854,8 @@ def _propose_reduce_pick_protection(
             leg2: List[Asset] = []
             for x in (deal2.legs.get(uid, []) or []):
                 if asset_key(x) == asset_key(a) and isinstance(x, PickAsset):
-                    leg2.append(
-                        PickAsset(
-                            pick_id=str(x.pick_id),
-                            to_team=getattr(x, "to_team", None),
-                            protection=prot2,
-                        )
-                    )
+                    # PickAsset is a frozen dataclass; use replace() to preserve kind/pick_id/to_team.
+                    leg2.append(replace(x, protection=prot2))
                 else:
                     leg2.append(x)
             deal2.legs[uid] = leg2
@@ -1003,7 +998,7 @@ def _propose_player_sweeteners(
         deal2 = _clone_deal(base_deal)
         deal2.legs.setdefault(uid, [])
         # For 2-team deals, to_team can be omitted; keep None for SSOT.
-        deal2.legs[uid].append(PlayerAsset(player_id=pid, to_team=None))
+        deal2.legs[uid].append(PlayerAsset(kind="player", player_id=pid, to_team=None))
 
         out.append((deal2, {"player_id": pid, "market_total": float(getattr(getattr(c, "market", None), "total", 0.0) or 0.0)}))
 
