@@ -12,6 +12,7 @@ It is designed to be called from a checkpoint trigger (see agency/checkpoints.py
 when a month finishes.
 """
 
+import calendar
 import logging
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -21,7 +22,13 @@ from .config import AgencyConfig, DEFAULT_CONFIG
 from .expectations import compute_expectations_for_league
 from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
 from .expectations_month import compute_month_expectations
-from .month_context import PlayerMonthSplit, build_split_summary, players_by_team_from_splits
+from .month_context import (
+    PlayerMonthSplit,
+    TeamSlice,
+    build_split_summary,
+    finalize_player_month_split,
+    players_by_team_from_splits,
+)
 from .repo import (
     get_player_agency_states,
     insert_agency_events,
@@ -92,6 +99,164 @@ def _slice_minutes_games(split: Optional[PlayerMonthSplit], team_id: str) -> Tup
     return (float(sl.minutes), int(sl.games_played))
 
 
+def _month_start_end_dates(month_key: str) -> Tuple[str, str]:
+    """Return (month_start_date_iso, month_end_date_iso) for a YYYY-MM key."""
+    mk = str(month_key or "")
+    try:
+        y_s, m_s = mk.split("-", 1)
+        y = int(y_s)
+        m = int(m_s)
+        last = int(calendar.monthrange(y, m)[1])
+        return (f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{last:02d}")
+    except Exception:
+        # Defensive fallback; caller should still handle invalid mk.
+        return (f"{mk}-01", f"{mk}-28")
+
+
+def _team_move_events_by_pid_since(
+    repo: LeagueRepo,
+    *,
+    player_ids: list[str],
+    since_date_iso: str,
+    limit: int = 20000,
+) -> Dict[str, list[Tuple[str, str, str]]]:
+    """Collect team-change events (trade/sign/release) from SSOT transactions_log.
+
+    Returns mapping pid -> list[(event_date_iso, from_team, to_team)] sorted DESC by event_date_iso.
+    """
+    pids = [str(pid) for pid in (player_ids or []) if str(pid)]
+    if not pids:
+        return {}
+
+    pid_set = set(pids)
+    since_d = str(since_date_iso or "")[:10]
+    if not since_d:
+        return {}
+
+    # NOTE: transactions_log.tx_type is the SSOT discriminator.
+    # We only need types that can change roster.team_id.
+    tx_types = [
+        "trade",
+        "TRADE",
+        "SIGN_FREE_AGENT",
+        "RELEASE_TO_FA",
+        # legacy/dev spellings (safety)
+        "signing",
+        "release_to_free_agency",
+    ]
+    placeholders = ",".join(["?"] * len(tx_types))
+
+    try:
+        rows = repo._conn.execute(
+            f"""
+            SELECT payload_json
+            FROM transactions_log
+            WHERE tx_date IS NOT NULL
+              AND substr(tx_date, 1, 10) >= ?
+              AND tx_type IN ({placeholders})
+            ORDER BY COALESCE(tx_date,'') DESC, created_at DESC
+            LIMIT ?;
+            """,
+            [since_d, *tx_types, max(1, int(limit))],
+        ).fetchall()
+    except Exception:
+        return {}
+
+    out: Dict[str, list[Tuple[str, str, str]]] = {}
+
+    def _tx_date(tx: Mapping[str, Any]) -> Optional[str]:
+        v = tx.get("action_date")
+        if v is None:
+            v = tx.get("date")
+        if v is None:
+            v = tx.get("trade_date")
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s or len(s) < 10:
+            return None
+        if str(s)[:10] < since_d:
+            return None
+        return s
+
+    for (payload_json,) in rows:
+        tx = json_loads(payload_json, default=None)
+        if not isinstance(tx, Mapping):
+            continue
+        tdate = _tx_date(tx)
+        if tdate is None:
+            continue
+
+        ttype = str(tx.get("type") or tx.get("tx_type") or "")
+        if str(ttype).lower() == "trade":
+            pm = tx.get("player_moves")
+            if not isinstance(pm, list):
+                continue
+            for m in pm:
+                if not isinstance(m, Mapping):
+                    continue
+                pid = str(m.get("player_id") or "")
+                if not pid or pid not in pid_set:
+                    continue
+                ft = str(m.get("from_team") or "").upper()
+                tt = str(m.get("to_team") or "").upper()
+                if not ft or not tt:
+                    continue
+                out.setdefault(pid, []).append((str(tdate), ft, tt))
+            continue
+
+        # Contract-style tx: top-level player_id + from_team/to_team
+        pid = tx.get("player_id")
+        if pid is None:
+            continue
+        pid_s = str(pid)
+        if not pid_s or pid_s not in pid_set:
+            continue
+        ft = str(tx.get("from_team") or "").upper()
+        tt = str(tx.get("to_team") or "").upper()
+        if not ft or not tt:
+            continue
+        out.setdefault(pid_s, []).append((str(tdate), ft, tt))
+
+    # Sort desc for stable reverse application.
+    for pid in list(out.keys()):
+        out[pid].sort(key=lambda e: str(e[0]), reverse=True)
+    return out
+
+
+def _teams_as_of_dates(
+    *,
+    roster_team_by_pid: Mapping[str, str],
+    move_events_by_pid: Mapping[str, list[Tuple[str, str, str]]],
+    target_dates_desc: list[str],
+) -> Dict[str, Dict[str, str]]:
+    """Compute team_id as-of end-of-day for each target date, per player."""
+
+    def _reverse_team(cur_team: str, ft: str, tt: str) -> str:
+        cur = str(cur_team or "").upper()
+        if not cur:
+            return cur
+        if str(tt or "").upper() == cur:
+            return str(ft or "").upper()
+        return cur
+
+    out: Dict[str, Dict[str, str]] = {}
+    for pid, team_now in (roster_team_by_pid or {}).items():
+        cur_team = str(team_now or "").upper()
+        ev = list(move_events_by_pid.get(pid) or [])
+        i = 0
+        by_date: Dict[str, str] = {}
+        for d in target_dates_desc:
+            cutoff = f"{str(d)[:10]}T23:59:59Z"
+            while i < len(ev) and str(ev[i][0]) > cutoff:
+                _dt, ft, tt = ev[i]
+                cur_team = _reverse_team(cur_team, ft, tt)
+                i += 1
+            by_date[str(d)[:10]] = str(cur_team)
+        out[str(pid)] = by_date
+    return out
+
+
 def apply_monthly_agency_tick(
     *,
     db_path: str,
@@ -103,6 +268,9 @@ def apply_monthly_agency_tick(
     minutes_by_player: Optional[Mapping[str, float]] = None,
     games_by_player: Optional[Mapping[str, int]] = None,
     team_win_pct_by_team: Optional[Mapping[str, float]] = None,
+    # date_iso -> {team_id: games_count} for the processed month.
+    # Used to synthesize DNP presence for players not appearing in boxscores.
+    team_games_by_date: Optional[Mapping[str, Mapping[str, int]]] = None,
     now_iso: str,
     cfg: AgencyConfig = DEFAULT_CONFIG,
 ) -> Dict[str, Any]:
@@ -130,7 +298,6 @@ def apply_monthly_agency_tick(
     team_win_map = {str(k).upper(): float(v) for k, v in (team_win_pct_by_team or {}).items() if str(k)}
 
     splits_by_pid = _typed_splits(month_splits_by_player)
-    month_players_by_team = players_by_team_from_splits(splits_by_pid, min_games_present=1) if splits_by_pid else {}
     
     with LeagueRepo(db_path) as repo:
         repo.init_db()
@@ -158,6 +325,7 @@ def apply_monthly_agency_tick(
                 p.ovr,
                 p.age,
                 p.attrs_json
+                r.updated_at
             FROM players p
             JOIN roster r ON r.player_id = p.player_id
             WHERE r.status='active'
@@ -181,6 +349,7 @@ def apply_monthly_agency_tick(
                     "ovr": safe_int(r[3], 0),
                     "age": safe_int(r[4], 0),
                     "attrs_json": r[5],
+                    "roster_updated_at": r[6],
                 }
             )
 
@@ -193,11 +362,135 @@ def apply_monthly_agency_tick(
                 )
             return {"ok": True, "skipped": True, "reason": "no_active_roster", "month": mk, "meta_key": meta_key}
 
+        # Load previous agency states early (used for defensive fallbacks in month attribution).
+        with repo.transaction() as cur:
+            prev_states = get_player_agency_states(cur, player_ids)
+
         # Expectations for role/leverage/expected minutes.
         expectations_current = compute_expectations_for_league(roster_rows, config=cfg.expectations)
 
+        # ------------------------------------------------------------------
+        # Month context helpers
+        # ------------------------------------------------------------------
+        month_start_date, month_end_date = _month_start_end_dates(mk)
+
+        # Normalize schedule-derived team games map (optional but recommended).
+        team_games_map: Dict[str, Dict[str, int]] = {}
+        for d_raw, by_team_raw in (team_games_by_date or {}).items():
+            d = norm_date_iso(d_raw) or str(d_raw or "")[:10]
+            if not d or not str(d).startswith(str(mk)):
+                continue
+            if not isinstance(by_team_raw, Mapping):
+                continue
+            for tid_raw, n_raw in by_team_raw.items():
+                tid = str(tid_raw or "").upper()
+                if not tid:
+                    continue
+                try:
+                    n = int(n_raw)
+                except Exception:
+                    continue
+                if n <= 0:
+                    continue
+                team_games_map.setdefault(str(d), {})[tid] = int(n)
+
+        month_game_dates = sorted(team_games_map.keys())
+
+        # Team at end-of-month (calendar) derived from SSOT transactions.
+        roster_team_by_pid_now: Dict[str, str] = {str(rr["player_id"]): str(rr["team_id"]).upper() for rr in roster_rows}
+
+        # Target dates: month game dates (for DNP synthesis) + month end (for promises).
+        target_dates = list(month_game_dates)
+        if month_end_date and month_end_date not in target_dates:
+            target_dates.append(month_end_date)
+        target_dates_desc = sorted({str(d)[:10] for d in target_dates if str(d)[:10]}, reverse=True)
+
+        move_events_by_pid = _team_move_events_by_pid_since(
+            repo,
+            player_ids=player_ids,
+            since_date_iso=month_start_date,
+        )
+        teams_asof_by_pid = _teams_as_of_dates(
+            roster_team_by_pid=roster_team_by_pid_now,
+            move_events_by_pid=move_events_by_pid,
+            target_dates_desc=target_dates_desc,
+        )
+
+        roster_updated_date_by_pid: Dict[str, str] = {}
+        for rr in roster_rows:
+            pid = str(rr.get("player_id") or "")
+            if not pid:
+                continue
+            ud = norm_date_iso(rr.get("roster_updated_at")) or str(rr.get("roster_updated_at") or "")[:10]
+            if ud:
+                roster_updated_date_by_pid[pid] = str(ud)
+
+        # Derive end-of-month team_id per player (used for promise evaluation).
+        team_eom_by_pid: Dict[str, str] = {}
+        for pid in player_ids:
+            team_eom = str((teams_asof_by_pid.get(pid) or {}).get(month_end_date) or roster_team_by_pid_now.get(pid) or "").upper()
+
+            # Defensive fallback: if there are *no* move events since month start and roster was updated
+            # after month end, the player likely joined after the processed month.
+            # In that case, prefer the previous agency_state team to avoid false promise fulfilment.
+            if not move_events_by_pid.get(pid):
+                upd = roster_updated_date_by_pid.get(pid)
+                if upd and str(upd) > str(month_end_date):
+                    prev = prev_states.get(pid)
+                    prev_tid = str(prev.get("team_id") or "").upper() if isinstance(prev, Mapping) else ""
+                    cur_tid = str(roster_team_by_pid_now.get(pid) or "").upper()
+                    if prev_tid and cur_tid and prev_tid != cur_tid:
+                        team_eom = prev_tid
+
+            if team_eom:
+                team_eom_by_pid[pid] = team_eom
+
+        # ------------------------------------------------------------------
+        # Synthesize month splits for players who never appear in boxscores.
+        # ------------------------------------------------------------------
+        if team_games_map and target_dates_desc:
+            for pid in player_ids:
+                if pid in splits_by_pid:
+                    continue
+
+                # If we cannot infer historical team membership and roster was updated after month end,
+                # skip DNP synthesis to avoid blaming the current team for a month the player didn't play.
+                if not move_events_by_pid.get(pid):
+                    upd = roster_updated_date_by_pid.get(pid)
+                    if upd and str(upd) > str(month_end_date):
+                        prev = prev_states.get(pid)
+                        prev_tid = str(prev.get("team_id") or "").upper() if isinstance(prev, Mapping) else ""
+                        cur_tid = str(roster_team_by_pid_now.get(pid) or "").upper()
+                        if not prev_tid or (prev_tid and cur_tid and prev_tid != cur_tid):
+                            continue
+
+                team_slices: Dict[str, TeamSlice] = {}
+                by_date = teams_asof_by_pid.get(pid) or {}
+                for d in month_game_dates:
+                    tid = str(by_date.get(d) or roster_team_by_pid_now.get(pid) or "").upper()
+                    if not tid or tid == "FA":
+                        continue
+                    n = int((team_games_map.get(d) or {}).get(tid, 0) or 0)
+                    if n <= 0:
+                        continue
+                    sl = team_slices.get(tid)
+                    if sl is None:
+                        sl = TeamSlice(team_id=tid)
+                        team_slices[tid] = sl
+                    for _ in range(n):
+                        sl.add_game(game_date_iso=str(d), minutes=0.0)
+
+                if team_slices:
+                    splits_by_pid[pid] = finalize_player_month_split(
+                        player_id=pid,
+                        month_key=mk,
+                        team_slices=team_slices,
+                        cfg=cfg.month_context,
+                    )
+
         # Month expectations (role/leverage/expected minutes in the roster context actually experienced).
         # If month split data is unavailable, this will be empty and we will fall back to current expectations.
+        month_players_by_team = players_by_team_from_splits(splits_by_pid, min_games_present=1) if splits_by_pid else {}
         with repo.transaction() as cur:
             month_expectations = compute_month_expectations(
                 cur,
@@ -205,12 +498,10 @@ def apply_monthly_agency_tick(
                 config=cfg.expectations,
             )
 
+
         # Injury status (best-effort)
         injury_status_by_pid = _best_effort_injury_status_by_pid(repo, player_ids)
 
-        # Load previous agency states
-        with repo.transaction() as cur:
-            prev_states = get_player_agency_states(cur, player_ids)
 
         # Run tick (pass 1): evaluate each player's month under the team they actually played for.
         # We may later apply a team transition to move the state onto the current roster team.
@@ -220,7 +511,6 @@ def apply_monthly_agency_tick(
 
         eval_team_by_pid: Dict[str, str] = {}
         roster_team_by_pid: Dict[str, str] = {}
-        team_end_by_pid: Dict[str, str] = {}
         split_summary_by_pid: Dict[str, Dict[str, Any]] = {}
 
         for rr in roster_rows:
@@ -249,15 +539,6 @@ def apply_monthly_agency_tick(
             eval_tid = str(eval_tid).upper() if eval_tid else roster_tid
             eval_team_by_pid[pid] = eval_tid
 
-            # Team at end-of-month for promise evaluation (trade/shop promises) & explainability.
-            team_end = None
-            if split and split.team_last:
-                team_end = str(split.team_last).upper()
-            elif split and split.primary_team:
-                team_end = str(split.primary_team).upper()
-            else:
-                team_end = eval_tid
-            team_end_by_pid[pid] = str(team_end or eval_tid).upper()
 
             if split:
                 split_summary_by_pid[pid] = build_split_summary(split)
@@ -337,7 +618,7 @@ def apply_monthly_agency_tick(
                 ctx.setdefault("month_sample_missing", True)
                 ctx.setdefault("evaluation_team_id", eval_tid)
                 ctx.setdefault("current_roster_team_id", roster_tid)
-                ctx.setdefault("team_end_of_month_id", team_end_by_pid.get(pid))
+                ctx.setdefault("team_end_of_month_id", team_eom_by_pid.get(pid) or str(eval_tid).upper())
                 base_state["context"] = ctx
 
                 states_eval[pid] = base_state
@@ -377,7 +658,7 @@ def apply_monthly_agency_tick(
             ctx.setdefault("month_attribution", split_summary_by_pid.get(pid) or {})
             ctx.setdefault("evaluation_team_id", eval_tid)
             ctx.setdefault("current_roster_team_id", roster_tid)
-            ctx.setdefault("team_end_of_month_id", team_end_by_pid.get(pid))
+            ctx.setdefault("team_end_of_month_id", team_eom_by_pid.get(pid) or str(eval_tid).upper())
             new_state["context"] = ctx
 
             states_eval[pid] = new_state
