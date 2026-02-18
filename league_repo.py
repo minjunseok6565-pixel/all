@@ -61,6 +61,10 @@ except Exception as e:  # pragma: no cover
     )
 
 
+# Contract SSOT codec (columns are SSOT; contract_json stores extras only)
+from contract_codec import contract_from_row
+
+
 # ----------------------------
 # Helpers
 # ----------------------------
@@ -976,39 +980,9 @@ class LeagueRepo:
 
 
     def _contract_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
-        raw_json = None
-        try:
-            raw_json = row["contract_json"]
-        except Exception:
-            raw_json = None
-
-        if raw_json:
-            obj = _json_loads(raw_json, None)
-            if isinstance(obj, dict):
-                obj.setdefault("contract_id", str(row["contract_id"]))
-                obj.setdefault("player_id", str(row["player_id"]))
-                obj.setdefault("team_id", str(row["team_id"]).upper())
-                return obj
-
-        salary_by_year = _json_loads(row["salary_by_season_json"], {})
-        if not isinstance(salary_by_year, dict):
-            salary_by_year = {}
-        options = _json_loads(getattr(row, "options_json", None) or row.get("options_json") if isinstance(row, dict) else None, [])
-        if not isinstance(options, list):
-            options = []
-
-        return {
-            "contract_id": str(row["contract_id"]),
-            "player_id": str(row["player_id"]),
-            "team_id": str(row["team_id"]).upper(),
-            "signed_date": row["signed_date"] if "signed_date" in row.keys() else None,
-            "start_season_year": row["start_season_year"] if "start_season_year" in row.keys() else None,
-            "years": row["years"] if "years" in row.keys() else None,
-            "salary_by_year": salary_by_year,
-            "options": options,
-            "status": row["status"] if "status" in row.keys() else None,
-            "is_active": bool(int(row["is_active"]) if row["is_active"] is not None else 0),
-        }
+        # Columns are SSOT; contract_json is treated as extras only.
+        # This prevents stale/legacy contract_json from overriding canonical fields.
+        return contract_from_row(row)
 
     def get_contracts_map(self, *, active_only: bool = False) -> Dict[str, Dict[str, Any]]:
         sql = "SELECT * FROM contracts"
