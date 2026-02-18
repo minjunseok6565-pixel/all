@@ -124,7 +124,6 @@ class LeaderboardRow(TypedDict, total=False):
     name: str
     team_id: str
     games: int
-    GP: int
     MIN: float
     value: float
     per_game: float
@@ -189,7 +188,7 @@ def normalized_player_lines(player_stats: Mapping[str, Any]) -> List[PlayerLine]
         player_id = str(entry.get("player_id") or pid)
         name = str(entry.get("name") or "")
         team_id = str(entry.get("team_id") or "")
-        gp = coerce_int(entry.get("games") or entry.get("GP") or 0, 0)
+        gp = coerce_int(entry.get("games") or 0, 0)
         totals_any = entry.get("totals") or {}
         totals: Dict[str, float] = {}
         if isinstance(totals_any, Mapping):
