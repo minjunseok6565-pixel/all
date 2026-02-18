@@ -62,7 +62,7 @@ except Exception as e:  # pragma: no cover
 
 
 # Contract SSOT codec (columns are SSOT; contract_json stores extras only)
-from contract_codec import contract_from_row, contract_to_upsert_row
+from contract_codec import CONTRACT_SSOT_FIELDS, contract_from_row, contract_to_upsert_row
 
 
 # ----------------------------
@@ -1637,6 +1637,43 @@ class LeagueRepo:
         rows = self._conn.execute("SELECT DISTINCT team_id FROM roster WHERE status='active';").fetchall()
         for r in rows:
             normalize_team_id(r["team_id"], strict=True)
+
+        # Guardrail (dev-time): contract_json must be extras-only.
+        # After Option A migration, ALL SSOT fields must live in first-class columns.
+        # If SSOT keys appear inside contract_json, it indicates a regression that can
+        # resurrect stale values and reintroduce SSOT split bugs.
+        rows = self._conn.execute(
+            """
+            SELECT contract_id, contract_json
+            FROM contracts
+            WHERE contract_json IS NOT NULL
+              AND TRIM(contract_json) != '';
+            """
+        ).fetchall()
+        for r in rows:
+            cid = str(r["contract_id"])
+            raw = r["contract_json"]
+            if raw is None:
+                continue
+            if isinstance(raw, str) and raw.strip().lower() == "null":
+                continue
+            try:
+                obj = json.loads(raw) if not isinstance(raw, (dict, list)) else raw
+            except Exception as exc:
+                raise ValueError(f"contracts.contract_json invalid JSON (contract_id={cid}): {exc}") from exc
+            if obj is None:
+                continue
+            if not isinstance(obj, dict):
+                raise ValueError(
+                    "contracts.contract_json must be a JSON object (extras-only). "
+                    f"Found {type(obj).__name__} (contract_id={cid})"
+                )
+            bad_keys = sorted(set(obj.keys()).intersection(CONTRACT_SSOT_FIELDS))
+            if bad_keys:
+                raise ValueError(
+                    "contracts.contract_json contains SSOT keys (extras-only violation): "
+                    f"contract_id={cid} keys={bad_keys}"
+                )
 
         # No duplicate active roster entries (PK ensures), but check status sanity
         rows = self._conn.execute("SELECT COUNT(*) AS c FROM roster WHERE status='active';").fetchone()
