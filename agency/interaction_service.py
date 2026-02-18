@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class AgencyInteractionError(Exception):
     code: str
     message: str
@@ -59,6 +59,7 @@ class AgencyInteractionError(Exception):
 
 EVENT_NOT_FOUND = "AGENCY_EVENT_NOT_FOUND"
 EVENT_TEAM_MISMATCH = "AGENCY_EVENT_TEAM_MISMATCH"
+PLAYER_NOT_ON_TEAM = "AGENCY_PLAYER_NOT_ON_TEAM"
 BAD_RESPONSE = "AGENCY_BAD_RESPONSE"
 PROMISE_SCHEMA_MISSING = "AGENCY_PROMISE_SCHEMA_MISSING"
 
@@ -248,6 +249,27 @@ def respond_to_agency_event(
                     EVENT_TEAM_MISMATCH,
                     "Cannot respond to another team's agency event",
                     {"event_id": ev.get("event_id"), "event_team_id": ev.get("team_id"), "user_team_id": user_tid},
+                )
+
+            # Safety: prevent responding to stale events after a trade/waive.
+            # Even if the event belongs to this team historically, only the
+            # player's *current* active roster team may mutate their agency state.
+            row_roster = cur.execute(
+                "SELECT team_id FROM roster WHERE player_id=? AND status='active' LIMIT 1;",
+                (str(ev.get("player_id") or ""),),
+            ).fetchone()
+            current_tid = str(row_roster[0]).upper() if row_roster and row_roster[0] is not None else None
+            if current_tid != user_tid:
+                raise AgencyInteractionError(
+                    PLAYER_NOT_ON_TEAM,
+                    "Cannot respond: player is no longer on this team",
+                    {
+                        "event_id": ev.get("event_id"),
+                        "player_id": ev.get("player_id"),
+                        "event_team_id": ev.get("team_id"),
+                        "user_team_id": user_tid,
+                        "current_team_id": current_tid,
+                    },
                 )
 
             # Deterministic response event ID (one response per source event)
