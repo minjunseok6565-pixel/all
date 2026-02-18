@@ -324,7 +324,7 @@ def apply_monthly_agency_tick(
                 r.salary_amount,
                 p.ovr,
                 p.age,
-                p.attrs_json
+                p.attrs_json,
                 r.updated_at
             FROM players p
             JOIN roster r ON r.player_id = p.player_id
@@ -751,7 +751,7 @@ def apply_monthly_agency_tick(
 
                         # Determine the team at end-of-month (EOM) for this processed month.
                         # If we cannot infer it (missing boxscore), anchor to promised team to avoid false cancellations.
-                        team_eom = str(team_end_by_pid.get(pid) or "").upper()
+                        team_eom = str(team_eom_by_pid.get(pid) or "").upper()
                         if not team_eom:
                             if split and split.team_last:
                                 team_eom = str(split.team_last).upper()
