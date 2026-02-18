@@ -7,12 +7,12 @@ from typing import Any, Dict
 import google.generativeai as genai
 
 import state
-from stats_util import compute_league_leaders
+from analytics.stats.leaders import compute_leaderboards
 from team_utils import get_conference_standings, get_team_detail
 from config import ALL_TEAM_IDS
 
-# news_ai.py 에 있는 응답 텍스트 추출 유틸을 재사용한다.
-from news_ai import _extract_text_from_gemini_response
+# Gemini 응답 텍스트 추출 유틸 (공유)
+from scouting.report_ai import _extract_text_from_gemini_response
 
 
 SEASON_REPORT_TEMPLATE = """
@@ -241,8 +241,21 @@ def build_season_context(user_team_id: str) -> Dict[str, Any]:
 
     standings = get_conference_standings()
     team_detail = get_team_detail(user_team_id)
-    workflow_state = state.export_workflow_state()
-    leaders = compute_league_leaders(workflow_state.get("player_stats") or {})
+    workflow_state = state.export_workflow_state() or {}
+    if not isinstance(workflow_state, dict):
+        workflow_state = {}
+
+    player_stats = workflow_state.get("player_stats") or {}
+    team_stats = workflow_state.get("team_stats") or {}
+
+    cfg = {
+        "top_n": 5,
+        "include_ties": False,
+        "modes": ["per_game"],
+        "metric_keys": ["PTS", "AST", "REB", "3PM"],
+    }
+    leaders_bundle = compute_leaderboards(player_stats, team_stats, phase="regular", config=cfg)
+    leaders = leaders_bundle.get("per_game") or {}
 
     conference_key = None
     conf_entry: Dict[str, Any] | None = None
@@ -308,7 +321,7 @@ def build_season_context(user_team_id: str) -> Dict[str, Any]:
         "team_detail": team_detail,
         "team_context": team_context,
         "league_leaders": leaders,
-        "all_games": state.export_workflow_state().get("games", []),
+        "all_games": workflow_state.get("games", []),
     }
     return ctx
 
