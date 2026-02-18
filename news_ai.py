@@ -71,13 +71,13 @@ def _extract_transaction_events(*, start: date, end: date) -> List[NewsEvent]:
     for t in rows:
         if not isinstance(t, dict):
             continue
-        d = _as_date(t.get("date") or t.get("action_date") or t.get("created_at"))
+        d = _as_date(t.get("date"))
         if not d:
             continue
         if not (start <= d <= end):
             continue
 
-        tx_type = str(t.get("type") or t.get("tx_type") or "transaction")
+        tx_type = str(t.get("type") or "transaction")
         title = str(t.get("title") or "").strip()
         summary = str(t.get("summary") or "").strip()
         if not title:
