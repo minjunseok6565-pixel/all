@@ -22,7 +22,7 @@ from league_service import LeagueService
 from schema import normalize_team_id, normalize_player_id
 import state
 from sim.league_sim import simulate_single_game, advance_league_until
-from playoffs import (
+from postseason.director import (
     auto_advance_current_round,
     advance_my_team_one_game,
     build_postseason_field,
@@ -31,7 +31,7 @@ from playoffs import (
     reset_postseason_state,
 )
 from news_ai import refresh_playoff_news, refresh_weekly_news
-from stats_util import compute_league_leaders, compute_playoff_league_leaders
+from analytics.stats.leaders import compute_leaderboards
 from team_utils import get_conference_standings, get_team_cards, get_team_detail, ui_cache_rebuild_all, ui_cache_refresh_players
 
 from college.ui import (
@@ -505,22 +505,59 @@ async def api_set_player_training_plan(req: PlayerTrainingPlanRequest):
 
 @app.get("/api/stats/leaders")
 async def api_stats_leaders():
-    # The frontend expects a flat object with an uppercase stat key (e.g., PTS)
-    # under `data.leaders`. Some previous iterations of the API wrapped this
-    # structure under stats.leaderboards with lowercase keys, which caused the
-    # UI to break. Normalize here so the client always receives
-    # `{ leaders: { PTS: [...], AST: [...], ... }, updated_at: <iso date> }`.
-    workflow_state = state.export_workflow_state()
-    leaders = compute_league_leaders(workflow_state.get("player_stats") or {})
+    """Regular-season per-game leaders.
+
+    Note:
+        - We intentionally keep the payload small (top 5, no ties) because this endpoint
+          is commonly used as a quick "at-a-glance" widget.
+        - This endpoint no longer depends on legacy `stats_util.py` facades.
+    """
+    workflow_state = state.export_workflow_state() or {}
+    if not isinstance(workflow_state, dict):
+        workflow_state = {}
+
+    player_stats = workflow_state.get("player_stats") or {}
+    team_stats = workflow_state.get("team_stats") or {}
+
+    cfg = {
+        "top_n": 5,
+        "include_ties": False,
+        "modes": ["per_game"],
+        "metric_keys": ["PTS", "AST", "REB", "3PM"],
+    }
+    bundle = compute_leaderboards(player_stats, team_stats, phase="regular", config=cfg)
+    leaders = bundle.get("per_game") or {}
+
     current_date = state.get_current_date()
     return {"leaders": leaders, "updated_at": current_date}
 
 
 @app.get("/api/stats/playoffs/leaders")
 async def api_playoff_stats_leaders():
-    workflow_state = state.export_workflow_state()
-    playoff_stats = (workflow_state.get("phase_results") or {}).get("playoffs", {}).get("player_stats") or {}
-    leaders = compute_playoff_league_leaders(playoff_stats)
+    """Playoff per-game leaders (same small payload as regular season)."""
+    workflow_state = state.export_workflow_state() or {}
+    if not isinstance(workflow_state, dict):
+        workflow_state = {}
+
+    phase_results = workflow_state.get("phase_results") or {}
+    if not isinstance(phase_results, dict):
+        phase_results = {}
+
+    playoffs = phase_results.get("playoffs") or {}
+    if not isinstance(playoffs, dict):
+        playoffs = {}
+
+    player_stats = playoffs.get("player_stats") or {}
+    team_stats = playoffs.get("team_stats") or {}
+
+    cfg = {
+        "top_n": 5,
+        "include_ties": False,
+        "modes": ["per_game"],
+        "metric_keys": ["PTS", "AST", "REB", "3PM"],
+    }
+    bundle = compute_leaderboards(player_stats, team_stats, phase="playoffs", config=cfg)
+    leaders = bundle.get("per_game") or {}
     current_date = state.get_current_date()
     return {"leaders": leaders, "updated_at": current_date}
 
