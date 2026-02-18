@@ -335,6 +335,7 @@ def _maybe_emit_help_demand(
     state: Dict[str, Any],
     inputs: MonthlyPlayerInputs,
     cfg: AgencyConfig,
+    context: Dict[str, Any],
     sample_weight: float,
 ) -> Optional[Dict[str, Any]]:
     ecfg = cfg.events
@@ -655,7 +656,7 @@ def apply_monthly_player_tick(
     if ev is not None:
         events.append(ev)
 
-    ev = _maybe_emit_help_demand(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight)
+    ev = _maybe_emit_help_demand(state=st, inputs=inputs, cfg=cfg, context=context, sample_weight=sample_weight)
     if ev is not None:
         events.append(ev)
 
