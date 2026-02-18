@@ -886,7 +886,7 @@ async def api_scouting_assign(req: ScoutingAssignRequest):
         pid = str(normalize_player_id(req.player_id, strict=True))
 
         # assigned_date defaults to in-game date
-        assigned_date = game_time.require_date_iso(req.assigned_date or state.get_current_date(), field="assigned_date")
+        assigned_date = game_time.require_date_iso(req.assigned_date or state.get_current_date_as_date().isoformat(), field="assigned_date")
         now = game_time.now_utc_like_iso()
         db_path = state.get_db_path()
 
@@ -1013,7 +1013,7 @@ async def api_scouting_unassign(req: ScoutingUnassignRequest):
     """
     try:
         tid = str(normalize_team_id(req.team_id, strict=True))
-        ended_date = game_time.require_date_iso(req.ended_date or state.get_current_date(), field="ended_date")
+        ended_date = game_time.require_date_iso(req.ended_date or state.get_current_date_as_date().isoformat(), field="ended_date")
         now = game_time.now_utc_like_iso()
         db_path = state.get_db_path()
 
