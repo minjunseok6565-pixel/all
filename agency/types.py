@@ -123,6 +123,10 @@ class MonthlyPlayerInputs:
     actual_minutes: float
     games_played: int
 
+    # Schedule presence: number of team games in the processed month while the player
+    # was on the evaluated team. Used to compute DNP frequency pressure (optional).
+    games_possible: int = 0
+
     role_bucket: RoleBucket = "UNKNOWN"
     leverage: float = 0.0
 
