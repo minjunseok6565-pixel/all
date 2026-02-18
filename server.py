@@ -1669,7 +1669,7 @@ async def api_agency_events_respond(req: AgencyEventRespondRequest):
         code = str(e.code or "")
         if code in {"AGENCY_EVENT_NOT_FOUND"}:
             raise HTTPException(status_code=404, detail={"code": code, "message": e.message, "details": e.details})
-        if code in {"AGENCY_EVENT_TEAM_MISMATCH"}:
+        if code in {"AGENCY_EVENT_TEAM_MISMATCH", "AGENCY_PLAYER_NOT_ON_TEAM"}:
             raise HTTPException(status_code=409, detail={"code": code, "message": e.message, "details": e.details})
         if code in {"AGENCY_PROMISE_SCHEMA_MISSING"}:
             raise HTTPException(status_code=500, detail={"code": code, "message": e.message, "details": e.details})
