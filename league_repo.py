@@ -62,7 +62,7 @@ except Exception as e:  # pragma: no cover
 
 
 # Contract SSOT codec (columns are SSOT; contract_json stores extras only)
-from contract_codec import contract_from_row
+from contract_codec import contract_from_row, contract_to_upsert_row
 
 
 # ----------------------------
@@ -766,53 +766,15 @@ class LeagueRepo:
         for cid, c in contracts_by_id.items():
             if not isinstance(c, dict):
                 continue
-            contract_id = str(c.get("contract_id") or cid)
-            player_id = str(normalize_player_id(c.get("player_id"), strict=False, allow_legacy_numeric=True))
-            team_id = c.get("team_id")
-            team_id_norm = str(normalize_team_id(team_id, strict=False)).upper() if team_id else ""
-            signed_date = c.get("signed_date")
-            start_year = c.get("start_season_year")
-            years = c.get("years")
-            status = str(c.get("status") or "")
-            options = c.get("options") or []
-            salary_by_year = c.get("salary_by_year") or {}
-            try:
-                start_year_i = int(start_year) if start_year is not None else None
-            except (TypeError, ValueError):
-                _warn_limited("CONTRACT_START_YEAR_COERCE_FAILED", f"contract_id={contract_id} value={start_year!r}")
-                start_year_i = None
-            try:
-                years_i = int(years) if years is not None else None
-            except (TypeError, ValueError):
-                _warn_limited("CONTRACT_YEARS_COERCE_FAILED", f"contract_id={contract_id} value={years!r}")
-                years_i = None
-            start_season_id = str(season_id_from_year(start_year_i)) if start_year_i else None
-            end_season_id = str(season_id_from_year(start_year_i + max((years_i or 1) - 1, 0))) if start_year_i and years_i else start_season_id
-            salary_json = _json_dumps(salary_by_year)
-            contract_json = _json_dumps(c)
-            is_active = 1 if status.strip().upper() == "ACTIVE" else 0
-            ct_raw = c.get("contract_type")
-            ct = str(ct_raw).strip().upper() if ct_raw is not None else ""
-            if not ct:
-                ct = "STANDARD"
+            # SSOT write path:
+            # - First-class columns are authoritative
+            # - contract_json stores extras only (SSOT keys stripped)
+            # - tuple order matches the INSERT statement below
             rows.append(
-                (
-                    contract_id,
-                    player_id,
-                    team_id_norm,
-                    start_season_id,
-                    end_season_id,
-                    salary_json,
-                    ct,
-                    is_active,
-                    now,
-                    now,
-                    str(signed_date) if signed_date is not None else None,
-                    start_year_i,
-                    years_i,
-                    _json_dumps(options),
-                    status,
-                    contract_json,
+                contract_to_upsert_row(
+                    c,
+                    now_iso=now,
+                    contract_id_fallback=str(cid),
                 )
             )
         with self.transaction() as cur:
@@ -935,19 +897,19 @@ class LeagueRepo:
                 contract_id = f"BOOT_{season_id}_{pid}"
                 salary = float(r["salary_amount"] or 0.0)
                 salary_by_year = {str(season_year): salary}
-                contract_json = _json_dumps(
-                    {
-                        "contract_id": contract_id,
-                        "player_id": pid,
-                        "team_id": tid,
-                        "signed_date": "1900-01-01",
-                        "start_season_year": season_year,
-                        "years": 1,
-                        "salary_by_year": salary_by_year,
-                        "options": [],
-                        "status": "ACTIVE",
-                    }
-                )
+                contract = {
+                    "contract_id": contract_id,
+                    "player_id": pid,
+                    "team_id": tid,
+                    "signed_date": "1900-01-01",
+                    "start_season_year": season_year,
+                    "years": 1,
+                    "salary_by_year": salary_by_year,
+                    "options": [],
+                    "status": "ACTIVE",
+                    "contract_type": "STANDARD",
+                }
+                row = contract_to_upsert_row(contract, now_iso=now, contract_id_fallback=contract_id)
                 cur.execute(
                     """
                     INSERT OR IGNORE INTO contracts(
@@ -958,24 +920,7 @@ class LeagueRepo:
                         signed_date, start_season_year, years, options_json, status, contract_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
-                    (
-                        contract_id,
-                        pid,
-                        tid,
-                        season_id,
-                        season_id,
-                        _json_dumps(salary_by_year),
-                        "STANDARD",
-                        1,
-                        now,
-                        now,
-                        "1900-01-01",
-                        season_year,
-                        1,
-                        "[]",
-                        "ACTIVE",
-                        contract_json,
-                    ),
+                    row,
                 )  
 
 
