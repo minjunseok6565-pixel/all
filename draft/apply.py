@@ -434,7 +434,7 @@ def apply_pick_to_db(
                 status="ACTIVE",
             )
             if is_first_round:
-                # Stored in SSOT contract_json; DB-level contract_type column is handled elsewhere.
+                # Stored in SSOT `contracts.contract_type` column; contract_json stores extras only.
                 contract["contract_type"] = "ROOKIE_SCALE"
                 contract["guaranteed_years"] = 2
                 contract["rookie_scale"] = {
