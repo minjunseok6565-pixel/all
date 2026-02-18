@@ -13,6 +13,9 @@ Important:
 from dataclasses import dataclass, field
 from typing import Dict, Mapping
 
+from .month_context import MonthContextConfig
+from .team_transition import TransitionConfig
+
 
 ROLE_BUCKETS: tuple[str, ...] = (
     "UNKNOWN",
@@ -103,6 +106,16 @@ class FrustrationConfig:
 class EventConfig:
     """When to emit events and how long to cool down."""
 
+    # Sample gating (mid-month trade attribution safety)
+    #
+    # We primarily gate on `inputs.games_played` which, after month attribution, is
+    # games played on the evaluated team for that month. This prevents implausible
+    # "I just arrived and already demand a trade" after 1 cameo game.
+    #
+    # Note: DNP months have games_played=0 but should still be eligible for complaints
+    # and requests; tick.py handles this via a DNP override.
+    min_games_for_events: int = 2
+
     # Minutes complaint
     minutes_complaint_threshold: float = 0.60
     minutes_complaint_min_leverage: float = 0.35
@@ -170,6 +183,12 @@ class AgencyConfig:
     frustration: FrustrationConfig = field(default_factory=FrustrationConfig)
     events: EventConfig = field(default_factory=EventConfig)
     options: OptionsConfig = field(default_factory=OptionsConfig)
+
+    # Month attribution policy (mid-month trades)
+    month_context: MonthContextConfig = field(default_factory=MonthContextConfig)
+
+    # Team transition policy (evaluated team != current roster team)
+    transition: TransitionConfig = field(default_factory=TransitionConfig)
 
     # Names for mental attributes in attrs_json
     mental_attr_keys: Mapping[str, str] = field(

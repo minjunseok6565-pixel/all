@@ -19,6 +19,7 @@ from datetime import date
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .month_context import collect_month_splits
 from .service import apply_monthly_agency_tick
 
 
@@ -148,6 +149,30 @@ def _collect_month_team_win_pct(
     return out
 
 
+def _collect_month_splits_from_state_snapshot(
+    state_snapshot: Mapping[str, Any],
+    *,
+    month_key: str,
+    cfg: AgencyConfig,
+) -> Dict[str, Any]:
+    """Return per-player month split objects.
+
+    If split collection fails or produces no data despite games existing,
+    callers should skip the tick rather than producing incorrect league-wide
+    zero-minute evaluations.
+    """
+    try:
+        return collect_month_splits(
+            state_snapshot,
+            month_key=str(month_key),
+            cfg=cfg.month_context,
+            phase="regular",
+        )
+    except Exception:
+        return {}
+
+
+
 def _month_schedule_status(state_snapshot: Mapping[str, Any], *, month_key: str) -> tuple[bool, bool]:
     """Return (is_complete, any_games).
 
@@ -213,9 +238,16 @@ def maybe_run_monthly_agency_tick(
     if season_year <= 0:
         return {"ok": True, "skipped": True, "reason": "no_season_year"}
 
-    minutes_by_player, games_by_player = _collect_month_minutes_and_games_from_state_snapshot(
-        state_snapshot, month_key=month_to_process
+    month_splits_by_player = _collect_month_splits_from_state_snapshot(
+        state_snapshot,
+        month_key=month_to_process,
+        cfg=cfg,
     )
+    if not month_splits_by_player:
+        # Safety: if we cannot attribute minutes reliably, skip rather than
+        # incorrectly treating everyone as 0 minutes.
+        return {"ok": True, "skipped": True, "reason": "missing_boxscore_data", "month": month_to_process}
+
     team_win_pct_by_team = _collect_month_team_win_pct(state_snapshot, month_key=month_to_process)
 
     # Use game_time helpers to produce UTC-like timestamp.
@@ -230,8 +262,7 @@ def maybe_run_monthly_agency_tick(
         db_path=str(db_path),
         season_year=int(season_year),
         month_key=str(month_to_process),
-        minutes_by_player=minutes_by_player,
-        games_by_player=games_by_player,
+        month_splits_by_player=month_splits_by_player,
         team_win_pct_by_team=team_win_pct_by_team,
         now_iso=str(now_iso),
         cfg=cfg,
@@ -291,7 +322,14 @@ def ensure_last_regular_month_agency_tick(
     if not is_complete:
         return {"ok": True, "skipped": True, "reason": "month_incomplete", "month": last_month}
 
-    minutes_by_player, games_by_player = _collect_month_minutes_and_games_from_state_snapshot(state_snapshot, month_key=last_month)
+    month_splits_by_player = _collect_month_splits_from_state_snapshot(
+        state_snapshot,
+        month_key=last_month,
+        cfg=cfg,
+    )
+    if not month_splits_by_player:
+        return {"ok": True, "skipped": True, "reason": "missing_boxscore_data", "month": last_month}
+
     team_win_pct_by_team = _collect_month_team_win_pct(state_snapshot, month_key=last_month)
 
     try:
@@ -305,8 +343,7 @@ def ensure_last_regular_month_agency_tick(
         db_path=str(db_path),
         season_year=int(season_year),
         month_key=str(last_month),
-        minutes_by_player=minutes_by_player,
-        games_by_player=games_by_player,
+        month_splits_by_player=month_splits_by_player,
         team_win_pct_by_team=team_win_pct_by_team,
         now_iso=str(now_iso),
         cfg=cfg,
