@@ -204,6 +204,7 @@ def _maybe_emit_minutes_complaint(
     inputs: MonthlyPlayerInputs,
     cfg: AgencyConfig,
     context: Dict[str, Any],
+    sample_weight: float,
 ) -> Optional[Dict[str, Any]]:
     ecfg = cfg.events
 
@@ -228,10 +229,25 @@ def _maybe_emit_minutes_complaint(
     if low_role and lev < 0.20 and ego < 0.90:
         return None
 
+    # Small-sample gating: avoid immediate drama after a 1-game cameo on a new team.
+    # DNP months have games_played=0 and are handled via sample_weight override in apply_monthly_player_tick.
+    gp = int(inputs.games_played or 0)
+    try:
+        min_g = int(ecfg.min_games_for_events)
+    except Exception:
+        min_g = 2
+    if gp > 0 and gp < max(1, min_g):
+        # If the player played *some* minutes in a tiny sample, don't trigger events yet.
+        # (Still accumulates frustration; it may trigger next month.)
+        if float(inputs.actual_minutes or 0.0) > 0.0:
+            return None
+
     # Probabilistic trigger (stable).
     softness = max(1e-6, float(ecfg.minutes_complaint_softness))
     base_p = clamp01((fr - float(ecfg.minutes_complaint_threshold)) / softness)
     p = base_p * (0.40 + 0.60 * lev) * (0.80 + 0.40 * ego)
+    # Scale by sample weight (mid-month attribution confidence proxy)
+    p *= clamp(0.35 + 0.65 * float(clamp01(sample_weight)), 0.20, 1.00)
 
     roll = stable_u01(inputs.player_id, inputs.month_key, "minutes_complaint")
     if roll >= p:
@@ -242,6 +258,7 @@ def _maybe_emit_minutes_complaint(
     event_id = make_event_id("agency", inputs.player_id, inputs.month_key, event_type)
 
     severity = clamp01(0.50 * fr + 0.30 * ego + 0.20 * lev)
+    severity *= clamp(0.60 + 0.40 * float(clamp01(sample_weight)), 0.60, 1.00)
 
     payload = {
         "role_bucket": role,
@@ -251,6 +268,8 @@ def _maybe_emit_minutes_complaint(
         "leverage": float(lev),
         "ego": float(ego),
         "frustration": float(fr),
+        "sample_games_played": int(inputs.games_played or 0),
+        "sample_weight": float(clamp01(sample_weight)),
     }
 
     # Cooldown
@@ -273,6 +292,7 @@ def _maybe_emit_help_demand(
     state: Dict[str, Any],
     inputs: MonthlyPlayerInputs,
     cfg: AgencyConfig,
+    sample_weight: float,
 ) -> Optional[Dict[str, Any]]:
     ecfg = cfg.events
 
@@ -292,9 +312,20 @@ def _maybe_emit_help_demand(
     if _cooldown_active(state.get("cooldown_help_until"), now_date_iso=now_date):
         return None
 
+    # Small-sample gating (mid-month trade safety): require either DNP month (gp==0)
+    # or at least a minimal sample of games played with the evaluated team.
+    gp = int(inputs.games_played or 0)
+    try:
+        min_g = int(ecfg.min_games_for_events)
+    except Exception:
+        min_g = 2
+    if gp > 0 and gp < max(1, min_g):
+        return None
+
     softness = max(1e-6, float(ecfg.help_demand_softness))
     base_p = clamp01((fr_team - float(ecfg.help_demand_team_frustration_threshold)) / softness)
     p = base_p * (0.55 + 0.45 * amb) * (0.50 + 0.50 * lev)
+    p *= clamp(0.35 + 0.65 * float(clamp01(sample_weight)), 0.20, 1.00)
 
     roll = stable_u01(inputs.player_id, inputs.month_key, "help_demand")
     if roll >= p:
@@ -304,6 +335,7 @@ def _maybe_emit_help_demand(
     event_id = make_event_id("agency", inputs.player_id, inputs.month_key, event_type)
 
     severity = clamp01(0.55 * fr_team + 0.25 * amb + 0.20 * lev)
+    severity *= clamp(0.60 + 0.40 * float(clamp01(sample_weight)), 0.60, 1.00)
 
     payload = {
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
@@ -311,6 +343,8 @@ def _maybe_emit_help_demand(
         "leverage": float(lev),
         "ambition": float(amb),
         "team_frustration": float(fr_team),
+        "sample_games_played": int(inputs.games_played or 0),
+        "sample_weight": float(clamp01(sample_weight)),
     }
 
     state["cooldown_help_until"] = date_add_days(now_date, int(ecfg.cooldown_help_days))
@@ -332,6 +366,7 @@ def _maybe_emit_trade_request(
     state: Dict[str, Any],
     inputs: MonthlyPlayerInputs,
     cfg: AgencyConfig,
+    sample_weight: float,
 ) -> Optional[Dict[str, Any]]:
     ecfg = cfg.events
 
@@ -342,6 +377,15 @@ def _maybe_emit_trade_request(
     lev = clamp01(inputs.leverage)
     # Very low leverage: never request trade (can still complain).
     if lev < 0.30:
+        return None
+
+    # Small-sample gating: avoid a trade request after a 1-game cameo on a new team.
+    gp = int(inputs.games_played or 0)
+    try:
+        min_g = int(ecfg.min_games_for_events)
+    except Exception:
+        min_g = 2
+    if gp > 0 and gp < max(1, min_g):
         return None
 
     ego = mental_norm(inputs.mental, "ego")
@@ -365,6 +409,7 @@ def _maybe_emit_trade_request(
 
     # High ego/ambition increases chance of pulling the trigger.
     p *= clamp(0.75 + 0.55 * ego + 0.35 * amb - 0.10 * loy, 0.10, 2.00)
+    p *= clamp(0.35 + 0.65 * float(clamp01(sample_weight)), 0.20, 1.00)
     p = clamp01(p)
 
     roll = stable_u01(inputs.player_id, inputs.month_key, "trade_request", int(state.get("trade_request_level") or 0))
@@ -388,6 +433,7 @@ def _maybe_emit_trade_request(
     event_id = make_event_id("agency", inputs.player_id, inputs.month_key, event_type)
 
     severity = clamp01(0.55 * request_score + 0.20 * ego + 0.25 * lev)
+    severity *= clamp(0.60 + 0.40 * float(clamp01(sample_weight)), 0.60, 1.00)
 
     payload = {
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
@@ -402,6 +448,8 @@ def _maybe_emit_trade_request(
         "loyalty": float(loy),
         "public": bool(new_level >= 2),
         "level": int(new_level),
+        "sample_games_played": int(inputs.games_played or 0),
+        "sample_weight": float(clamp01(sample_weight)),
     }
 
     return {
@@ -480,6 +528,21 @@ def apply_monthly_player_tick(
     actual_mpg = mins / float(gp) if gp > 0 else 0.0
     st["minutes_actual_mpg"] = float(actual_mpg)
 
+    # Sample weight (mid-month trade attribution safety)
+    # - If gp > 0: scale with games played on the evaluated team.
+    # - If gp == 0 and the player expected minutes but got 0, treat as a full DNP sample.
+    try:
+        full = int(cfg.month_context.full_weight_games)
+    except Exception:
+        full = 10
+    full = max(1, full)
+    if gp > 0:
+        sample_weight = float(clamp01(gp / float(full)))
+    else:
+        exp_mpg = float(st.get("minutes_expected_mpg") or 0.0)
+        # DNP month: allow complaints/requests to trigger; injury multiplier controls accumulation.
+        sample_weight = 1.0 if mins <= 0.0 and exp_mpg > 0.0 else 0.0
+
     # Update frustrations and trust.
     context: Dict[str, Any] = {}
 
@@ -527,21 +590,27 @@ def apply_monthly_player_tick(
         "injury_status": str(inputs.injury_status or ""),
     }
 
+    context["sample"] = {
+        "games_played": int(gp),
+        "full_weight_games": int(full),
+        "sample_weight": float(sample_weight),
+    }
+
     st["context"] = context
     st["last_processed_month"] = str(inputs.month_key)
 
     # Events
     events: List[Dict[str, Any]] = []
 
-    ev = _maybe_emit_minutes_complaint(state=st, inputs=inputs, cfg=cfg, context=context)
+    ev = _maybe_emit_minutes_complaint(state=st, inputs=inputs, cfg=cfg, context=context, sample_weight=sample_weight)
     if ev is not None:
         events.append(ev)
 
-    ev = _maybe_emit_help_demand(state=st, inputs=inputs, cfg=cfg)
+    ev = _maybe_emit_help_demand(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight)
     if ev is not None:
         events.append(ev)
 
-    ev = _maybe_emit_trade_request(state=st, inputs=inputs, cfg=cfg)
+    ev = _maybe_emit_trade_request(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight)
     if ev is not None:
         events.append(ev)
 
