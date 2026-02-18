@@ -228,8 +228,24 @@ def apply_monthly_agency_tick(
             roster_tid = str(rr["team_id"]).upper()
             roster_team_by_pid[pid] = roster_tid
 
+            prev = prev_states.get(pid)
+
             split = splits_by_pid.get(pid)
             eval_tid = (split.primary_team if split and split.primary_team else roster_tid) or roster_tid
+
+            # Choose the team context we evaluate this month under.
+            # - Prefer primary_team when month attribution exists.
+            # - If attribution exists but primary_team is None (small sample), fall back to last/dominant.
+            # - If the player has *no* month sample (e.g., joined after month end), anchor to prev_state.team_id
+            #   to avoid blaming the current roster team for a month they didn't play.
+            eval_tid = None
+            if split is not None:
+                eval_tid = split.primary_team or split.team_last or split.team_dominant
+            if not eval_tid and prev and prev.get("team_id"):
+                eval_tid = prev.get("team_id")
+            if not eval_tid:
+                eval_tid = roster_tid
+            
             eval_tid = str(eval_tid).upper() if eval_tid else roster_tid
             eval_team_by_pid[pid] = eval_tid
 
@@ -267,6 +283,65 @@ def apply_monthly_agency_tick(
 
             mental = extract_mental_from_attrs(rr.get("attrs_json"), keys=cfg.mental_attr_keys)
             mental_by_pid[pid] = dict(mental)
+
+            # Guardrail: players with no processed-month sample (no boxscore rows)
+            # should not be treated as a full DNP month. This avoids phantom
+            # "last month I didn't play" complaints for players who joined after
+            # the month boundary (trade/signing).
+            legacy_mins = float(minutes_map.get(pid, 0.0))
+            legacy_gp = int(games_map.get(pid, 0))
+            has_month_sample = bool(split is not None or legacy_mins > 0.0 or legacy_gp > 0)
+            if not has_month_sample:
+                if pid not in split_summary_by_pid:
+                    split_summary_by_pid[pid] = {
+                        "player_id": pid,
+                        "month_key": mk,
+                        "missing": True,
+                        "reason": "NO_MONTH_SAMPLE",
+                    }
+
+                # Keep prior state intact; only attach explainability context.
+                # (We still allow pass-3 team transitions to reconcile roster changes.)
+                base_state: Dict[str, Any]
+                if prev and isinstance(prev, Mapping):
+                    base_state = dict(prev)
+                else:
+                    base_state = {
+                        "player_id": pid,
+                        "team_id": str(eval_tid).upper(),
+                        "season_year": int(sy),
+                        "role_bucket": str(role_bucket or "UNKNOWN"),
+                        "leverage": float(clamp01(leverage)),
+                        "minutes_expected_mpg": float(max(0.0, expected_mpg)),
+                        "minutes_actual_mpg": 0.0,
+                        "minutes_frustration": 0.0,
+                        "team_frustration": 0.0,
+                        "trust": 0.5,
+                        "trade_request_level": 0,
+                        "cooldown_minutes_until": None,
+                        "cooldown_trade_until": None,
+                        "cooldown_help_until": None,
+                        "cooldown_contract_until": None,
+                        "last_processed_month": None,
+                        "context": {},
+                    }
+
+                # Normalize identity fields + mark the month as considered.
+                base_state["player_id"] = pid
+                base_state["team_id"] = str(eval_tid).upper()
+                base_state["season_year"] = int(sy)
+                base_state["last_processed_month"] = mk
+
+                ctx = base_state.get("context") if isinstance(base_state.get("context"), dict) else {}
+                ctx.setdefault("month_attribution", split_summary_by_pid.get(pid) or {})
+                ctx.setdefault("month_sample_missing", True)
+                ctx.setdefault("evaluation_team_id", eval_tid)
+                ctx.setdefault("current_roster_team_id", roster_tid)
+                ctx.setdefault("team_end_of_month_id", team_end_by_pid.get(pid))
+                base_state["context"] = ctx
+
+                states_eval[pid] = base_state
+                continue
  
             # Month actuals for evaluated team.
             if split is not None:
@@ -295,7 +370,6 @@ def apply_monthly_agency_tick(
                 mental=mental,
             )
 
-            prev = prev_states.get(pid)
             new_state, new_events = apply_monthly_player_tick(prev, inputs=inp, cfg=cfg)
 
             # Attach attribution context for UI / debugging.
