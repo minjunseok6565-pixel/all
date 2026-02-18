@@ -70,6 +70,11 @@ class FrustrationConfig:
     minutes_base_gain: float = 0.55
     minutes_decay: float = 0.15
 
+    # DNP frequency pressure (separate from MPG gap; uses games_played/games_possible)
+    dnp_grace_rate: float = 0.20
+    dnp_softness_rate: float = 0.40
+    dnp_pressure_weight: float = 0.65
+
     # team frustration
     team_base_gain: float = 0.35
     team_decay: float = 0.12
