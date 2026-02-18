@@ -73,6 +73,8 @@ def _update_minutes_frustration(
     prev: float,
     expected_mpg: float,
     actual_mpg: float,
+    games_played: int,
+    games_possible: int,
     mental: Mapping[str, Any],
     leverage: float,
     injury_status: Optional[str],
@@ -89,6 +91,32 @@ def _update_minutes_frustration(
     tol = _compute_minutes_tolerance_mpg(mental, cfg)
     gap_pressure = clamp01(gap / max(tol, 1e-9))
 
+    # DNP frequency pressure (separate from MPG gap):
+    # - games_possible: number of team games during the month while the player was on the evaluated team
+    # - games_played: games with >0 minutes
+    gp = max(0, int(games_played or 0))
+    gpos = max(0, int(games_possible or 0))
+
+    dnp_rate = 0.0
+    if gpos > 0:
+        dnp_rate = clamp01(1.0 - (gp / float(gpos)))
+
+    dnp_grace = float(getattr(fcfg, 'dnp_grace_rate', 0.20))
+    dnp_soft = max(1e-6, float(getattr(fcfg, 'dnp_softness_rate', 0.40)))
+    dnp_pressure_raw = clamp01((dnp_rate - dnp_grace) / dnp_soft)
+
+    # Scale by schedule sample size so we don't overreact to 1-2 games.
+    try:
+        full_g = int(getattr(cfg.month_context, 'full_weight_games', 10))
+    except Exception:
+        full_g = 10
+    full_g = max(1, int(full_g))
+    schedule_weight = clamp01(gpos / float(full_g))
+    dnp_pressure = float(dnp_pressure_raw) * float(schedule_weight)
+
+    dnp_w = float(getattr(fcfg, 'dnp_pressure_weight', 0.65))
+    total_pressure = clamp01(float(gap_pressure) + float(dnp_w) * float(dnp_pressure))
+
     coach = mental_norm(mental, "coachability")
     loy = mental_norm(mental, "loyalty")
     ego = mental_norm(mental, "ego")
@@ -102,11 +130,14 @@ def _update_minutes_frustration(
 
     inj_mult = _injury_multiplier(injury_status, cfg)
 
-    # If the player is "close enough" to expectation, let frustration cool down faster.
-    within = gap <= (0.50 * tol)
+    # If the player is "close enough" to expectation *and* not getting DNP'd often,
+    # let frustration cool down faster.
+    within_gap = gap <= (0.50 * tol)
+    within_dnp = float(dnp_pressure) <= 0.10
+    within = bool(within_gap and within_dnp)
     decay = float(fcfg.minutes_decay) * (1.4 if within else 1.0)
 
-    updated = float(prev) * max(0.0, 1.0 - decay) + gap_pressure * float(fcfg.minutes_base_gain) * gain_mult * inj_mult
+    updated = float(prev) * max(0.0, 1.0 - decay) + float(total_pressure) * float(fcfg.minutes_base_gain) * gain_mult * inj_mult
     updated = float(clamp01(updated))
 
     meta = {
@@ -114,10 +145,22 @@ def _update_minutes_frustration(
         "actual_mpg": actual,
         "gap": gap,
         "tolerance_mpg": tol,
-        "gap_pressure": gap_pressure,
+        "gap_pressure": float(gap_pressure),
+        "dnp_rate": float(dnp_rate),
+        "games_played": int(gp),
+        "games_possible": int(gpos),
+        "dnp_grace_rate": float(dnp_grace),
+        "dnp_softness_rate": float(dnp_soft),
+        "dnp_pressure_raw": float(dnp_pressure_raw),
+        "dnp_schedule_weight": float(schedule_weight),
+        "dnp_pressure": float(dnp_pressure),
+        "dnp_pressure_weight": float(dnp_w),
+        "total_pressure": float(total_pressure),
         "gain_mult": float(gain_mult),
         "injury_mult": float(inj_mult),
         "within": bool(within),
+        "within_gap": bool(within_gap),
+        "within_dnp": bool(within_dnp),
     }
     return updated, meta
 
@@ -344,6 +387,8 @@ def _maybe_emit_help_demand(
         "ambition": float(amb),
         "team_frustration": float(fr_team),
         "sample_games_played": int(inputs.games_played or 0),
+        "sample_games_possible": int(getattr(inputs, "games_possible", 0) or 0),
+        "dnp_rate": float(context.get("minutes", {}).get("dnp_rate") or 0.0),
         "sample_weight": float(clamp01(sample_weight)),
     }
 
@@ -550,6 +595,8 @@ def apply_monthly_player_tick(
         prev=float(st.get("minutes_frustration") or 0.0),
         expected_mpg=float(st.get("minutes_expected_mpg") or 0.0),
         actual_mpg=float(actual_mpg),
+        games_played=int(gp),
+        games_possible=int(getattr(inputs, "games_possible", 0) or 0),
         mental=inputs.mental,
         leverage=float(st.get("leverage") or 0.0),
         injury_status=inputs.injury_status,
@@ -592,6 +639,8 @@ def apply_monthly_player_tick(
 
     context["sample"] = {
         "games_played": int(gp),
+        "games_possible": int(getattr(inputs, "games_possible", 0) or 0),
+        "dnp_rate": float((meta_m or {}).get("dnp_rate") or 0.0),
         "full_weight_games": int(full),
         "sample_weight": float(sample_weight),
     }
