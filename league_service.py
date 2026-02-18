@@ -1592,7 +1592,11 @@ class LeagueService:
                 status="ACTIVE",
             )
 
-            # UI-friendly terms (non-SSOT convenience; SSOT remains contract_json + options)
+            # UI-friendly terms (non-SSOT convenience).
+            # SSOT is the `contracts` table columns (+ salary_by_season_json/options_json);
+            # contract_json stores extras only.
+            # SSOT is the `contracts` table columns (+ salary_by_season_json/options_json);
+            # contract_json stores extras only.
             contract["guaranteed_years"] = int(guaranteed_years)
             if option_years_sorted:
                 contract["team_option_years"] = [int(y) for y in option_years_sorted]
