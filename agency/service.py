@@ -19,10 +19,17 @@ from league_repo import LeagueRepo
 
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .expectations import compute_expectations_for_league
-from .repo import get_player_agency_states, insert_agency_events, upsert_player_agency_states
+from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
+from .repo import (
+    get_player_agency_states,
+    insert_agency_events,
+    list_active_promises_due,
+    update_promises,
+    upsert_player_agency_states,
+)
 from .tick import apply_monthly_player_tick
 from .types import MonthlyPlayerInputs
-from .utils import extract_mental_from_attrs, safe_float, safe_int
+from .utils import clamp01, extract_mental_from_attrs, json_loads, make_event_id, norm_date_iso, safe_float, safe_int
 
 
 logger = logging.getLogger(__name__)
@@ -170,6 +177,8 @@ def apply_monthly_agency_tick(
         new_states: Dict[str, Dict[str, Any]] = {}
         events: list[Dict[str, Any]] = []
 
+        mental_by_pid: Dict[str, Dict[str, int]] = {}
+
         for rr in roster_rows:
             pid = str(rr["player_id"])
             tid = str(rr["team_id"]).upper()
@@ -185,6 +194,8 @@ def apply_monthly_agency_tick(
                 expected_mpg = float(exp.expected_mpg)
 
             mental = extract_mental_from_attrs(rr.get("attrs_json"), keys=cfg.mental_attr_keys)
+
+            mental_by_pid[pid] = dict(mental)
 
             inp = MonthlyPlayerInputs(
                 player_id=pid,
@@ -210,8 +221,259 @@ def apply_monthly_agency_tick(
             new_states[pid] = new_state
             events.extend(new_events)
 
+        # Resolve due promises (best-effort; requires promise schema).
+        # This runs *inside the same monthly meta idempotency gate*.
+        promise_stats: Dict[str, Any] = {
+            "due": 0,
+            "resolved": 0,
+            "fulfilled": 0,
+            "broken": 0,
+            "deferred": 0,
+            "cancelled": 0,
+            "skipped_missing_schema": False,
+        }
+
+        promise_events: list[Dict[str, Any]] = []
+        promise_updates: list[Dict[str, Any]] = []
+
+
         # Persist
         with repo.transaction() as cur:
+            # Promise evaluation uses current-month context (minutes/games, injury, team context).
+            # If schema is missing (older DB), we skip safely.
+            try:
+                due_promises = list_active_promises_due(cur, month_key=mk, limit=2000)
+            except Exception:
+                due_promises = []
+
+            if due_promises:
+                promise_stats["due"] = int(len(due_promises))
+
+                # Preload team transactions evidence for HELP promises (best-effort).
+                help_since_by_team: Dict[str, str] = {}
+                for p in due_promises:
+                    if str(p.get("promise_type") or "").upper() != "HELP":
+                        continue
+                    tid0 = str(p.get("team_id") or "").upper()
+                    cd = norm_date_iso(p.get("created_date")) or now_iso[:10]
+                    if not tid0:
+                        continue
+                    prev = help_since_by_team.get(tid0)
+                    if prev is None or str(cd) < str(prev):
+                        help_since_by_team[tid0] = str(cd)
+
+                team_tx_cache: Dict[str, list[Dict[str, Any]]] = {}
+                if help_since_by_team:
+                    for tid0, since_d in help_since_by_team.items():
+                        try:
+                            like_pat = f'%"{tid0}"%'
+                            rows_tx = cur.execute(
+                                """
+                                SELECT payload_json
+                                FROM transactions_log
+                                WHERE tx_date >= ?
+                                  AND teams_json LIKE ?
+                                ORDER BY COALESCE(tx_date,'') DESC, created_at DESC
+                                LIMIT 1000;
+                                """,
+                                (str(since_d), str(like_pat)),
+                            ).fetchall()
+                            tx_list: list[Dict[str, Any]] = []
+                            for (payload_json,) in rows_tx:
+                                payload = json_loads(payload_json, default=None)
+                                if isinstance(payload, dict):
+                                    tx_list.append(payload)
+                            team_tx_cache[tid0] = tx_list
+                        except Exception:
+                            team_tx_cache[tid0] = []
+
+                # Evaluate each due promise and apply effects to new_states.
+                for p in due_promises:
+                    try:
+                        promise_id = str(p.get("promise_id") or "")
+                        ptype = str(p.get("promise_type") or "").upper()
+                        pid = str(p.get("player_id") or "")
+                        team_promised = str(p.get("team_id") or "").upper()
+                        if not promise_id or not pid or not team_promised:
+                            continue
+
+                        st = new_states.get(pid)
+                        if not st:
+                            continue
+
+                        team_current = str(st.get("team_id") or team_promised).upper()
+
+                        # If the player is no longer on the promised team, cancel non-trade promises.
+                        if ptype in {"MINUTES", "HELP", "ROLE"} and team_current != team_promised:
+                            promise_updates.append(
+                                {
+                                    "promise_id": promise_id,
+                                    "status": "CANCELLED",
+                                    "resolved_at": str(now_iso)[:10],
+                                    "evidence": {
+                                        "code": "PROMISE_CANCELLED_TEAM_CHANGED",
+                                        "promised_team_id": team_promised,
+                                        "current_team_id": team_current,
+                                        "month_key": mk,
+                                    },
+                                }
+                            )
+                            promise_events.append(
+                                {
+                                    "event_id": make_event_id("agency", "promise_cancelled", promise_id, mk),
+                                    "player_id": pid,
+                                    "team_id": team_current,
+                                    "season_year": sy,
+                                    "date": str(now_iso)[:10],
+                                    "event_type": "PROMISE_CANCELLED",
+                                    "severity": 0.10,
+                                    "payload": {
+                                        "promise_id": promise_id,
+                                        "promise_type": ptype,
+                                        "promised_team_id": team_promised,
+                                        "current_team_id": team_current,
+                                        "month_key": mk,
+                                    },
+                                }
+                            )
+                            promise_stats["cancelled"] = int(promise_stats["cancelled"]) + 1
+                            continue
+
+                        # Build evaluation context
+                        mental = mental_by_pid.get(pid) or {}
+
+                        ctx = PromiseEvaluationContext(
+                            now_date_iso=str(now_iso)[:10],
+                            month_key=mk,
+                            player_id=pid,
+                            team_id_current=team_current,
+                            actual_mpg=float(safe_float(st.get("minutes_actual_mpg"), 0.0)),
+                            injury_status=injury_status_by_pid.get(pid),
+                            leverage=float(safe_float(st.get("leverage"), 0.0)),
+                            mental=mental,
+                            team_win_pct=float(safe_float(team_win_map.get(team_current, 0.5), 0.5)),
+                            team_transactions=team_tx_cache.get(team_promised) if ptype == "HELP" else None,
+                        )
+
+                        res = evaluate_promise(p, ctx=ctx, cfg=DEFAULT_PROMISE_CONFIG)
+
+                        if not res.due:
+                            continue
+
+                        # Apply state deltas
+                        deltas = res.state_deltas or {}
+                        if deltas:
+                            if "trust" in deltas:
+                                st["trust"] = float(clamp01(safe_float(st.get("trust"), 0.5) + safe_float(deltas.get("trust"), 0.0)))
+                            if "minutes_frustration" in deltas:
+                                st["minutes_frustration"] = float(
+                                    clamp01(
+                                        safe_float(st.get("minutes_frustration"), 0.0)
+                                        + safe_float(deltas.get("minutes_frustration"), 0.0)
+                                    )
+                                )
+                            if "team_frustration" in deltas:
+                                st["team_frustration"] = float(
+                                    clamp01(
+                                        safe_float(st.get("team_frustration"), 0.0)
+                                        + safe_float(deltas.get("team_frustration"), 0.0)
+                                    )
+                                )
+
+                            # Special: floor the trade request level
+                            if "trade_request_level_min" in deltas:
+                                try:
+                                    floor_v = int(safe_float(deltas.get("trade_request_level_min"), 0.0))
+                                except Exception:
+                                    floor_v = 0
+                                try:
+                                    cur_tr = int(st.get("trade_request_level") or 0)
+                                except Exception:
+                                    cur_tr = 0
+                                st["trade_request_level"] = int(max(cur_tr, floor_v))
+
+                        # Promise row updates
+                        upd: Dict[str, Any] = {"promise_id": promise_id}
+                        pu = res.promise_updates or {}
+                        if "status" in pu and pu.get("status") is not None:
+                            upd["status"] = str(pu.get("status")).upper()
+                        if "due_month" in pu and pu.get("due_month") is not None:
+                            upd["due_month"] = pu.get("due_month")
+                        if "resolved_at" in pu:
+                            upd["resolved_at"] = pu.get("resolved_at")
+
+                        # Evidence: store latest evaluation snapshot
+                        upd["evidence"] = {
+                            "month_key": mk,
+                            "now_date": str(now_iso)[:10],
+                            "result": {"due": res.due, "resolved": res.resolved, "new_status": res.new_status},
+                            "reasons": res.reasons,
+                            "meta": res.meta,
+                            "ctx": {
+                                "team_id_current": team_current,
+                                "injury_status": ctx.injury_status,
+                                "actual_mpg": ctx.actual_mpg,
+                            },
+                        }
+                        promise_updates.append(upd)
+
+                        # Emit events for resolved/deferrals
+                        trust_delta = float(safe_float(deltas.get("trust"), 0.0))
+                        sev = float(clamp01(0.10 + abs(trust_delta) * 4.0))
+
+                        if res.resolved and str(res.new_status).upper() == "FULFILLED":
+                            ev_type = "PROMISE_FULFILLED"
+                            promise_stats["fulfilled"] = int(promise_stats["fulfilled"]) + 1
+                            promise_stats["resolved"] = int(promise_stats["resolved"]) + 1
+                        elif res.resolved and str(res.new_status).upper() == "BROKEN":
+                            ev_type = "PROMISE_BROKEN"
+                            promise_stats["broken"] = int(promise_stats["broken"]) + 1
+                            promise_stats["resolved"] = int(promise_stats["resolved"]) + 1
+                        elif not res.resolved and res.due:
+                            ev_type = "PROMISE_DEFERRED"
+                            promise_stats["deferred"] = int(promise_stats["deferred"]) + 1
+                        else:
+                            ev_type = "PROMISE_DUE"
+
+                        # Only log meaningful state-changing promise events.
+                        if ev_type in {"PROMISE_FULFILLED", "PROMISE_BROKEN", "PROMISE_DEFERRED"}:
+                            promise_events.append(
+                                {
+                                    "event_id": make_event_id("agency", "promise", promise_id, mk, ev_type),
+                                    "player_id": pid,
+                                    "team_id": team_current,
+                                    "season_year": sy,
+                                    "date": str(now_iso)[:10],
+                                    "event_type": ev_type,
+                                    "severity": sev,
+                                    "payload": {
+                                        "promise_id": promise_id,
+                                        "promise_type": ptype,
+                                        "promised_team_id": team_promised,
+                                        "current_team_id": team_current,
+                                        "month_key": mk,
+                                        "due_month": p.get("due_month"),
+                                        "new_status": res.new_status,
+                                        "state_deltas": deltas,
+                                        "reasons": res.reasons,
+                                        "meta": res.meta,
+                                    },
+                                }
+                            )
+                    except Exception:
+                        continue
+
+            # Persist all promise updates before state/events (atomic under this tx).
+            if promise_updates:
+                try:
+                    update_promises(cur, promise_updates)
+                except Exception:
+                    promise_stats["skipped_missing_schema"] = True
+
+            # Merge promise events into agency events stream
+            if promise_events:
+                events.extend(promise_events)
+
             upsert_player_agency_states(cur, new_states, now=str(now_iso))
             insert_agency_events(cur, events, now=str(now_iso))
             cur.execute(
@@ -227,6 +489,7 @@ def apply_monthly_agency_tick(
             "players_processed": len(roster_rows),
             "states_upserted": len(new_states),
             "events_emitted": len(events),
+            "promise_stats": promise_stats,
         }
 
 
