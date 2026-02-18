@@ -9,12 +9,14 @@ This module is intentionally *pure DB I/O*:
 Tables (SSOT):
 - player_agency_state
 - agency_events
+- agency_event_responses
+- player_agency_promises
 
 Dates are stored as ISO strings.
 """
 
 import sqlite3
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .utils import json_dumps, json_loads, norm_date_iso, norm_month_key, safe_float, safe_int
 
@@ -386,3 +388,228 @@ def list_agency_events(
     return out
 
 
+
+
+# -----------------------------------------------------------------------------
+# Optional tables: user responses + promises
+# -----------------------------------------------------------------------------
+
+
+def table_exists(cur: sqlite3.Cursor, table_name: str) -> bool:
+    """Return True if a table exists in this SQLite DB."""
+    try:
+        row = cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1;",
+            (str(table_name),),
+        ).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+
+
+def get_agency_event_response(
+    cur: sqlite3.Cursor,
+    *,
+    source_event_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return a stored user response for a given agency event, if present."""
+    sid = str(source_event_id or "")
+    if not sid:
+        return None
+    if not table_exists(cur, "agency_event_responses"):
+        return None
+
+    r = cur.execute(
+        """
+        SELECT
+            response_id,
+            source_event_id,
+            player_id,
+            team_id,
+            season_year,
+            response_type,
+            response_payload_json,
+            created_at
+        FROM agency_event_responses
+        WHERE source_event_id = ?
+        LIMIT 1;
+        """,
+        (sid,),
+    ).fetchone()
+
+    if not r:
+        return None
+
+    return {
+        "response_id": str(r[0]),
+        "source_event_id": str(r[1]),
+        "player_id": str(r[2]),
+        "team_id": str(r[3]),
+        "season_year": safe_int(r[4], 0),
+        "response_type": str(r[5]),
+        "response_payload": json_loads(r[6], default={}) or {},
+        "created_at": str(r[7]),
+    }
+
+
+def list_active_promises_due(
+    cur: sqlite3.Cursor,
+    *,
+    month_key: str,
+    team_id: Optional[str] = None,
+    player_id: Optional[str] = None,
+    limit: int = 500,
+) -> list[Dict[str, Any]]:
+    """List ACTIVE promises whose due_month is <= month_key.
+
+    This is used by the monthly agency tick to resolve promises.
+
+    Returns:
+        list of promise rows with JSON fields decoded.
+    """
+    if not table_exists(cur, "player_agency_promises"):
+        return []
+
+    mk = norm_month_key(month_key)
+    if not mk:
+        return []
+
+    where: list[str] = ["status = 'ACTIVE'", "due_month <= ?"]
+    args: list[Any] = [mk]
+
+    if team_id:
+        where.append("team_id = ?")
+        args.append(str(team_id).upper())
+    if player_id:
+        where.append("player_id = ?")
+        args.append(str(player_id))
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    lim = int(limit) if int(limit) > 0 else 500
+
+    rows = cur.execute(
+        f"""
+        SELECT
+            promise_id,
+            player_id,
+            team_id,
+            season_year,
+            source_event_id,
+            response_id,
+            promise_type,
+            status,
+            created_date,
+            due_month,
+            target_value,
+            target_json,
+            evidence_json,
+            resolved_at
+        FROM player_agency_promises
+        {where_sql}
+        ORDER BY due_month ASC, created_date ASC
+        LIMIT ?;
+        """,
+        args + [lim],
+    ).fetchall()
+
+    out: list[Dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            {
+                "promise_id": str(r[0]),
+                "player_id": str(r[1]),
+                "team_id": str(r[2]).upper(),
+                "season_year": safe_int(r[3], 0),
+                "source_event_id": str(r[4]) if r[4] is not None else None,
+                "response_id": str(r[5]) if r[5] is not None else None,
+                "promise_type": str(r[6]).upper(),
+                "status": str(r[7]).upper(),
+                "created_date": norm_date_iso(r[8]),
+                "due_month": norm_month_key(r[9]),
+                "target_value": (None if r[10] is None else float(safe_float(r[10], 0.0))),
+                "target": json_loads(r[11], default={}) or {},
+                "evidence": json_loads(r[12], default={}) or {},
+                "resolved_at": norm_date_iso(r[13]),
+            }
+        )
+
+    return out
+
+
+def update_promises(
+    cur: sqlite3.Cursor,
+    updates: Sequence[Mapping[str, Any]],
+) -> None:
+    """Apply updates to promise rows.
+
+    Each update mapping must include:
+      - promise_id
+    Optional fields:
+      - status
+      - due_month
+      - target_value
+      - target (dict) -> stored in target_json
+      - evidence (dict) -> stored in evidence_json
+      - resolved_at
+
+    Invalid rows are skipped.
+    """
+    if not updates:
+        return
+    if not table_exists(cur, "player_agency_promises"):
+        return
+
+    for u in updates:
+        try:
+            pid = str(u.get("promise_id") or "")
+            if not pid:
+                continue
+
+            sets: list[str] = []
+            args: list[Any] = []
+
+            if "status" in u and u.get("status") is not None:
+                sets.append("status=?")
+                args.append(str(u.get("status")).upper())
+
+            if "due_month" in u and u.get("due_month") is not None:
+                dm = norm_month_key(u.get("due_month"))
+                if dm:
+                    sets.append("due_month=?")
+                    args.append(dm)
+
+            if "target_value" in u:
+                sets.append("target_value=?")
+                args.append(u.get("target_value"))
+
+            if "target" in u and u.get("target") is not None:
+                t = u.get("target")
+                if not isinstance(t, Mapping):
+                    t = {}
+                sets.append("target_json=?")
+                args.append(json_dumps(dict(t)))
+
+            if "evidence" in u and u.get("evidence") is not None:
+                ev = u.get("evidence")
+                if not isinstance(ev, Mapping):
+                    ev = {}
+                sets.append("evidence_json=?")
+                args.append(json_dumps(dict(ev)))
+
+            if "resolved_at" in u:
+                ra = norm_date_iso(u.get("resolved_at"))
+                sets.append("resolved_at=?")
+                args.append(ra)
+
+            if not sets:
+                continue
+
+            args.append(pid)
+
+            cur.execute(
+                f"""UPDATE player_agency_promises SET {", ".join(sets)} WHERE promise_id=?;""",
+                args,
+            )
+        except Exception:
+            continue

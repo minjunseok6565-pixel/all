@@ -281,6 +281,7 @@ class ReleaseToFARequest(BaseModel):
 
 
 class SignFreeAgentRequest(BaseModel):
+    session_id: str  # must reference an ACCEPTED contract negotiation session
     team_id: str
     player_id: str
     signed_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
@@ -292,6 +293,7 @@ class SignFreeAgentRequest(BaseModel):
 
 
 class ReSignOrExtendRequest(BaseModel):
+    session_id: str  # must reference an ACCEPTED contract negotiation session
     team_id: str
     player_id: str
     signed_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
@@ -300,6 +302,40 @@ class ReSignOrExtendRequest(BaseModel):
     team_option_years: Optional[List[int]] = None  # Absolute season_years; must be tail-consecutive and include final year
     # Deprecated shorthand; prefer team_option_years.
     team_option_last_year: bool = False  # If True, last year is a TEAM option (PENDING)
+
+
+class ContractNegotiationStartRequest(BaseModel):
+    team_id: str
+    player_id: str
+    mode: str = "SIGN_FA"  # SIGN_FA | RE_SIGN | EXTEND
+    valid_days: Optional[int] = 7  # in-game days the offer window stays open (best-effort)
+
+
+class ContractNegotiationOfferRequest(BaseModel):
+    session_id: str
+    offer: Dict[str, Any]  # see contracts.negotiation.types.ContractOffer.from_payload
+
+
+class ContractNegotiationAcceptCounterRequest(BaseModel):
+    session_id: str
+
+
+class ContractNegotiationCommitRequest(BaseModel):
+    session_id: str
+    signed_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
+
+
+class ContractNegotiationCancelRequest(BaseModel):
+    session_id: str
+    reason: Optional[str] = None
+
+
+class AgencyEventRespondRequest(BaseModel):
+    user_team_id: str
+    event_id: str
+    response_type: str
+    response_payload: Optional[Dict[str, Any]] = None
+    now_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
 
 
 # -------------------------------------------------------------------------
@@ -1597,6 +1633,51 @@ async def api_agency_get_events(
     return {"ok": True, "events": events}
 
 
+@app.post("/api/agency/events/respond")
+async def api_agency_events_respond(req: AgencyEventRespondRequest):
+    """Respond to an agency event (user chooses how to handle demands/promises).
+
+    This is the *mandatory* user-facing response path:
+    it records the user's response, mutates player agency state, and (optionally)
+    creates promises to be resolved later.
+    """
+    db_path = state.get_db_path()
+    in_game_date = state.get_current_date_as_date().isoformat()
+    now_date = req.now_date or in_game_date
+
+    try:
+        from agency.interaction_service import AgencyInteractionError, respond_to_agency_event
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Agency interaction module import failed: {exc}")
+
+    try:
+        out = respond_to_agency_event(
+            db_path=str(db_path),
+            user_team_id=req.user_team_id,
+            event_id=req.event_id,
+            response_type=req.response_type,
+            response_payload=req.response_payload,
+            now_date_iso=str(now_date),
+            strict_promises=True,
+        )
+        pid = out.get("player_id")
+        if pid:
+            _try_ui_cache_refresh_players([str(pid)], context="agency.events.respond")
+        return out
+    except AgencyInteractionError as e:
+        # Map well-known error codes to stable HTTP semantics.
+        code = str(e.code or "")
+        if code in {"AGENCY_EVENT_NOT_FOUND"}:
+            raise HTTPException(status_code=404, detail={"code": code, "message": e.message, "details": e.details})
+        if code in {"AGENCY_EVENT_TEAM_MISMATCH"}:
+            raise HTTPException(status_code=409, detail={"code": code, "message": e.message, "details": e.details})
+        if code in {"AGENCY_PROMISE_SCHEMA_MISSING"}:
+            raise HTTPException(status_code=500, detail={"code": code, "message": e.message, "details": e.details})
+        raise HTTPException(status_code=400, detail={"code": code, "message": e.message, "details": e.details})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/offseason/options/team/pending")
 async def api_offseason_team_options_pending(req: TeamOptionPendingRequest):
     """유저 팀의 다음 시즌 TEAM 옵션(PENDING) 목록 조회."""
@@ -2429,6 +2510,136 @@ def _validate_repo_integrity(db_path: str) -> None:
         repo.validate_integrity()
 
 
+def _commit_accepted_contract_negotiation(
+    *,
+    db_path: str,
+    session_id: str,
+    expected_team_id: str,
+    expected_player_id: str,
+    signed_date_iso: str,
+    allowed_modes: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """Commit an ACCEPTED contract negotiation session by applying the SSOT contract write.
+
+    This is the **enforcement gate** for commercial-grade 'player agency':
+    - the signing endpoints cannot bypass the negotiation outcome
+    - the contract terms used are always the session's agreed_offer
+
+    Raises HTTPException on failure.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail={"code": "MISSING_SESSION_ID", "message": "session_id is required"})
+
+    try:
+        from contracts.negotiation.store import close_session, get_session
+        from contracts.negotiation.types import ContractOffer
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
+    # Load and validate session
+    try:
+        session = get_session(sid)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail={"code": "NEGOTIATION_NOT_FOUND", "message": str(exc)})
+
+    if str(session.get("kind") or "").upper() != "CONTRACT":
+        raise HTTPException(status_code=409, detail={"code": "NEGOTIATION_KIND_MISMATCH", "session_id": sid})
+
+    mode = str(session.get("mode") or "").upper()
+    if allowed_modes is not None and mode not in allowed_modes:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NEGOTIATION_MODE_MISMATCH", "session_id": sid, "mode": mode, "allowed": sorted(allowed_modes)},
+        )
+
+    if str(session.get("status") or "").upper() != "ACTIVE":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NEGOTIATION_NOT_ACTIVE", "session_id": sid, "status": session.get("status")},
+        )
+
+    if str(session.get("phase") or "").upper() != "ACCEPTED":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NEGOTIATION_NOT_ACCEPTED", "session_id": sid, "phase": session.get("phase")},
+        )
+
+    team_norm = str(normalize_team_id(expected_team_id)).upper()
+    pid_norm = str(normalize_player_id(expected_player_id, strict=False, allow_legacy_numeric=True))
+
+    if str(session.get("team_id") or "").upper() != team_norm:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NEGOTIATION_TEAM_MISMATCH",
+                "session_id": sid,
+                "expected_team_id": team_norm,
+                "session_team_id": session.get("team_id"),
+            },
+        )
+
+    if str(session.get("player_id") or "") != pid_norm:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NEGOTIATION_PLAYER_MISMATCH",
+                "session_id": sid,
+                "expected_player_id": pid_norm,
+                "session_player_id": session.get("player_id"),
+            },
+        )
+
+    offer_payload = session.get("agreed_offer")
+    if not isinstance(offer_payload, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "NEGOTIATION_NO_AGREED_OFFER", "session_id": sid},
+        )
+
+    # Normalize offer
+    try:
+        offer = ContractOffer.from_payload(offer_payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "NEGOTIATION_BAD_OFFER", "session_id": sid, "message": str(exc)},
+        )
+
+    # Apply SSOT write via LeagueService (DB-backed).
+    with LeagueRepo(db_path) as repo:
+        svc = LeagueService(repo)
+        if mode == "SIGN_FA":
+            event = svc.sign_free_agent(
+                team_id=team_norm,
+                player_id=pid_norm,
+                signed_date=signed_date_iso,
+                years=int(offer.years),
+                salary_by_year=offer.salary_by_year,
+            )
+        else:
+            # RE_SIGN and EXTEND both map to the same SSOT operation.
+            event = svc.re_sign_or_extend(
+                team_id=team_norm,
+                player_id=pid_norm,
+                signed_date=signed_date_iso,
+                years=int(offer.years),
+                salary_by_year=offer.salary_by_year,
+            )
+
+    # Close the session (idempotent-ish; no side effects on DB).
+    try:
+        close_session(sid, phase="ACCEPTED", status="CLOSED")
+    except Exception:
+        # Never fail contract commit due to in-memory session closure.
+        pass
+
+    event_dict = event.to_dict()
+    affected = event_dict.get("affected_player_ids") or []
+    _try_ui_cache_refresh_players(list(affected), context="contracts.negotiation.commit")
+    return {"ok": True, "session_id": sid, "mode": mode, "team_id": team_norm, "player_id": pid_norm, "event": event_dict}
+
+
 def _try_ui_cache_refresh_players(player_ids: List[str], *, context: str) -> None:
     """Best-effort UI cache refresh. Never fails the API call.
 
@@ -2474,62 +2685,186 @@ async def api_contracts_release_to_fa(req: ReleaseToFARequest):
         raise HTTPException(status_code=500, detail=f"Release-to-FA failed: {e}")
 
 
-@app.post("/api/contracts/sign-free-agent")
-async def api_contracts_sign_free_agent(req: SignFreeAgentRequest):
-    """Sign a free agent (DB write): roster.team_id + contract + active contract."""
+# -------------------------------------------------------------------------
+# Contract Negotiation API (player agency - mandatory path)
+# -------------------------------------------------------------------------
+
+
+@app.post("/api/contracts/negotiation/start")
+async def api_contracts_negotiation_start(req: ContractNegotiationStartRequest):
+    """Start a contract negotiation session (state-backed)."""
+    try:
+        from contracts.negotiation.service import start_contract_negotiation
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
     try:
         db_path = state.get_db_path()
-        in_game_date = state.get_current_date_as_date()
-        with LeagueRepo(db_path) as repo:
-            svc = LeagueService(repo)
-            event = svc.sign_free_agent(
-                team_id=req.team_id,
-                player_id=req.player_id,
-                signed_date=req.signed_date or in_game_date,
-                years=req.years,
-                salary_by_year=req.salary_by_year,
-                team_option_last_year=bool(req.team_option_last_year),
-                team_option_years=req.team_option_years,
-            )
-        _validate_repo_integrity(db_path)
-        event_dict = event.to_dict()
-        affected = event_dict.get("affected_player_ids") or []
-        _try_ui_cache_refresh_players(list(affected), context="contracts.sign_free_agent")
-        return {"ok": True, "event": event_dict}
+        now_iso = game_time.now_utc_like_iso()
+        out = start_contract_negotiation(
+            db_path=str(db_path),
+            team_id=req.team_id,
+            player_id=req.player_id,
+            mode=req.mode,
+            valid_days=req.valid_days,
+            now_iso=str(now_iso),
+        )
+        return out
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/negotiation/offer")
+async def api_contracts_negotiation_offer(req: ContractNegotiationOfferRequest):
+    """Submit a team offer; player may ACCEPT / COUNTER / REJECT / WALK."""
+    try:
+        from contracts.negotiation.service import submit_contract_offer
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
+    try:
+        db_path = state.get_db_path()
+        now_iso = game_time.now_utc_like_iso()
+        out = submit_contract_offer(
+            db_path=str(db_path),
+            session_id=req.session_id,
+            offer_payload=req.offer,
+            now_iso=str(now_iso),
+        )
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/negotiation/accept-counter")
+async def api_contracts_negotiation_accept_counter(req: ContractNegotiationAcceptCounterRequest):
+    """Accept the last counter offer proposed by the player."""
+    try:
+        from contracts.negotiation.service import accept_last_counter
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
+    try:
+        db_path = state.get_db_path()
+        now_iso = game_time.now_utc_like_iso()
+        out = accept_last_counter(
+            db_path=str(db_path),
+            session_id=req.session_id,
+            now_iso=str(now_iso),
+        )
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/negotiation/commit")
+async def api_contracts_negotiation_commit(req: ContractNegotiationCommitRequest):
+    """Commit an ACCEPTED session (SSOT contract write)."""
+    try:
+        from contracts.negotiation.store import get_session
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
+    db_path = state.get_db_path()
+    signed_date_iso = req.signed_date or state.get_current_date_as_date().isoformat()
+
+    try:
+        session = get_session(str(req.session_id))
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail={"code": "NEGOTIATION_NOT_FOUND", "message": str(exc)})
+
+    return _commit_accepted_contract_negotiation(
+        db_path=str(db_path),
+        session_id=str(req.session_id),
+        expected_team_id=str(session.get("team_id") or ""),
+        expected_player_id=str(session.get("player_id") or ""),
+        signed_date_iso=str(signed_date_iso),
+        allowed_modes=None,
+    )
+
+
+@app.post("/api/contracts/negotiation/cancel")
+async def api_contracts_negotiation_cancel(req: ContractNegotiationCancelRequest):
+    """Cancel/close a negotiation session (no SSOT DB write)."""
+    try:
+        from contracts.negotiation.store import close_session, get_session
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation module import failed: {exc}")
+
+    try:
+        session = get_session(str(req.session_id))
+        close_session(str(req.session_id), phase="WALKED", status="CLOSED")
+        return {"ok": True, "session_id": str(req.session_id), "team_id": session.get("team_id"), "player_id": session.get("player_id")}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/contracts/sign-free-agent")
+async def api_contracts_sign_free_agent(req: SignFreeAgentRequest):
+    """Sign a free agent (DB write).
+
+    Commercial enforcement:
+    - This endpoint cannot bypass negotiation.
+    - It requires a contract negotiation session_id in ACCEPTED phase.
+    - The signed terms are taken from the session's agreed_offer (not from request payload).
+    """
+    try:
+        db_path = state.get_db_path()
+        signed_date_iso = req.signed_date or state.get_current_date_as_date().isoformat()
+
+        out = _commit_accepted_contract_negotiation(
+            db_path=str(db_path),
+            session_id=str(req.session_id),
+            expected_team_id=req.team_id,
+            expected_player_id=req.player_id,
+            signed_date_iso=str(signed_date_iso),
+            allowed_modes={"SIGN_FA"},
+        )
+        _validate_repo_integrity(str(db_path))
+        return out
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sign-free-agent failed: {e}")
 
 
 @app.post("/api/contracts/re-sign-or-extend")
 async def api_contracts_re_sign_or_extend(req: ReSignOrExtendRequest):
-    """Re-sign / extend a player (DB write): contract + active contract (+ roster salary sync)."""
+    """Re-sign / extend a player (DB write).
+
+    Commercial enforcement:
+    - This endpoint cannot bypass negotiation.
+    - It requires a contract negotiation session_id in ACCEPTED phase.
+    - The signed terms are taken from the session's agreed_offer (not from request payload).
+    """
     try:
         db_path = state.get_db_path()
-        in_game_date = state.get_current_date_as_date()
-        with LeagueRepo(db_path) as repo:
-            svc = LeagueService(repo)
-            event = svc.re_sign_or_extend(
-                team_id=req.team_id,
-                player_id=req.player_id,
-                signed_date=req.signed_date or in_game_date,
-                years=req.years,
-                salary_by_year=req.salary_by_year,
-                team_option_last_year=bool(req.team_option_last_year),
-                team_option_years=req.team_option_years,
-            )
-        _validate_repo_integrity(db_path)
-        event_dict = event.to_dict()
-        affected = event_dict.get("affected_player_ids") or []
-        _try_ui_cache_refresh_players(list(affected), context="contracts.re_sign_or_extend")
-        return {"ok": True, "event": event_dict}
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        signed_date_iso = req.signed_date or state.get_current_date_as_date().isoformat()
+
+        out = _commit_accepted_contract_negotiation(
+            db_path=str(db_path),
+            session_id=str(req.session_id),
+            expected_team_id=req.team_id,
+            expected_player_id=req.player_id,
+            signed_date_iso=str(signed_date_iso),
+            allowed_modes={"RE_SIGN", "EXTEND"},
+        )
+        _validate_repo_integrity(str(db_path))
+        return out
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Re-sign/extend failed: {e}")
 

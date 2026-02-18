@@ -101,4 +101,66 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                 CREATE INDEX IF NOT EXISTS idx_agency_events_type_date
                     ON agency_events(event_type, date);
 
+
+                -- User responses to agency events (idempotency + UI state)
+                CREATE TABLE IF NOT EXISTS agency_event_responses (
+                    response_id TEXT PRIMARY KEY,
+                    source_event_id TEXT NOT NULL UNIQUE,
+                    player_id TEXT NOT NULL,
+                    team_id TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    response_type TEXT NOT NULL,
+                    response_payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+
+                    FOREIGN KEY(player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agency_event_responses_player
+                    ON agency_event_responses(player_id);
+
+                CREATE INDEX IF NOT EXISTS idx_agency_event_responses_team
+                    ON agency_event_responses(team_id);
+
+                CREATE INDEX IF NOT EXISTS idx_agency_event_responses_source
+                    ON agency_event_responses(source_event_id);
+
+
+                -- Promises created by user responses, resolved later (monthly tick)
+                CREATE TABLE IF NOT EXISTS player_agency_promises (
+                    promise_id TEXT PRIMARY KEY,
+                    player_id TEXT NOT NULL,
+                    team_id TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+
+                    source_event_id TEXT,
+                    response_id TEXT,
+
+                    promise_type TEXT NOT NULL
+                        CHECK(promise_type IN ('MINUTES','HELP','SHOP_TRADE','ROLE')),
+
+                    status TEXT NOT NULL DEFAULT 'ACTIVE'
+                        CHECK(status IN ('ACTIVE','FULFILLED','BROKEN','EXPIRED','CANCELLED')),
+
+                    created_date TEXT NOT NULL,
+                    due_month TEXT NOT NULL,
+
+                    target_value REAL,
+                    target_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+
+                    resolved_at TEXT,
+
+                    FOREIGN KEY(player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_player_agency_promises_player_status_due
+                    ON player_agency_promises(player_id, status, due_month);
+
+                CREATE INDEX IF NOT EXISTS idx_player_agency_promises_team_status_due
+                    ON player_agency_promises(team_id, status, due_month);
+
+                CREATE INDEX IF NOT EXISTS idx_player_agency_promises_due
+                    ON player_agency_promises(status, due_month);
+
 """
