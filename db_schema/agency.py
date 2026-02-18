@@ -25,7 +25,7 @@ from __future__ import annotations
 def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
     """Return DDL SQL for agency tables (as a single executescript string)."""
 
-    return f"""
+    return """
 
                 CREATE TABLE IF NOT EXISTS player_agency_state (
                     player_id TEXT PRIMARY KEY,
@@ -57,7 +57,7 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
 
                     last_processed_month TEXT,
 
-                    context_json TEXT NOT NULL DEFAULT '{{}}',
+                    context_json TEXT NOT NULL DEFAULT '{}',
 
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -85,7 +85,7 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     event_type TEXT NOT NULL,
                     severity REAL NOT NULL DEFAULT 0.0,
 
-                    payload_json TEXT NOT NULL DEFAULT '{{}}',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
 
                     created_at TEXT NOT NULL,
 
