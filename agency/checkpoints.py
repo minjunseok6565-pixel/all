@@ -149,6 +149,48 @@ def _collect_month_team_win_pct(
     return out
 
 
+def _collect_month_team_games_by_date(
+    state_snapshot: Mapping[str, Any],
+    *,
+    month_key: str,
+) -> Dict[str, Dict[str, int]]:
+    """Return mapping date_iso -> {team_id: games_count} for the month.
+
+    Used by the agency service layer to synthesize DNP presence for players who
+    never appear in boxscores (common when match engine omits MIN=0 rows).
+    """
+    games_list = state_snapshot.get("games") or []
+    if not isinstance(games_list, list):
+        return {}
+
+    out: Dict[str, Dict[str, int]] = {}
+    mk = str(month_key)
+
+    for g in games_list:
+        if not isinstance(g, Mapping):
+            continue
+        if str(g.get("phase") or "regular") != "regular":
+            continue
+        if str(g.get("status") or "") != "final":
+            continue
+
+        d = str(g.get("date") or "")
+        if not d.startswith(mk):
+            continue
+        date_iso = str(d)[:10]
+
+        home = str(g.get("home_team_id") or "").upper()
+        away = str(g.get("away_team_id") or "").upper()
+        if not home or not away:
+            continue
+
+        by_team = out.setdefault(date_iso, {})
+        by_team[home] = int(by_team.get(home, 0) + 1)
+        by_team[away] = int(by_team.get(away, 0) + 1)
+
+    return out
+
+
 def _collect_month_splits_from_state_snapshot(
     state_snapshot: Mapping[str, Any],
     *,
@@ -249,6 +291,7 @@ def maybe_run_monthly_agency_tick(
         return {"ok": True, "skipped": True, "reason": "missing_boxscore_data", "month": month_to_process}
 
     team_win_pct_by_team = _collect_month_team_win_pct(state_snapshot, month_key=month_to_process)
+    team_games_by_date = _collect_month_team_games_by_date(state_snapshot, month_key=month_to_process)
 
     # Use game_time helpers to produce UTC-like timestamp.
     try:
@@ -264,6 +307,7 @@ def maybe_run_monthly_agency_tick(
         month_key=str(month_to_process),
         month_splits_by_player=month_splits_by_player,
         team_win_pct_by_team=team_win_pct_by_team,
+        team_games_by_date=team_games_by_date,
         now_iso=str(now_iso),
         cfg=cfg,
     )
@@ -331,6 +375,7 @@ def ensure_last_regular_month_agency_tick(
         return {"ok": True, "skipped": True, "reason": "missing_boxscore_data", "month": last_month}
 
     team_win_pct_by_team = _collect_month_team_win_pct(state_snapshot, month_key=last_month)
+    team_games_by_date = _collect_month_team_games_by_date(state_snapshot, month_key=last_month)
 
     try:
         import game_time
@@ -345,6 +390,7 @@ def ensure_last_regular_month_agency_tick(
         month_key=str(last_month),
         month_splits_by_player=month_splits_by_player,
         team_win_pct_by_team=team_win_pct_by_team,
+        team_games_by_date=team_games_by_date,
         now_iso=str(now_iso),
         cfg=cfg,
     )
