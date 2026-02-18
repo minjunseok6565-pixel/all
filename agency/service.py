@@ -13,12 +13,14 @@ when a month finishes.
 """
 
 import logging
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from league_repo import LeagueRepo
 
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .expectations import compute_expectations_for_league
+from .expectations_month import compute_month_expectations
+from .month_context import PlayerMonthSplit, build_split_summary, players_by_team_from_splits
 from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
 from .repo import (
     get_player_agency_states,
@@ -27,6 +29,7 @@ from .repo import (
     update_promises,
     upsert_player_agency_states,
 )
+from .team_transition import apply_team_transition
 from .tick import apply_monthly_player_tick
 from .types import MonthlyPlayerInputs
 from .utils import clamp01, extract_mental_from_attrs, json_loads, make_event_id, norm_date_iso, safe_float, safe_int
@@ -68,12 +71,36 @@ def _best_effort_injury_status_by_pid(repo: LeagueRepo, player_ids: list[str]) -
         return {}
 
 
+def _typed_splits(month_splits_by_player: Optional[Mapping[str, Any]]) -> Dict[str, PlayerMonthSplit]:
+    out: Dict[str, PlayerMonthSplit] = {}
+    for pid, sp in (month_splits_by_player or {}).items():
+        if isinstance(sp, PlayerMonthSplit):
+            out[str(pid)] = sp
+    return out
+
+
+def _slice_minutes_games(split: Optional[PlayerMonthSplit], team_id: str) -> Tuple[float, int]:
+    """Return (minutes, games_played) for player on a specific team in the month."""
+    if split is None:
+        return (0.0, 0)
+    tid = str(team_id or "").upper()
+    if not tid:
+        return (0.0, 0)
+    sl = (split.teams or {}).get(tid)
+    if sl is None:
+        return (0.0, 0)
+    return (float(sl.minutes), int(sl.games_played))
+
+
 def apply_monthly_agency_tick(
     *,
     db_path: str,
     season_year: int,
     month_key: str,
-    minutes_by_player: Mapping[str, float],
+    month_splits_by_player: Optional[Mapping[str, Any]] = None,
+    # Backward-compatible fallback (deprecated): if month_splits are not provided
+    # callers may provide aggregated per-player minutes/games.
+    minutes_by_player: Optional[Mapping[str, float]] = None,
     games_by_player: Optional[Mapping[str, int]] = None,
     team_win_pct_by_team: Optional[Mapping[str, float]] = None,
     now_iso: str,
@@ -87,8 +114,9 @@ def apply_monthly_agency_tick(
         db_path: SQLite path
         season_year: current season year
         month_key: YYYY-MM (the month being processed)
-        minutes_by_player: total minutes played in that month (regular-season finals)
-        games_by_player: games played in that month (optional but recommended)
+        month_splits_by_player: per-player month/team splits (preferred)
+        minutes_by_player: total minutes played in that month (fallback)
+        games_by_player: games played in that month (fallback)
         team_win_pct_by_team: team win% for that month (optional)
         now_iso: UTC-like timestamp string for created_at/updated_at/meta
         cfg: AgencyConfig
@@ -98,9 +126,12 @@ def apply_monthly_agency_tick(
     mk = str(month_key)
     meta_key = _meta_key_for_month(mk)
 
-    minutes_map = {str(k): float(v) for k, v in (minutes_by_player or {}).items() if str(k)}
+    minutes_map = {str(k): float(v) for k, v in (minutes_by_player or {}).items() if str(k)} if minutes_by_player else {}
     games_map = {str(k): int(v) for k, v in (games_by_player or {}).items() if str(k)} if games_by_player else {}
     team_win_map = {str(k).upper(): float(v) for k, v in (team_win_pct_by_team or {}).items() if str(k)}
+
+    splits_by_pid = _typed_splits(month_splits_by_player)
+    month_players_by_team = players_by_team_from_splits(splits_by_pid, min_games_present=1) if splits_by_pid else {}
 
     with LeagueRepo(db_path) as repo:
         repo.init_db()
@@ -164,7 +195,16 @@ def apply_monthly_agency_tick(
             return {"ok": True, "skipped": True, "reason": "no_active_roster", "month": mk, "meta_key": meta_key}
 
         # Expectations for role/leverage/expected minutes.
-        expectations = compute_expectations_for_league(roster_rows, config=cfg.expectations)
+        expectations_current = compute_expectations_for_league(roster_rows, config=cfg.expectations)
+
+        # Month expectations (role/leverage/expected minutes in the roster context actually experienced).
+        # If month split data is unavailable, this will be empty and we will fall back to current expectations.
+        with repo.transaction() as cur:
+            month_expectations = compute_month_expectations(
+                cur,
+                players_by_team=month_players_by_team,
+                config=cfg.expectations,
+            )
 
         # Injury status (best-effort)
         injury_status_by_pid = _best_effort_injury_status_by_pid(repo, player_ids)
@@ -173,42 +213,82 @@ def apply_monthly_agency_tick(
         with repo.transaction() as cur:
             prev_states = get_player_agency_states(cur, player_ids)
 
-        # Run tick
-        new_states: Dict[str, Dict[str, Any]] = {}
+        # Run tick (pass 1): evaluate each player's month under the team they actually played for.
+        # We may later apply a team transition to move the state onto the current roster team.
+        states_eval: Dict[str, Dict[str, Any]] = {}
         events: list[Dict[str, Any]] = []
-
         mental_by_pid: Dict[str, Dict[str, int]] = {}
+
+        eval_team_by_pid: Dict[str, str] = {}
+        roster_team_by_pid: Dict[str, str] = {}
+        team_end_by_pid: Dict[str, str] = {}
+        split_summary_by_pid: Dict[str, Dict[str, Any]] = {}
 
         for rr in roster_rows:
             pid = str(rr["player_id"])
-            tid = str(rr["team_id"]).upper()
+            roster_tid = str(rr["team_id"]).upper()
+            roster_team_by_pid[pid] = roster_tid
 
-            exp = expectations.get(pid)
-            if exp is None:
+            split = splits_by_pid.get(pid)
+            eval_tid = (split.primary_team if split and split.primary_team else roster_tid) or roster_tid
+            eval_tid = str(eval_tid).upper() if eval_tid else roster_tid
+            eval_team_by_pid[pid] = eval_tid
+
+            # Team at end-of-month for promise evaluation (trade/shop promises) & explainability.
+            team_end = None
+            if split and split.team_last:
+                team_end = str(split.team_last).upper()
+            elif split and split.primary_team:
+                team_end = str(split.primary_team).upper()
+            else:
+                team_end = eval_tid
+            team_end_by_pid[pid] = str(team_end or eval_tid).upper()
+
+            if split:
+                split_summary_by_pid[pid] = build_split_summary(split)
+
+            # Month expectation for evaluated team (preferred)
+            exp_m = month_expectations.get((pid, eval_tid))
+
+            # Fallback: current expectations (useful for players with no appearances in month splits)
+            exp_c = expectations_current.get(pid)
+
+            if exp_m is not None:
+                role_bucket = str(exp_m.role_bucket)
+                leverage = float(exp_m.leverage)
+                expected_mpg = float(exp_m.expected_mpg)
+            elif exp_c is not None:
+                role_bucket = str(exp_c.role_bucket)
+                leverage = float(exp_c.leverage)
+                expected_mpg = float(exp_c.expected_mpg)
+            else:
                 role_bucket = "UNKNOWN"
                 leverage = 0.0
                 expected_mpg = float(cfg.expectations.expected_mpg_by_role.get("UNKNOWN", 12.0))
-            else:
-                role_bucket = str(exp.role_bucket)
-                leverage = float(exp.leverage)
-                expected_mpg = float(exp.expected_mpg)
 
             mental = extract_mental_from_attrs(rr.get("attrs_json"), keys=cfg.mental_attr_keys)
-
             mental_by_pid[pid] = dict(mental)
+
+            # Month actuals for evaluated team.
+            if split is not None:
+                mins_eval, gp_eval = _slice_minutes_games(split, eval_tid)
+            else:
+                # Deprecated fallback (pre-attribution): aggregated per-player minutes/games (may misattribute).
+                mins_eval = float(minutes_map.get(pid, 0.0))
+                gp_eval = int(games_map.get(pid, 0))
 
             inp = MonthlyPlayerInputs(
                 player_id=pid,
-                team_id=tid,
+                team_id=eval_tid,
                 season_year=sy,
                 month_key=mk,
                 now_date_iso=str(now_iso)[:10],
                 expected_mpg=float(expected_mpg),
-                actual_minutes=float(minutes_map.get(pid, 0.0)),
-                games_played=int(games_map.get(pid, 0)),
+                actual_minutes=float(mins_eval),
+                games_played=int(gp_eval),
                 role_bucket=role_bucket,  # type: ignore[arg-type]
                 leverage=float(leverage),
-                team_win_pct=float(team_win_map.get(tid, 0.5)),
+                team_win_pct=float(team_win_map.get(eval_tid, 0.5)),
                 injury_status=injury_status_by_pid.get(pid),
                 ovr=safe_int(rr.get("ovr"), 0),
                 age=safe_int(rr.get("age"), 0),
@@ -218,7 +298,15 @@ def apply_monthly_agency_tick(
             prev = prev_states.get(pid)
             new_state, new_events = apply_monthly_player_tick(prev, inputs=inp, cfg=cfg)
 
-            new_states[pid] = new_state
+            # Attach attribution context for UI / debugging.
+            ctx = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
+            ctx.setdefault("month_attribution", split_summary_by_pid.get(pid) or {})
+            ctx.setdefault("evaluation_team_id", eval_tid)
+            ctx.setdefault("current_roster_team_id", roster_tid)
+            ctx.setdefault("team_end_of_month_id", team_end_by_pid.get(pid))
+            new_state["context"] = ctx
+
+            states_eval[pid] = new_state
             events.extend(new_events)
 
         # Resolve due promises (best-effort; requires promise schema).
@@ -287,24 +375,32 @@ def apply_monthly_agency_tick(
                         except Exception:
                             team_tx_cache[tid0] = []
 
-                # Evaluate each due promise and apply effects to new_states.
                 for p in due_promises:
                     try:
                         promise_id = str(p.get("promise_id") or "")
                         ptype = str(p.get("promise_type") or "").upper()
                         pid = str(p.get("player_id") or "")
-                        team_promised = str(p.get("team_id") or "").upper()
-                        if not promise_id or not pid or not team_promised:
+                        promised_team = str(p.get("team_id") or "").upper()
+                        if not promise_id or not pid or not promised_team:
                             continue
 
-                        st = new_states.get(pid)
+                        st = states_eval.get(pid)
                         if not st:
                             continue
 
-                        team_current = str(st.get("team_id") or team_promised).upper()
+                        split = splits_by_pid.get(pid)
 
-                        # If the player is no longer on the promised team, cancel non-trade promises.
-                        if ptype in {"MINUTES", "HELP", "ROLE"} and team_current != team_promised:
+                        # Determine the team at end-of-month (EOM) for this processed month.
+                        # If we cannot infer it (missing boxscore), anchor to promised team to avoid false cancellations.
+                        team_eom = str(team_end_by_pid.get(pid) or "").upper()
+                        if not team_eom:
+                            if split and split.team_last:
+                                team_eom = str(split.team_last).upper()
+                            else:
+                                team_eom = promised_team
+
+                        # Cancellation: for non-trade promises, leaving the promised team makes the promise moot.
+                        if ptype in {"MINUTES", "HELP", "ROLE"} and team_eom and promised_team and team_eom != promised_team:
                             promise_updates.append(
                                 {
                                     "promise_id": promise_id,
@@ -312,8 +408,8 @@ def apply_monthly_agency_tick(
                                     "resolved_at": str(now_iso)[:10],
                                     "evidence": {
                                         "code": "PROMISE_CANCELLED_TEAM_CHANGED",
-                                        "promised_team_id": team_promised,
-                                        "current_team_id": team_current,
+                                        "promised_team_id": promised_team,
+                                        "team_end_of_month_id": team_eom,
                                         "month_key": mk,
                                     },
                                 }
@@ -322,7 +418,7 @@ def apply_monthly_agency_tick(
                                 {
                                     "event_id": make_event_id("agency", "promise_cancelled", promise_id, mk),
                                     "player_id": pid,
-                                    "team_id": team_current,
+                                    "team_id": team_eom or str(st.get("team_id") or promised_team).upper(),
                                     "season_year": sy,
                                     "date": str(now_iso)[:10],
                                     "event_type": "PROMISE_CANCELLED",
@@ -330,8 +426,8 @@ def apply_monthly_agency_tick(
                                     "payload": {
                                         "promise_id": promise_id,
                                         "promise_type": ptype,
-                                        "promised_team_id": team_promised,
-                                        "current_team_id": team_current,
+                                        "promised_team_id": promised_team,
+                                        "team_end_of_month_id": team_eom,
                                         "month_key": mk,
                                     },
                                 }
@@ -339,28 +435,33 @@ def apply_monthly_agency_tick(
                             promise_stats["cancelled"] = int(promise_stats["cancelled"]) + 1
                             continue
 
-                        # Build evaluation context
                         mental = mental_by_pid.get(pid) or {}
+
+                        # Build context for evaluation.
+                        actual_mpg = None
+                        if ptype == "MINUTES":
+                            # Evaluate against the promised team slice (not necessarily the month evaluation team).
+                            mins_p, gp_p = _slice_minutes_games(split, promised_team) if split else (0.0, 0)
+                            actual_mpg = float(mins_p / float(gp_p) if gp_p > 0 else 0.0)
 
                         ctx = PromiseEvaluationContext(
                             now_date_iso=str(now_iso)[:10],
                             month_key=mk,
                             player_id=pid,
-                            team_id_current=team_current,
-                            actual_mpg=float(safe_float(st.get("minutes_actual_mpg"), 0.0)),
+                            # IMPORTANT: this is the team at end of *processed month*, not current roster at evaluation time.
+                            team_id_current=team_eom or promised_team,
+                            actual_mpg=actual_mpg,
                             injury_status=injury_status_by_pid.get(pid),
                             leverage=float(safe_float(st.get("leverage"), 0.0)),
                             mental=mental,
-                            team_win_pct=float(safe_float(team_win_map.get(team_current, 0.5), 0.5)),
-                            team_transactions=team_tx_cache.get(team_promised) if ptype == "HELP" else None,
+                            team_win_pct=float(safe_float(team_win_map.get(promised_team, 0.5), 0.5)),
+                            team_transactions=team_tx_cache.get(promised_team) if ptype == "HELP" else None,
                         )
 
                         res = evaluate_promise(p, ctx=ctx, cfg=DEFAULT_PROMISE_CONFIG)
-
                         if not res.due:
                             continue
 
-                        # Apply state deltas
                         deltas = res.state_deltas or {}
                         if deltas:
                             if "trust" in deltas:
@@ -379,8 +480,6 @@ def apply_monthly_agency_tick(
                                         + safe_float(deltas.get("team_frustration"), 0.0)
                                     )
                                 )
-
-                            # Special: floor the trade request level
                             if "trade_request_level_min" in deltas:
                                 try:
                                     floor_v = int(safe_float(deltas.get("trade_request_level_min"), 0.0))
@@ -392,7 +491,6 @@ def apply_monthly_agency_tick(
                                     cur_tr = 0
                                 st["trade_request_level"] = int(max(cur_tr, floor_v))
 
-                        # Promise row updates
                         upd: Dict[str, Any] = {"promise_id": promise_id}
                         pu = res.promise_updates or {}
                         if "status" in pu and pu.get("status") is not None:
@@ -402,25 +500,18 @@ def apply_monthly_agency_tick(
                         if "resolved_at" in pu:
                             upd["resolved_at"] = pu.get("resolved_at")
 
-                        # Evidence: store latest evaluation snapshot
                         upd["evidence"] = {
                             "month_key": mk,
                             "now_date": str(now_iso)[:10],
+                            "promised_team_id": promised_team,
+                            "team_end_of_month_id": team_eom,
                             "result": {"due": res.due, "resolved": res.resolved, "new_status": res.new_status},
                             "reasons": res.reasons,
                             "meta": res.meta,
-                            "ctx": {
-                                "team_id_current": team_current,
-                                "injury_status": ctx.injury_status,
-                                "actual_mpg": ctx.actual_mpg,
-                            },
                         }
                         promise_updates.append(upd)
 
-                        # Emit events for resolved/deferrals
-                        trust_delta = float(safe_float(deltas.get("trust"), 0.0))
-                        sev = float(clamp01(0.10 + abs(trust_delta) * 4.0))
-
+                        sev = float(clamp01(0.10 + abs(float(safe_float(deltas.get("trust"), 0.0))) * 4.0))
                         if res.resolved and str(res.new_status).upper() == "FULFILLED":
                             ev_type = "PROMISE_FULFILLED"
                             promise_stats["fulfilled"] = int(promise_stats["fulfilled"]) + 1
@@ -435,13 +526,12 @@ def apply_monthly_agency_tick(
                         else:
                             ev_type = "PROMISE_DUE"
 
-                        # Only log meaningful state-changing promise events.
                         if ev_type in {"PROMISE_FULFILLED", "PROMISE_BROKEN", "PROMISE_DEFERRED"}:
                             promise_events.append(
                                 {
                                     "event_id": make_event_id("agency", "promise", promise_id, mk, ev_type),
                                     "player_id": pid,
-                                    "team_id": team_current,
+                                    "team_id": team_eom or promised_team,
                                     "season_year": sy,
                                     "date": str(now_iso)[:10],
                                     "event_type": ev_type,
@@ -449,8 +539,8 @@ def apply_monthly_agency_tick(
                                     "payload": {
                                         "promise_id": promise_id,
                                         "promise_type": ptype,
-                                        "promised_team_id": team_promised,
-                                        "current_team_id": team_current,
+                                        "promised_team_id": promised_team,
+                                        "team_end_of_month_id": team_eom,
                                         "month_key": mk,
                                         "due_month": p.get("due_month"),
                                         "new_status": res.new_status,
@@ -463,18 +553,66 @@ def apply_monthly_agency_tick(
                     except Exception:
                         continue
 
-            # Persist all promise updates before state/events (atomic under this tx).
+            # Persist promise row updates first (atomic)
             if promise_updates:
                 try:
                     update_promises(cur, promise_updates)
                 except Exception:
                     promise_stats["skipped_missing_schema"] = True
 
-            # Merge promise events into agency events stream
-            if promise_events:
-                events.extend(promise_events)
+        if promise_events:
+            events.extend(promise_events)
 
-            upsert_player_agency_states(cur, new_states, now=str(now_iso))
+        # ------------------------------------------------------------------
+        # Pass 3: apply team transitions for players whose evaluated team != current roster team.
+        # ------------------------------------------------------------------
+        multi_team_count = 0
+        transitioned_count = 0
+        states_final: Dict[str, Dict[str, Any]] = {}
+
+        for rr in roster_rows:
+            pid = str(rr["player_id"])
+            st = states_eval.get(pid)
+            if not st:
+                continue
+
+            roster_tid = roster_team_by_pid.get(pid) or str(rr.get("team_id") or "").upper()
+            eval_tid = str(eval_team_by_pid.get(pid) or st.get("team_id") or "").upper()
+
+            split = splits_by_pid.get(pid)
+            if split and split.multi_team():
+                multi_team_count += 1
+
+            if roster_tid and eval_tid and roster_tid != eval_tid:
+                transitioned_count += 1
+                out = apply_team_transition(
+                    st,
+                    player_id=pid,
+                    season_year=sy,
+                    from_team_id=eval_tid,
+                    to_team_id=roster_tid,
+                    month_key=mk,
+                    now_date_iso=str(now_iso)[:10],
+                    mental=mental_by_pid.get(pid) or {},
+                    trade_request_level_before=safe_int(st.get("trade_request_level"), 0),
+                    split_summary=split_summary_by_pid.get(pid),
+                    reason="POST_MONTH_TRADE",
+                    cfg=cfg.transition,
+                )
+                st2 = out.state_after
+                if out.event:
+                    events.append(out.event)
+                # Keep transition metadata for explainability.
+                ctx2 = st2.get("context") if isinstance(st2.get("context"), dict) else {}
+                ctx2.setdefault("transition", out.meta)
+                st2["context"] = ctx2
+                states_final[pid] = st2
+            else:
+                states_final[pid] = st
+
+        # Persist
+        with repo.transaction() as cur:
+            upsert_player_agency_states(cur, states_final, now=str(now_iso))
             insert_agency_events(cur, events, now=str(now_iso))
             cur.execute(
                 "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
@@ -487,8 +625,13 @@ def apply_monthly_agency_tick(
             "month": mk,
             "meta_key": meta_key,
             "players_processed": len(roster_rows),
-            "states_upserted": len(new_states),
+            "states_upserted": len(states_final),
             "events_emitted": len(events),
+            "month_attribution": {
+                "multi_team_players": int(multi_team_count),
+                "transitions_applied": int(transitioned_count),
+                "splits_count": int(len(splits_by_pid)),
+            },
             "promise_stats": promise_stats,
         }
 

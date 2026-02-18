@@ -101,6 +101,11 @@ class PromiseEvaluationContext:
     month_key: str
 
     player_id: str
+    # NOTE: this value is intentionally named "current" for v1 compatibility, but in a
+    # month-based tick it should be interpreted as:
+    #   - the player's team at the end of the *processed month* (EOM), or
+    #   - the relevant team context for the promise being evaluated.
+    # Do NOT pass the real-time roster team if you are processing a past month.
     team_id_current: str
 
     # Player month stats (optional; depends on promise type)
