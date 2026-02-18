@@ -416,6 +416,23 @@ def apply_monthly_agency_tick(
             target_dates_desc=target_dates_desc,
         )
 
+        # Schedule presence: how many team games each player could have appeared in during the month,
+        # per team, based on SSOT transactions + the schedule-derived team_games_by_date.
+        # This is used to compute DNP frequency pressure while keeping MPG = minutes/games_played.
+        schedule_games_by_pid_by_team: Dict[str, Dict[str, int]] = {}
+        if team_games_map and month_game_dates:
+            for pid in player_ids:
+                by_date = teams_asof_by_pid.get(pid) or {}
+                by_team: Dict[str, int] = schedule_games_by_pid_by_team.setdefault(pid, {})
+                for d in month_game_dates:
+                    tid = str(by_date.get(d) or roster_team_by_pid_now.get(pid) or "").upper()
+                    if not tid or tid == "FA":
+                        continue
+                    n = int((team_games_map.get(d) or {}).get(tid, 0) or 0)
+                    if n <= 0:
+                        continue
+                    by_team[tid] = int(by_team.get(tid, 0) + n)
+
         roster_updated_date_by_pid: Dict[str, str] = {}
         for rr in roster_rows:
             pid = str(rr.get("player_id") or "")
@@ -642,6 +659,7 @@ def apply_monthly_agency_tick(
                 expected_mpg=float(expected_mpg),
                 actual_minutes=float(mins_eval),
                 games_played=int(gp_eval),
+                games_possible=int((schedule_games_by_pid_by_team.get(pid) or {}).get(eval_tid, 0) or 0),
                 role_bucket=role_bucket,  # type: ignore[arg-type]
                 leverage=float(leverage),
                 team_win_pct=float(team_win_map.get(eval_tid, 0.5)),
