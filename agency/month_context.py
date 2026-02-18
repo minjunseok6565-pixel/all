@@ -284,87 +284,108 @@ def collect_month_splits(
 
     # Finalize PlayerMonthSplit objects.
     out: Dict[str, PlayerMonthSplit] = {}
-
     for pid, team_slices in tmp.items():
-        # Compute totals
-        total_games_present = sum(int(sl.games_present) for sl in team_slices.values())
-        total_games_played = sum(int(sl.games_played) for sl in team_slices.values())
-        total_minutes = sum(float(sl.minutes) for sl in team_slices.values())
-
-        if total_games_present < int(cfg.min_games_for_primary):
-            # Not enough evidence to assign a primary team.
-            out[pid] = PlayerMonthSplit(
-                player_id=pid,
-                month_key=mk,
-                teams=team_slices,
-                team_last=None,
-                team_dominant=None,
-                primary_team=None,
-                primary_reason="PRIMARY_NONE_INSUFFICIENT_GAMES",
-                sample_games_present=0,
-                sample_games_played=0,
-                sample_minutes=0.0,
-                sample_weight=0.0,
-                total_games_present=int(total_games_present),
-                total_games_played=int(total_games_played),
-                total_minutes=float(total_minutes),
-            )
-            continue
-
-        # Determine team_last and team_dominant with stable tie breaks.
-        def _key_last(item: Tuple[str, TeamSlice]) -> Tuple[str, int, float, str]:
-            tid, sl = item
-            last = sl.last_date or "0000-00-00"
-            return (last, int(sl.games_present), float(sl.minutes), str(tid))
-
-        def _key_dom(item: Tuple[str, TeamSlice]) -> Tuple[int, float, str, str]:
-            tid, sl = item
-            last = sl.last_date or "0000-00-00"
-            return (int(sl.games_present), float(sl.minutes), last, str(tid))
-
-        team_last = max(team_slices.items(), key=_key_last)[0] if team_slices else None
-        team_dom = max(team_slices.items(), key=_key_dom)[0] if team_slices else None
-
-        # Pick primary team per policy
-        primary_team, primary_reason = pick_primary_team(
-            team_slices,
-            team_last=team_last,
-            team_dominant=team_dom,
+        out[str(pid)] = finalize_player_month_split(
+            player_id=str(pid),
+            month_key=mk,
+            team_slices=team_slices,
             cfg=cfg,
         )
 
-        primary_slice = team_slices.get(primary_team) if primary_team else None
-        if primary_slice is None:
-            sample_gp = 0
-            sample_gpl = 0
-            sample_min = 0.0
-        else:
-            sample_gp = int(primary_slice.games_present)
-            sample_gpl = int(primary_slice.games_played)
-            sample_min = float(primary_slice.minutes)
+    return out
 
-        full = max(1, int(cfg.full_weight_games))
-        sample_weight = float(clamp01(sample_gp / float(full)))
+def finalize_player_month_split(
+    *,
+    player_id: str,
+    month_key: str,
+    team_slices: Mapping[str, TeamSlice],
+    cfg: MonthContextConfig = DEFAULT_MONTH_CONTEXT_CONFIG,
+) -> PlayerMonthSplit:
+    """Finalize a PlayerMonthSplit from per-team slices.
 
-        out[pid] = PlayerMonthSplit(
+    This helper exists so the service layer can synthesize month splits
+    (e.g., DNP presence via schedule+transactions) without duplicating the
+    primary-team policy and summary semantics.
+    """
+    pid = str(player_id or "")
+    mk = norm_month_key(month_key)
+    teams: Dict[str, TeamSlice] = {str(t).upper(): sl for t, sl in dict(team_slices or {}).items() if str(t)}
+
+    # Compute totals
+    total_games_present = sum(int(sl.games_present) for sl in teams.values())
+    total_games_played = sum(int(sl.games_played) for sl in teams.values())
+    total_minutes = sum(float(sl.minutes) for sl in teams.values())
+
+    if total_games_present < int(cfg.min_games_for_primary):
+        # Not enough evidence to assign a primary team.
+        return PlayerMonthSplit(
             player_id=pid,
             month_key=mk,
-            teams=team_slices,
-            team_last=team_last,
-            team_dominant=team_dom,
-            primary_team=primary_team,
-            primary_reason=primary_reason,
-            sample_games_present=sample_gp,
-            sample_games_played=sample_gpl,
-            sample_minutes=sample_min,
-            sample_weight=sample_weight,
+            teams=dict(teams),
+            team_last=None,
+            team_dominant=None,
+            primary_team=None,
+            primary_reason="PRIMARY_NONE_INSUFFICIENT_GAMES",
+            sample_games_present=0,
+            sample_games_played=0,
+            sample_minutes=0.0,
+            sample_weight=0.0,
             total_games_present=int(total_games_present),
             total_games_played=int(total_games_played),
             total_minutes=float(total_minutes),
         )
 
-    return out
+    # Determine team_last and team_dominant with stable tie breaks.
+    def _key_last(item: Tuple[str, TeamSlice]) -> Tuple[str, int, float, str]:
+        tid, sl = item
+        last = sl.last_date or "0000-00-00"
+        return (last, int(sl.games_present), float(sl.minutes), str(tid))
 
+    def _key_dom(item: Tuple[str, TeamSlice]) -> Tuple[int, float, str, str]:
+        tid, sl = item
+        last = sl.last_date or "0000-00-00"
+        return (int(sl.games_present), float(sl.minutes), last, str(tid))
+
+    team_last = max(teams.items(), key=_key_last)[0] if teams else None
+    team_dom = max(teams.items(), key=_key_dom)[0] if teams else None
+
+    # Pick primary team per policy
+    primary_team, primary_reason = pick_primary_team(
+        teams,
+        team_last=team_last,
+        team_dominant=team_dom,
+        cfg=cfg,
+    )
+
+    primary_slice = teams.get(primary_team) if primary_team else None
+    if primary_slice is None:
+        sample_gp = 0
+        sample_gpl = 0
+        sample_min = 0.0
+    else:
+        sample_gp = int(primary_slice.games_present)
+        sample_gpl = int(primary_slice.games_played)
+        sample_min = float(primary_slice.minutes)
+
+    full = max(1, int(cfg.full_weight_games))
+    sample_weight = float(clamp01(sample_gp / float(full)))
+
+    return PlayerMonthSplit(
+        player_id=pid,
+        month_key=mk,
+        teams=dict(teams),
+        team_last=team_last,
+        team_dominant=team_dom,
+        primary_team=primary_team,
+        primary_reason=primary_reason,
+        sample_games_present=sample_gp,
+        sample_games_played=sample_gpl,
+        sample_minutes=sample_min,
+        sample_weight=sample_weight,
+        total_games_present=int(total_games_present),
+        total_games_played=int(total_games_played),
+        total_minutes=float(total_minutes),
+    )
 
 # ---------------------------------------------------------------------------
 # Primary team policy
