@@ -4,7 +4,7 @@ from __future__ import annotations
 
 This file is the *only* place that mutates state for postseason flows.
 
-Server endpoints call functions re-exported from project-root `playoffs.py`.
+Server endpoints should import and call functions from this module (or `postseason` package) directly.
 """
 
 from copy import deepcopy
