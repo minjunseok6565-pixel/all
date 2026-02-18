@@ -5,7 +5,6 @@ import random
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Set
-from uuid import uuid4
 
 import schema
 
@@ -13,7 +12,6 @@ from league_repo import LeagueRepo
 from matchengine_v2_adapter import (
     adapt_matchengine_result_to_v2,
     build_context_from_master_schedule_entry,
-    build_context_from_team_ids,
 )
 from matchengine_v3.sim_game import simulate_game
 import fatigue
@@ -29,6 +27,7 @@ from state import (
 from sim.roster_adapter import build_team_state_from_db
 
 logger = logging.getLogger(__name__)
+
 
 @contextmanager
 def _repo_ctx() -> LeagueRepo:
@@ -178,12 +177,134 @@ def _run_match(
                     str(away_team_id),
                     exc_info=True,
                 )
+                
     v2_result = adapt_matchengine_result_to_v2(
         raw_result,
         context,
         engine_name="matchengine_v3",
     )
     return ingest_game_result(game_result=v2_result, game_date=game_date)
+
+
+# -----------------------------------------------------------------------------
+# Common simulation pipeline helpers
+# -----------------------------------------------------------------------------
+
+
+class _MonthlyTickCache:
+    """Tiny cache to avoid running monthly tick checks repeatedly within the same month."""
+
+    def __init__(self) -> None:
+        self.last_month_key: Optional[str] = None
+
+
+def _maybe_run_monthly_ticks(
+    *,
+    db_path: str,
+    game_date_iso: str,
+    tick_cache: Optional[_MonthlyTickCache] = None,
+) -> None:
+    """Run monthly growth + agency ticks (idempotent) with optional month-level caching."""
+
+    gd = str(game_date_iso)[:10]
+    month_key = gd[:7]
+
+    if tick_cache is not None:
+        if tick_cache.last_month_key == month_key:
+            return
+        tick_cache.last_month_key = month_key
+
+    # One shared snapshot for both ticks (perf + consistent view).
+    state_snapshot = None
+    try:
+        state_snapshot = export_full_state_snapshot()
+    except Exception:
+        # Snapshot failures must never prevent games.
+        logger.warning("STATE_SNAPSHOT_FAILED_FOR_MONTHLY_TICKS date=%s", gd, exc_info=True)
+        state_snapshot = None
+
+    # Growth tick
+    try:
+        from training.checkpoints import maybe_run_monthly_growth_tick
+
+        maybe_run_monthly_growth_tick(
+            db_path=str(db_path),
+            game_date_iso=gd,
+            state_snapshot=state_snapshot,
+        )
+    except Exception:
+        logger.warning("MONTHLY_GROWTH_TICK_FAILED date=%s", gd, exc_info=True)
+
+    # Agency tick
+    try:
+        from agency.checkpoints import maybe_run_monthly_agency_tick
+
+        maybe_run_monthly_agency_tick(
+            db_path=str(db_path),
+            game_date_iso=gd,
+            state_snapshot=state_snapshot,
+        )
+    except Exception:
+        logger.warning("MONTHLY_AGENCY_TICK_FAILED date=%s", gd, exc_info=True)
+
+
+def _simulate_from_schedule_entry(
+    entry: Dict[str, Any],
+    *,
+    league_context: Dict[str, Any],
+    home_tactics: Optional[Dict[str, Any]] = None,
+    away_tactics: Optional[Dict[str, Any]] = None,
+    tick_cache: Optional[_MonthlyTickCache] = None,
+) -> Dict[str, Any]:
+    """Simulate a game using the master_schedule entry as SSOT.
+
+    This is the shared internal pipeline used by BOTH:
+      - advance_league_until (auto league sim)
+      - simulate_single_game (user-driven)
+
+    It also runs monthly growth + agency checkpoints in one common place.
+    """
+
+    if not isinstance(entry, dict):
+        raise ValueError("schedule entry must be a dict")
+
+    game_id = str(entry.get("game_id") or "").strip()
+    date_str = str(entry.get("date") or "").strip()[:10]
+    home_id = str(entry.get("home_team_id") or "").strip().upper()
+    away_id = str(entry.get("away_team_id") or "").strip().upper()
+    phase = str(entry.get("phase") or "regular")
+
+    if not game_id or not date_str or not home_id or not away_id:
+        raise ValueError("master_schedule entry missing required fields (game_id/date/home_team_id/away_team_id)")
+
+    # Run monthly checkpoints (must never crash games).
+    try:
+        _maybe_run_monthly_ticks(db_path=get_db_path(), game_date_iso=date_str, tick_cache=tick_cache)
+    except Exception:
+        logger.warning("MONTHLY_TICKS_FAILED date=%s game_id=%s", date_str, game_id, exc_info=True)
+
+    # SSOT: build context from the schedule entry only.
+    entry_for_ctx = dict(entry)
+    entry_for_ctx["game_id"] = game_id
+    entry_for_ctx["date"] = date_str
+    entry_for_ctx["home_team_id"] = home_id
+    entry_for_ctx["away_team_id"] = away_id
+
+    context = build_context_from_master_schedule_entry(
+        entry=entry_for_ctx,
+        league_state=league_context,
+        phase=phase,
+    )
+
+    return _run_match(
+        home_team_id=home_id,
+        away_team_id=away_id,
+        game_date=date_str,
+        home_tactics=home_tactics,
+        away_tactics=away_tactics,
+        context=context,
+    )
+
 
 def advance_league_until(
     target_date_str: str,
@@ -193,12 +314,16 @@ def advance_league_until(
     master_schedule = league_full.get("master_schedule", {})
     by_date: Dict[str, List[str]] = master_schedule.get("by_date") or {}
     games: List[Dict[str, Any]] = master_schedule.get("games") or []
+    by_id = master_schedule.get("by_id")
 
     if not by_date or not games:
         raise RuntimeError(
             "Master schedule is not initialized. Expected state.startup_init_state() to run before calling advance_league_until()."
         )
 
+    # Defensive: ensure we have a fast game_id -> entry index.
+    if not isinstance(by_id, dict) or len(by_id) != len(games):
+        by_id = {g.get("game_id"): g for g in games if isinstance(g, dict) and g.get("game_id")}
     
     try:
         target_date = date.fromisoformat(target_date_str)
@@ -225,18 +350,11 @@ def advance_league_until(
     simulated_game_objs: List[Dict[str, Any]] = []
     user_team_upper = user_team_id.upper() if user_team_id else None
 
+    tick_cache = _MonthlyTickCache()
+
     day = current_date + timedelta(days=1)
-    last_month_key: Optional[str] = None
     while day <= target_date:
         day_str = day.isoformat()
-
-        # Monthly NBA growth tick (process previous month once we enter a new month).
-        month_key = day_str[:7]
-        if month_key != last_month_key:
-            from training.checkpoints import maybe_run_monthly_growth_tick
-
-            maybe_run_monthly_growth_tick(db_path=get_db_path(), game_date_iso=day_str)
-            last_month_key = month_key
 
         game_ids = by_date.get(day_str, [])
         if not game_ids:
@@ -244,32 +362,28 @@ def advance_league_until(
             continue
 
         for gid in game_ids:
-            g = next((x for x in games if x.get("game_id") == gid), None)
-            if not g:
+            g = by_id.get(gid) if isinstance(by_id, dict) else None
+            if not isinstance(g, dict):
                 continue
             if g.get("status") == "final":
                 continue
 
-            home_id = str(g["home_team_id"]).upper()
-            away_id = str(g["away_team_id"]).upper()
+            home_id = str(g.get("home_team_id") or "").upper()
+            away_id = str(g.get("away_team_id") or "").upper()
+            if not home_id or not away_id:
+                continue
 
             if user_team_upper and (home_id == user_team_upper or away_id == user_team_upper):
                 continue
 
-            # SSOT: context date must come from entry["date"] (no override arg in builder).
-            entry_for_ctx = dict(g)
-            entry_for_ctx["date"] = day_str
-            context = build_context_from_master_schedule_entry(
-                entry=entry_for_ctx,
-                league_state=league_context,
-                phase=str(g.get("phase") or "regular"),
-            )
+            # Ensure the SSOT date on the entry matches the loop date.
+            entry = dict(g)
+            entry["date"] = day_str
 
-            game_obj = _run_match(
-                home_team_id=home_id,
-                away_team_id=away_id,
-                game_date=day_str,
-                context=context,
+            game_obj = _simulate_from_schedule_entry(
+                entry,
+                league_context=league_context,
+                tick_cache=tick_cache,
             )
             simulated_game_objs.append(game_obj)
 
@@ -286,43 +400,74 @@ def simulate_single_game(
     home_tactics: Optional[Dict[str, Any]] = None,
     away_tactics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """User-driven single game simulation.
+
+    IMPORTANT (New Normal)
+    ----------------------
+    This function is now schedule-backed. It MUST find a matching master_schedule entry
+    for (game_date, home_team_id, away_team_id), and will simulate using that entry's
+    game_id/date/home/away as SSOT.
+    """
+
+    hid = schema.normalize_team_id(str(home_team_id)).upper()
+    aid = schema.normalize_team_id(str(away_team_id)).upper()
+
+    game_date_str = (game_date or get_current_date_as_date().isoformat())[:10]
+
+    league_full = export_full_state_snapshot().get("league", {})
+    master_schedule = league_full.get("master_schedule", {})
+    by_date: Dict[str, List[str]] = master_schedule.get("by_date") or {}
+    by_id = master_schedule.get("by_id")
+    games: List[Dict[str, Any]] = master_schedule.get("games") or []
+
+    if not by_date or not games:
+        raise RuntimeError(
+            "Master schedule is not initialized. Expected state.startup_init_state() to run before calling simulate_single_game()."
+        )
+
+    if not isinstance(by_id, dict) or len(by_id) != len(games):
+        by_id = {g.get("game_id"): g for g in games if isinstance(g, dict) and g.get("game_id")}
+
+
+    candidate_ids = by_date.get(game_date_str) or []
+    if not candidate_ids:
+        raise ValueError(f"No scheduled games on date={game_date_str}")
+
+    entry: Optional[Dict[str, Any]] = None
+    for gid in candidate_ids:
+        g = by_id.get(gid) if isinstance(by_id, dict) else None
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("home_team_id") or "").upper() == hid and str(g.get("away_team_id") or "").upper() == aid:
+            entry = g
+            break
+
+    if entry is None:
+        # Helpful diagnostics: check if the matchup exists but home/away is swapped.
+        for gid in candidate_ids:
+            g = by_id.get(gid) if isinstance(by_id, dict) else None
+            if not isinstance(g, dict):
+                continue
+            if str(g.get("home_team_id") or "").upper() == aid and str(g.get("away_team_id") or "").upper() == hid:
+                raise ValueError(
+                    f"Scheduled game exists on {game_date_str} but home/away mismatch. "
+                    f"Schedule expects home={aid}, away={hid} (you sent home={hid}, away={aid})."
+                )
+
+        raise ValueError(f"Scheduled game not found for date={game_date_str} home={hid} away={aid}")
+
+    if str(entry.get("status") or "") == "final":
+        raise ValueError(f"Game already simulated: game_id={entry.get('game_id')}")
+
     league_context = get_league_context_snapshot()
-    game_date_str = game_date or get_current_date_as_date().isoformat()
 
-    # Ensure monthly growth tick is applied (idempotent).
-    try:
-        from training.checkpoints import maybe_run_monthly_growth_tick
+    entry_for_sim = dict(entry)
+    entry_for_sim["date"] = game_date_str
 
-        maybe_run_monthly_growth_tick(db_path=get_db_path(), game_date_iso=game_date_str)
-    except Exception:
-        # Growth tick must never crash games.
-        logger.warning("MONTHLY_GROWTH_TICK_FAILED date=%s", game_date_str, exc_info=True)
-
-    # Ensure monthly agency tick is applied (idempotent).
-    try:
-        from agency.checkpoints import maybe_run_monthly_agency_tick
-
-        maybe_run_monthly_agency_tick(db_path=get_db_path(), game_date_iso=game_date_str)
-    except Exception:
-        # Agency tick must never crash games.
-        logger.warning("MONTHLY_AGENCY_TICK_FAILED date=%s", game_date_str, exc_info=True)
-
-    game_id = f"single_{home_team_id}_{away_team_id}_{uuid4().hex[:8]}"
-
-    context = build_context_from_team_ids(
-        game_id,
-        game_date_str,
-        home_team_id,
-        away_team_id,
-        league_context,
-        phase="regular",
-    )
-
-    return _run_match(
-        home_team_id=home_team_id,
-        away_team_id=away_team_id,
-        game_date=game_date_str,
+    return _simulate_from_schedule_entry(
+        entry_for_sim,
+        league_context=league_context,
         home_tactics=home_tactics,
         away_tactics=away_tactics,
-        context=context,
+        tick_cache=None,
     )
