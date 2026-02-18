@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Play-In logic: schedule, simulate, and apply results.
 
-State shape is intentionally compatible with the legacy `playoffs.py` implementation:
+State shape is the SSOT for play-in:
 - postseason.play_in is a dict with keys 'east'/'west'
 - each conf has 'matchups' with keys:
     - seven_vs_eight
