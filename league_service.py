@@ -41,6 +41,9 @@ def _warn_limited(code: str, msg: str, *, limit: int = 5) -> None:
 from league_repo import LeagueRepo
 from schema import normalize_player_id, normalize_team_id, season_id_from_year
 
+# Contract SSOT codec (columns are SSOT; contract_json stores extras only)
+from contract_codec import contract_from_row, contract_to_upsert_row
+
 # Contract creation helpers
 from contracts.models import new_contract_id, make_contract_record
 
@@ -445,67 +448,9 @@ class LeagueService:
         if not row:
             raise KeyError(f"contract not found: {contract_id}")
 
-        raw_json = row["contract_json"] if "contract_json" in row.keys() else None
-        if raw_json:
-            obj = _json_loads(raw_json, None)
-            if isinstance(obj, dict):
-                obj.setdefault("contract_id", str(row["contract_id"]))
-                obj.setdefault("player_id", str(row["player_id"]))
-                obj.setdefault("team_id", str(row["team_id"]).upper())
-
-                # Merge canonical column fields into contract_json if they are missing.
-                # This prevents Service upserts from accidentally dropping/blanking critical fields.
-                obj.setdefault(
-                    "signed_date",
-                    row["signed_date"] if "signed_date" in row.keys() else None,
-                )
-                obj.setdefault(
-                    "start_season_year",
-                    row["start_season_year"] if "start_season_year" in row.keys() else None,
-                )
-                obj.setdefault(
-                    "years",
-                    row["years"] if "years" in row.keys() else None,
-                )
-
-                if "salary_by_year" not in obj:
-                    salary_by_year = _json_loads(row["salary_by_season_json"], {})
-                    obj["salary_by_year"] = salary_by_year if isinstance(salary_by_year, dict) else {}
-
-                if "options" not in obj:
-                    options = _json_loads(
-                        row["options_json"] if "options_json" in row.keys() else None, []
-                    )
-                    obj["options"] = options if isinstance(options, list) else []
-
-                # Preserve status/is_active from columns if not present in json
-                is_active_col = bool(int(row["is_active"]) if row["is_active"] is not None else 0)
-                status_col = row["status"] if "status" in row.keys() else None
-                if not obj.get("status"):
-                    obj["status"] = status_col or ("ACTIVE" if is_active_col else "")
-                obj.setdefault("is_active", is_active_col)
-
-                return obj
-
-        salary_by_year = _json_loads(row["salary_by_season_json"], {})
-        if not isinstance(salary_by_year, dict):
-            salary_by_year = {}
-        options = _json_loads(row["options_json"] if "options_json" in row.keys() else None, [])
-        if not isinstance(options, list):
-            options = []
-
-        return {
-            "contract_id": str(row["contract_id"]),
-            "player_id": str(row["player_id"]),
-            "team_id": str(row["team_id"]).upper(),
-            "signed_date": row["signed_date"] if "signed_date" in row.keys() else None,
-            "start_season_year": row["start_season_year"] if "start_season_year" in row.keys() else None,
-            "years": row["years"] if "years" in row.keys() else None,
-            "salary_by_year": salary_by_year,
-            "options": options,
-            "status": row["status"] if "status" in row.keys() else None,
-            "is_active": bool(int(row["is_active"]) if row["is_active"] is not None else 0),
-        }
+        # Columns are SSOT; contract_json is treated as extras only.
+        # This prevents stale/legacy contract_json from overriding canonical fields.
+        return contract_from_row(row)
 
     def _upsert_contract_records_in_cur(self, cur, contracts_by_id: Mapping[str, Any]) -> None:
         """
@@ -519,59 +464,18 @@ class LeagueService:
         for cid, c in contracts_by_id.items():
             if not isinstance(c, dict):
                 continue
-            contract_id = str(c.get("contract_id") or cid)
-            player_id = self._norm_player_id(c.get("player_id"))
-            team_id = c.get("team_id")
-            team_id_norm = self._norm_team_id(team_id, strict=False) if team_id else ""
-            signed_date = c.get("signed_date")
-            start_year = c.get("start_season_year")
-            years = c.get("years")
-            status = str(c.get("status") or "")
-            options = c.get("options") or []
-            salary_by_year = c.get("salary_by_year") or {}
-            try:
-                start_year_i = int(start_year) if start_year is not None else None
-            except (TypeError, ValueError):
-                _warn_limited("CONTRACT_START_YEAR_COERCE_FAILED", f"contract_id={contract_id} value={start_year!r}")
-                start_year_i = None
-            try:
-                years_i = int(years) if years is not None else None
-            except (TypeError, ValueError):
-                _warn_limited("CONTRACT_YEARS_COERCE_FAILED", f"contract_id={contract_id} value={years!r}")
-                years_i = None
-            start_season_id = str(season_id_from_year(start_year_i)) if start_year_i else None
-            end_season_id = (
-                str(season_id_from_year(start_year_i + max((years_i or 1) - 1, 0)))
-                if start_year_i and years_i
-                else start_season_id
-            )
-            salary_json = _json_dumps(salary_by_year)
-            contract_json = _json_dumps(c)
-            is_active = 1 if status.strip().upper() == "ACTIVE" else 0
-            ct_raw = c.get("contract_type")
-            ct = str(ct_raw).strip().upper() if ct_raw is not None else ""
-            if not ct:
-                ct = "STANDARD"
+            # SSOT write path:
+            # - First-class columns are authoritative
+            # - contract_json stores extras only (SSOT keys stripped)
+            # - tuple order matches the INSERT statement below
             rows.append(
-                (
-                    contract_id,
-                    player_id,
-                    team_id_norm,
-                    start_season_id,
-                    end_season_id,
-                    salary_json,
-                    ct,
-                    is_active,
-                    now,
-                    now,
-                    str(signed_date) if signed_date is not None else None,
-                    start_year_i,
-                    years_i,
-                    _json_dumps(options),
-                    status,
-                    contract_json,
+                contract_to_upsert_row(
+                    c,
+                    now_iso=now,
+                    contract_id_fallback=str(cid),
                 )
             )
+
         cur.executemany(
             """
             INSERT INTO contracts(
