@@ -185,6 +185,99 @@ def _run_match(
     )
     return ingest_game_result(game_result=v2_result, game_date=game_date)
 
+def advance_league_until(
+    target_date_str: str,
+    user_team_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    league_full = export_full_state_snapshot().get("league", {})
+    master_schedule = league_full.get("master_schedule", {})
+    by_date: Dict[str, List[str]] = master_schedule.get("by_date") or {}
+    games: List[Dict[str, Any]] = master_schedule.get("games") or []
+
+    if not by_date or not games:
+        raise RuntimeError(
+            "Master schedule is not initialized. Expected state.startup_init_state() to run before calling advance_league_until()."
+        )
+
+    
+    try:
+        target_date = date.fromisoformat(target_date_str)
+    except ValueError as exc:
+        raise ValueError(f"invalid target_date: {target_date_str}") from exc
+
+    league_context = get_league_context_snapshot()
+    current_date_str = league_context.get("current_date")
+    if current_date_str:
+        try:
+            current_date = date.fromisoformat(current_date_str)
+        except ValueError:
+            current_date = target_date
+    else:
+        if league_context.get("season_start"):
+            try:
+                season_start = date.fromisoformat(league_context["season_start"])
+            except ValueError:
+                season_start = target_date
+        else:
+            season_start = target_date
+        current_date = season_start - timedelta(days=1)
+
+    simulated_game_objs: List[Dict[str, Any]] = []
+    user_team_upper = user_team_id.upper() if user_team_id else None
+
+    day = current_date + timedelta(days=1)
+    last_month_key: Optional[str] = None
+    while day <= target_date:
+        day_str = day.isoformat()
+
+        # Monthly NBA growth tick (process previous month once we enter a new month).
+        month_key = day_str[:7]
+        if month_key != last_month_key:
+            from training.checkpoints import maybe_run_monthly_growth_tick
+
+            maybe_run_monthly_growth_tick(db_path=get_db_path(), game_date_iso=day_str)
+            last_month_key = month_key
+
+        game_ids = by_date.get(day_str, [])
+        if not game_ids:
+            day += timedelta(days=1)
+            continue
+
+        for gid in game_ids:
+            g = next((x for x in games if x.get("game_id") == gid), None)
+            if not g:
+                continue
+            if g.get("status") == "final":
+                continue
+
+            home_id = str(g["home_team_id"]).upper()
+            away_id = str(g["away_team_id"]).upper()
+
+            if user_team_upper and (home_id == user_team_upper or away_id == user_team_upper):
+                continue
+
+            # SSOT: context date must come from entry["date"] (no override arg in builder).
+            entry_for_ctx = dict(g)
+            entry_for_ctx["date"] = day_str
+            context = build_context_from_master_schedule_entry(
+                entry=entry_for_ctx,
+                league_state=league_context,
+                phase=str(g.get("phase") or "regular"),
+            )
+
+            game_obj = _run_match(
+                home_team_id=home_id,
+                away_team_id=away_id,
+                game_date=day_str,
+                context=context,
+            )
+            simulated_game_objs.append(game_obj)
+
+        day += timedelta(days=1)
+
+    set_current_date(target_date_str)
+    return simulated_game_objs
+
 
 def simulate_single_game(
     home_team_id: str,
