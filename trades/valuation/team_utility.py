@@ -139,8 +139,22 @@ class TeamUtilityConfig:
     risk_contract_years_end: float = 5.0
 
     # --- Finance penalty (team preference)
+    # IMPORTANT (cap-normalized salary scale)
+    # --------------------------------------
+    # Salary thresholds must scale with the league salary cap over time.
+    # When `salary_cap` is provided (SSOT: trade_rules.salary_cap), we convert
+    # cap-share ratios into dollar thresholds.
+    #
+    # - When `salary_cap` is provided: use cap-share ratios below.
+    # - When missing: fall back to legacy absolute-dollar defaults for backward
+    #   compatibility (older call sites/tests).
+    salary_cap: Optional[float] = None
     finance_factor_floor: float = 0.55
     finance_factor_cap: float = 1.00
+    # Cap-normalized defaults derived from the legacy 2025 base-cap tuning:
+    #   lo=8M, hi=40M at cap=154,647,000
+    finance_salary_lo_cap_pct: float = 8_000_000.0 / 154_647_000.0
+    finance_salary_hi_cap_pct: float = 40_000_000.0 / 154_647_000.0
     finance_salary_lo: float = 8_000_000.0
     finance_salary_hi: float = 40_000_000.0
     finance_term_weight: float = 0.35  # 긴 계약일수록 재정 부담 가중
@@ -440,7 +454,23 @@ class TeamUtilityAdjuster:
             if vals:
                 salary = float(sorted(vals)[-1])
 
-        burden = _normalize_0_1(salary, lo=cfg.finance_salary_lo, hi=cfg.finance_salary_hi)
+        # Salary burden is normalized using cap-scaled thresholds when available.
+        salary_lo = float(cfg.finance_salary_lo)
+        salary_hi = float(cfg.finance_salary_hi)
+        salary_scale_source = "legacy_abs"
+        lo_pct = None
+        hi_pct = None
+
+        cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
+        if cap > cfg.fit.eps:
+            lo_pct = _safe_float(getattr(cfg, "finance_salary_lo_cap_pct", None), 0.0)
+            hi_pct = _safe_float(getattr(cfg, "finance_salary_hi_cap_pct", None), 0.0)
+            salary_lo = float(cap * lo_pct)
+            salary_hi = float(cap * hi_pct)
+            salary_scale_source = "cap_pct"
+
+        burden = _normalize_0_1(salary, lo=salary_lo, hi=salary_hi)
+        salary_cap_pct = (salary / cap) if cap > cfg.fit.eps else None
 
         years = 0.0
         if snap.contract is not None:
@@ -464,6 +494,13 @@ class TeamUtilityAdjuster:
                 meta={
                     "finance_penalty_scale": scale,
                     "salary": salary,
+                    "salary_cap": (cap if cap > cfg.fit.eps else None),
+                    "salary_cap_pct": salary_cap_pct,
+                    "salary_lo": salary_lo,
+                    "salary_hi": salary_hi,
+                    "salary_scale_source": salary_scale_source,
+                    "salary_lo_cap_pct": lo_pct,
+                    "salary_hi_cap_pct": hi_pct,
                     "contract_years": years,
                     "salary_burden": burden,
                     "term_burden": term,
