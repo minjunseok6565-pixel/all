@@ -227,7 +227,7 @@ class DealEvaluator:
                 incoming=incoming_pairs,
                 outgoing=outgoing_pairs,
                 ctx=ctx,
-                env=env
+                env=env,
                 current_season_year=(env.current_season_year if env is not None else getattr(provider, "current_season_year", None)),
                 config=self.package_config,  # can be None -> default inside module
             )
