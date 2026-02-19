@@ -25,7 +25,6 @@ from .types import (
     DealDecision,
     DealVerdict,
     DecisionReason,
-    CounterProposal,
     TeamDealEvaluation,
     TeamValuation,
     ValueComponents,
@@ -303,22 +302,6 @@ class DecisionPolicy:
             verdict=verdict,
         )
 
-        # Optional counter proposal placeholder (counter_builder not implemented yet)
-        counter: Optional[CounterProposal] = None
-        if verdict == DealVerdict.COUNTER:
-            counter = CounterProposal(
-                deal=None,
-                reasons=tuple(
-                    [
-                        DecisionReason(
-                            code="COUNTER_NOT_IMPLEMENTED",
-                            message="counter proposal builder not implemented yet",
-                        )
-                    ]
-                ),
-                meta={"target_required_surplus": accept_threshold, "current_net": net},
-            )
-
         # Trim reasons
         if len(reasons) > cfg.max_reasons:
             reasons = reasons[: cfg.max_reasons]
@@ -329,7 +312,7 @@ class DecisionPolicy:
             overpay_allowed=float(overpay_allowed),
             confidence=float(confidence),
             reasons=tuple(reasons),
-            counter=counter,
+            counter=None,
             meta={
                 "team_id": evaluation.team_id,
                 "surplus_ratio": float(evaluation.surplus_ratio),
