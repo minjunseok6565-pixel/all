@@ -203,6 +203,7 @@ class DealEvaluator:
                 asset=asset,
                 ctx=ctx,
                 provider=provider,
+                env=env
             )
             if attach_leg_metadata:
                 tv = _attach_leg_meta(tv, direction="outgoing", from_team=team_id, to_team=recv)
@@ -226,6 +227,7 @@ class DealEvaluator:
                 incoming=incoming_pairs,
                 outgoing=outgoing_pairs,
                 ctx=ctx,
+                env=env
                 current_season_year=(env.current_season_year if env is not None else getattr(provider, "current_season_year", None)),
                 config=self.package_config,  # can be None -> default inside module
             )
