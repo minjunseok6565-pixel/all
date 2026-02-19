@@ -20,10 +20,37 @@ from typing import Any, Dict, Literal, Mapping, Tuple
 
 from .config import OptionsConfig
 from .types import PlayerOptionDecision, PlayerOptionInputs
-from .utils import clamp, clamp01, mental_norm, sigmoid, stable_u01
+from .utils import clamp, clamp01, mental_norm, safe_float, sigmoid, stable_u01
 
 
 Decision = Literal["EXERCISE", "DECLINE"]
+
+
+def _resolve_expected_salary_scale(cfg: OptionsConfig) -> Tuple[float, float, Dict[str, Any]]:
+    """Resolve expected-salary curve scale.
+
+    Returns (midpoint_dollars, span_dollars, meta).
+
+    - If cfg.salary_cap is provided (> eps), we use cap-share ratios.
+    - Otherwise we fall back to legacy absolute-dollar defaults.
+    """
+    cap = float(safe_float(getattr(cfg, "salary_cap", None), 0.0))
+    if cap > 1e-9:
+        mid_pct = float(safe_float(getattr(cfg, "expected_salary_midpoint_cap_pct", None), 0.0))
+        span_pct = float(safe_float(getattr(cfg, "expected_salary_span_cap_pct", None), 0.0))
+        midpoint = cap * mid_pct
+        span = cap * span_pct
+        return float(midpoint), float(span), {
+            "source": "cap_pct",
+            "salary_cap": float(cap),
+            "mid_pct": float(mid_pct),
+            "span_pct": float(span_pct),
+        }
+
+    return float(cfg.expected_salary_midpoint), float(cfg.expected_salary_span), {
+        "source": "legacy_abs",
+        "salary_cap": None,
+    }
 
 
 def expected_market_aav_from_ovr(ovr: float, *, cfg: OptionsConfig) -> float:
@@ -34,8 +61,17 @@ def expected_market_aav_from_ovr(ovr: float, *, cfg: OptionsConfig) -> float:
     """
     x = (float(ovr) - float(cfg.expected_salary_ovr_center)) / max(float(cfg.expected_salary_ovr_scale), 1e-9)
     s = sigmoid(x)
-    lo = float(cfg.expected_salary_midpoint) - float(cfg.expected_salary_span)
-    hi = float(cfg.expected_salary_midpoint) + float(cfg.expected_salary_span)
+
+    midpoint, span, _meta = _resolve_expected_salary_scale(cfg)
+    lo = float(midpoint) - float(span)
+    hi = float(midpoint) + float(span)
+
+    # Defensive: keep ordering and non-negative lower bound.
+    if hi < lo:
+        lo, hi = hi, lo
+    if lo < 0.0:
+        lo = 0.0
+    
     return float(lo + (hi - lo) * s)
 
 
@@ -61,6 +97,11 @@ def decide_player_option(
 
     market_aav = expected_market_aav_from_ovr(float(ovr), cfg=cfg)
 
+    # Useful debug metadata about salary scale.
+    cap = float(safe_float(getattr(cfg, "salary_cap", None), 0.0))
+    midpoint, span, scale_meta = _resolve_expected_salary_scale(cfg)
+    market_cap_pct = (float(market_aav) / float(cap)) if cap > 1e-9 else None
+
     # If market estimate is near zero, be conservative.
     if market_aav <= 1.0:
         return PlayerOptionDecision("EXERCISE", {"reason": "market_aav_too_low", "market_aav": market_aav})
@@ -72,7 +113,14 @@ def decide_player_option(
         "age": int(age),
         "option_salary": float(option_salary),
         "market_aav": float(market_aav),
+        "market_aav_cap_pct": market_cap_pct,
         "value_ratio": float(value_ratio),
+        "salary_cap": (cap if cap > 1e-9 else None),
+        "expected_salary_scale": {
+            **(scale_meta or {}),
+            "midpoint": float(midpoint),
+            "span": float(span),
+        },
         "team_id": inputs.team_id,
         "team_win_pct": inputs.team_win_pct,
         "injury_risk": float(clamp01(inputs.injury_risk)),
