@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
+from typing import Any
 
 from ...errors import DEAL_INVALIDATED, TradeError
 from ..base import TradeContext, build_team_trade_totals, build_team_payrolls
+from ..policies.salary_matching_policy import (
+    SalaryMatchingParams,
+    build_trade_error_details,
+    check_salary_matching,
+)
+
+
+def _to_int_dollars(x: Any) -> int:
+    """float/int/str 등을 달러 단위 정수로 안전하게 변환.
+
+    SalaryMatchingPolicy가 달러 정수 기반이므로 룰에서도 동일 스케일로 입력을 정규화한다.
+    """
+    try:
+        return int(round(float(x)))
+    except Exception:
+        return 0
 
 
 @dataclass
@@ -15,15 +31,7 @@ class SalaryMatchingRule:
 
     def validate(self, deal, ctx: TradeContext) -> None:
         trade_rules = ctx.game_state.get("league", {}).get("trade_rules", {})
-        salary_cap = float(trade_rules.get("salary_cap") or 0.0)
-        first_apron = float(trade_rules.get("first_apron") or 0.0)
-        second_apron = float(trade_rules.get("second_apron") or 0.0)
-        match_small_out_max = float(trade_rules.get("match_small_out_max") or 7_500_000)
-        match_mid_out_max = float(trade_rules.get("match_mid_out_max") or 29_000_000)
-        match_mid_add = float(trade_rules.get("match_mid_add") or 7_500_000)
-        match_buffer = float(trade_rules.get("match_buffer") or 250_000)
-        first_apron_mult = float(trade_rules.get("first_apron_mult") or 1.10)
-        second_apron_mult = float(trade_rules.get("second_apron_mult") or 1.00)
+        params = SalaryMatchingParams.from_trade_rules(trade_rules)
 
         trade_totals = build_team_trade_totals(deal, ctx)
         payrolls = build_team_payrolls(deal, ctx, trade_totals=trade_totals)
@@ -40,86 +48,45 @@ class SalaryMatchingRule:
 
             payroll_before = float(payrolls[team_id].get("payroll_before") or 0.0)
             payroll_after = float(payrolls[team_id].get("payroll_after") or 0.0)
+            
+            payroll_before_d = _to_int_dollars(payroll_before)
+            outgoing_salary_d = _to_int_dollars(outgoing_salary)
+            incoming_salary_d = _to_int_dollars(incoming_salary)
 
-            status = _resolve_apron_status(payroll_after, first_apron, second_apron)
+            result = check_salary_matching(
+                payroll_before_d=payroll_before_d,
+                outgoing_salary_d=outgoing_salary_d,
+                incoming_salary_d=incoming_salary_d,
+                outgoing_players=outgoing_players,
+                incoming_players=incoming_players,
+                params=params,
+            )
 
-            if payroll_before < salary_cap:
-                cap_room = salary_cap - payroll_before
-                max_incoming = cap_room + outgoing_salary
-                if incoming_salary <= max_incoming:
-                    continue
+            if result.ok:
+                continue
 
-            if outgoing_salary <= 0:
-                raise TradeError(
-                    DEAL_INVALIDATED,
-                    "Salary matching failed",
-                    {
-                        "rule": self.rule_id,
-                        "team_id": team_id,
-                        "status": status,
-                        "payroll_before": payroll_before,
-                        "payroll_after": payroll_after,
-                        "outgoing_salary": outgoing_salary,
-                        "incoming_salary": incoming_salary,
-                        "allowed_in": 0.0,
-                        "method": "outgoing_required",
-                    },
-                )
+            # TradeError.details 포맷은 기존과 동일하게 유지한다(생성기/repair 파이프라인 호환성).
+            details = build_trade_error_details(
+                rule_id=self.rule_id,
+                team_id=team_id,
+                payroll_before_d=payroll_before_d,
+                outgoing_salary_d=outgoing_salary_d,
+                incoming_salary_d=incoming_salary_d,
+                result=result,
+            )
 
-            if status == "SECOND_APRON":
-                if outgoing_players > 1 or incoming_players > 1:
-                    raise TradeError(
-                        DEAL_INVALIDATED,
-                        "Salary matching failed",
-                        {
-                            "rule": self.rule_id,
-                            "team_id": team_id,
-                            "status": status,
-                            "payroll_before": payroll_before,
-                            "payroll_after": payroll_after,
-                            "outgoing_salary": outgoing_salary,
-                            "incoming_salary": incoming_salary,
-                            "allowed_in": 0.0,
-                            "method": "second_apron_one_for_one",
-                        },
-                    )
-                allowed_in = math.floor(outgoing_salary * second_apron_mult)
-                method = "outgoing_second_apron"
-            elif status == "FIRST_APRON":
-                allowed_in = math.floor(outgoing_salary * first_apron_mult)
-                method = "outgoing_first_apron"
+            # legacy payload fidelity: 기존 SSOT 계산 값( float )을 그대로 유지
+            details["payroll_before"] = payroll_before
+            details["payroll_after"] = payroll_after
+            details["outgoing_salary"] = outgoing_salary
+            details["incoming_salary"] = incoming_salary
+
+            # allowed_in 타입도 기존과 최대한 일치시킨다.
+            if result.method in ("outgoing_second_apron", "outgoing_first_apron"):
+                details["allowed_in"] = int(result.allowed_in_d)
+            elif result.method in ("outgoing_required", "second_apron_one_for_one"):
+                details["allowed_in"] = 0.0
             else:
-                if outgoing_salary <= match_small_out_max:
-                    allowed_in = 2 * outgoing_salary + match_buffer
-                elif outgoing_salary <= match_mid_out_max:
-                    allowed_in = outgoing_salary + match_mid_add
-                else:
-                    allowed_in = math.floor(outgoing_salary * 1.25) + match_buffer
-                method = "outgoing_below_first_apron"
+                details["allowed_in"] = float(result.allowed_in_d)
 
-            if incoming_salary > allowed_in:
-                raise TradeError(
-                    DEAL_INVALIDATED,
-                    "Salary matching failed",
-                    {
-                        "rule": self.rule_id,
-                        "team_id": team_id,
-                        "status": status,
-                        "payroll_before": payroll_before,
-                        "payroll_after": payroll_after,
-                        "outgoing_salary": outgoing_salary,
-                        "incoming_salary": incoming_salary,
-                        "allowed_in": allowed_in,
-                        "method": method,
-                    },
-                )
-
-
-def _resolve_apron_status(
-    payroll_after: float, first_apron: float, second_apron: float
-) -> str:
-    if payroll_after >= second_apron:
-        return "SECOND_APRON"
-    if payroll_after >= first_apron:
-        return "FIRST_APRON"
-    return "BELOW_FIRST_APRON"
+            raise TradeError(DEAL_INVALIDATED, "Salary matching failed", details)

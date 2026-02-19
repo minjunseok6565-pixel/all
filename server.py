@@ -2976,6 +2976,78 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
         # Always persist the latest valid offer payload
         negotiation_store.set_draft_deal(req.session_id, serialize_deal(deal))
 
+        # Local imports to keep integration flexible.
+        from trades.valuation.service import evaluate_deal_for_team as eval_service  # type: ignore
+        from trades.valuation.types import (
+            to_jsonable,
+            DealVerdict,
+            DealDecision,
+            DecisionReason,
+        )  # type: ignore
+        from trades.generation.dealgen.dedupe import dedupe_hash  # type: ignore
+
+        # ------------------------------------------------------------------
+        # Fast path: if the user submits the exact last AI counter-offer, accept
+        # immediately.
+        # - Prevents the frustrating UX where the AI "rejects its own counter".
+        # - Only active while the session is in COUNTER_PENDING phase.
+        # ------------------------------------------------------------------
+        try:
+            phase = str(session.get("phase") or "").upper()
+            last_counter = session.get("last_counter")
+            expected_hash = last_counter.get("counter_hash") if isinstance(last_counter, dict) else None
+            if phase == "COUNTER_PENDING" and isinstance(expected_hash, str) and expected_hash.strip():
+                if dedupe_hash(deal) == expected_hash.strip():
+                    committed = agreements.create_committed_deal(
+                        deal,
+                        valid_days=2,
+                        current_date=in_game_date,
+                        validate=False,   # already validated above
+                        db_path=db_path,
+                    )
+                    negotiation_store.set_committed(req.session_id, committed["deal_id"])
+                    negotiation_store.set_status(req.session_id, "CLOSED")
+                    negotiation_store.set_phase(req.session_id, "ACCEPTED")
+                    negotiation_store.set_valid_until(req.session_id, committed["expires_at"])
+
+                    fast_decision = DealDecision(
+                        verdict=DealVerdict.ACCEPT,
+                        required_surplus=0.0,
+                        overpay_allowed=0.0,
+                        confidence=1.0,
+                        reasons=(
+                            DecisionReason(
+                                code="COUNTER_ACCEPTED",
+                                message="Accepted last counter offer",
+                            ),
+                        ),
+                        counter=None,
+                        meta={"fast_accept": True},
+                    )
+
+                    # Preserve any cached evaluation summary if present
+                    fast_eval: Dict[str, Any] = {}
+                    if isinstance(last_counter, dict):
+                        ev = last_counter.get("ai_evaluation")
+                        if isinstance(ev, dict):
+                            fast_eval = dict(ev)
+
+                    return {
+                        "ok": True,
+                        "accepted": True,
+                        "fast_accept": True,
+                        "deal_id": committed["deal_id"],
+                        "expires_at": committed["expires_at"],
+                        "deal": serialize_deal(deal),
+                        "ai_verdict": to_jsonable(fast_decision.verdict),
+                        "ai_decision": to_jsonable(fast_decision),
+                        "ai_evaluation": fast_eval,
+                    }
+        except Exception:
+            # Fast-accept should never crash the commit flow.
+            pass
+
+
         # ------------------------------------------------------------------
         # AI evaluation (other team perspective)
         # NOTE:
@@ -2983,10 +3055,6 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
         # - valuation service will build DecisionContext internally (team_situation + gm profile)
         # ------------------------------------------------------------------
         other_team_id = session["other_team_id"].upper()
-
-        # Local imports to keep integration flexible.
-        from trades.valuation.service import evaluate_deal_for_team as eval_service  # type: ignore
-        from trades.valuation.types import to_jsonable, DealVerdict  # type: ignore
 
         decision, evaluation = eval_service(
             deal=deal,
@@ -3007,18 +3075,19 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
             "surplus_ratio": float(evaluation.surplus_ratio),
         }
 
-        # Record AI response in-session for debugging / UI explanations
+        # Record the latest offer evaluation in-session (do NOT overwrite last_counter).
+        # - last_counter is reserved for the actual counter deal payload (for fast-accept).
         try:
-            negotiation_store.set_last_counter(
+            negotiation_store.set_last_offer(
                 req.session_id,
                 {
-                    "verdict": to_jsonable(decision.verdict),
-                    "decision": to_jsonable(decision),
-                    "evaluation": eval_summary,
+                    "offer": serialize_deal(deal),
+                    "ai_verdict": to_jsonable(decision.verdict),
+                    "ai_decision": to_jsonable(decision),
+                    "ai_evaluation": eval_summary,
                 },
             )
         except Exception:
-            # Session logging failure should not crash commit flow
             pass
 
         # Decide action
@@ -3050,8 +3119,115 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                 "ai_evaluation": eval_summary,
             }
 
-        # COUNTER is not implemented yet -> treat as reject (or return explicit marker)
-        counter_unimplemented = (verdict == DealVerdict.COUNTER)
+        # ------------------------------------------------------------------
+        # COUNTER: build an actual counter proposal (NBA-like minimal edits)
+        # ------------------------------------------------------------------
+        if verdict == DealVerdict.COUNTER:
+            counter_prop = None
+            try:
+                from trades.counter_offer.init import build_counter_offer  # type: ignore
+
+                counter_prop = build_counter_offer(
+                    offer=deal,
+                    user_team_id=session["user_team_id"],
+                    other_team_id=session["other_team_id"],
+                    current_date=in_game_date,
+                    db_path=db_path,
+                    session=session,
+                )
+            except Exception:
+                counter_prop = None
+
+            if counter_prop is not None and getattr(counter_prop, "deal", None) is not None:
+                # Replace the placeholder counter in decision_policy with the real one.
+                decision = DealDecision(
+                    verdict=decision.verdict,
+                    required_surplus=float(decision.required_surplus),
+                    overpay_allowed=float(decision.overpay_allowed),
+                    confidence=float(decision.confidence),
+                    reasons=decision.reasons,
+                    counter=counter_prop,
+                    meta=dict(decision.meta or {}),
+                )
+
+                # Persist counter offer in-session (for UI + fast-accept).
+                try:
+                    counter_hash = counter_prop.meta.get("counter_hash") if isinstance(counter_prop.meta, dict) else None
+                    deal_payload = None
+                    if isinstance(counter_prop.meta, dict):
+                        deal_payload = counter_prop.meta.get("deal_serialized")
+                    if not isinstance(deal_payload, dict):
+                        # Defensive fallback
+                        deal_payload = serialize_deal(counter_prop.deal)
+
+                    negotiation_store.set_last_counter(
+                        req.session_id,
+                        {
+                            "counter_hash": counter_hash,
+                            "counter_deal": deal_payload,
+                            "strategy": counter_prop.meta.get("strategy") if isinstance(counter_prop.meta, dict) else None,
+                            "diff": counter_prop.meta.get("diff") if isinstance(counter_prop.meta, dict) else None,
+                            "message": counter_prop.meta.get("message") if isinstance(counter_prop.meta, dict) else None,
+                            "generated_at": in_game_date.isoformat(),
+                            "base_hash": counter_prop.meta.get("base_hash") if isinstance(counter_prop.meta, dict) else None,
+                            "ai_evaluation": eval_summary,
+                        },
+                    )
+                except Exception:
+                    pass
+
+                # Push a GM-style message for the counter.
+                try:
+                    msg = ""
+                    if isinstance(counter_prop.meta, dict):
+                        msg = str(counter_prop.meta.get("message") or "")
+                    msg = msg.strip() if msg else ""
+                    if not msg:
+                        msg = f"[{other_team_id}] COUNTER"
+                    negotiation_store.append_message(req.session_id, speaker="OTHER_GM", text=msg)
+                    negotiation_store.set_phase(req.session_id, "COUNTER_PENDING")
+                except Exception:
+                    pass
+
+                # Response: include counter payload for UI convenience.
+                counter_payload = None
+                if isinstance(counter_prop.meta, dict):
+                    counter_payload = counter_prop.meta.get("deal_serialized")
+                if not isinstance(counter_payload, dict):
+                    counter_payload = serialize_deal(counter_prop.deal)
+
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "counter_unimplemented": False,
+                    "deal": serialize_deal(deal),
+                    "ai_verdict": to_jsonable(decision.verdict),
+                    "ai_decision": to_jsonable(decision),
+                    "ai_evaluation": eval_summary,
+                    "counter": counter_payload,
+                    "counter_hash": counter_prop.meta.get("counter_hash") if isinstance(counter_prop.meta, dict) else None,
+                    "counter_message": counter_prop.meta.get("message") if isinstance(counter_prop.meta, dict) else None,
+                    "counter_diff": counter_prop.meta.get("diff") if isinstance(counter_prop.meta, dict) else None,
+                }
+
+            # If we couldn't build a legal/acceptable counter, fall back conservatively to REJECT.
+            decision = DealDecision(
+                verdict=DealVerdict.REJECT,
+                required_surplus=float(decision.required_surplus),
+                overpay_allowed=float(decision.overpay_allowed),
+                confidence=float(decision.confidence),
+                reasons=tuple(decision.reasons)
+                + (
+                    DecisionReason(
+                        code="COUNTER_BUILD_FAILED",
+                        message="Could not generate a legal counter offer",
+                    ),
+                ),
+                counter=None,
+                meta=dict(decision.meta or {}),
+            )
+            verdict = DealVerdict.REJECT
+
 
         # Build a short reason string for UI
         try:
@@ -3074,14 +3250,14 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                 speaker="OTHER_GM",
                 text=f"[{other_team_id}] {verdict}: {reason_text}",
             )
-            negotiation_store.set_phase(req.session_id, "REJECTED" if not counter_unimplemented else "COUNTER_PENDING")
+            negotiation_store.set_phase(req.session_id, "REJECTED")
         except Exception:
             pass
 
         return {
             "ok": True,
             "accepted": False,
-            "counter_unimplemented": bool(counter_unimplemented),
+            "counter_unimplemented": False,
             "deal": serialize_deal(deal),
             "ai_verdict": to_jsonable(decision.verdict),
             "ai_decision": to_jsonable(decision),

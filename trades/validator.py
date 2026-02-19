@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional, TYPE_CHECKING
 
+from .errors import TradeError, DEAL_INVALIDATED
 from .models import Deal
 from .rules import build_trade_context, validate_all
 
@@ -23,14 +24,15 @@ def validate_deal(
     if allow_locked_by_deal_id is not None:
         extra = {"allow_locked_by_deal_id": str(allow_locked_by_deal_id)}
 
-    ctx = build_trade_context(
-        deal,
-        current_date=current_date,
-        db_path=db_path,
-        tick_ctx=tick_ctx,
-        extra=extra,
-    )
+    ctx = None
     try:
+        ctx = build_trade_context(
+            deal,
+            current_date=current_date,
+            db_path=db_path,
+            tick_ctx=tick_ctx,
+            extra=extra,
+        )
         if integrity_check is None:
             # Default: validate integrity once for standalone calls,
             # or once per tick_ctx if tick_ctx was built with validate_integrity=False.
@@ -49,9 +51,19 @@ def validate_deal(
 
         prepared_rules = getattr(tick_ctx, "prepared_rules", None) if tick_ctx is not None else None
         validate_all(deal, ctx, prepared_rules=prepared_rules)
+    except TradeError:
+        raise
+    except Exception as exc:
+        # Convert any unexpected failures (legacy payloads, corrupted state, etc.)
+        # into TradeError so API layers never return a 500 for bad trade inputs.
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Trade validation failed due to invalid/legacy state",
+            {"exc_type": type(exc).__name__, "error": str(exc)},
+        ) from exc
     finally:
         # Validator closes ctx.repo only if it owns the repo.
-        if getattr(ctx, "owns_repo", True):
+        if ctx is not None and getattr(ctx, "owns_repo", True):
             repo = getattr(ctx, "repo", None)
             if repo is not None:
                 repo.close()

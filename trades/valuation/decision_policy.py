@@ -406,4 +406,3 @@ def decide_deal(
     """
     pol = DecisionPolicy(config=config or DecisionPolicyConfig())
     return pol.decide(evaluation=evaluation, ctx=ctx, rng=rng, allow_counter=allow_counter)
-

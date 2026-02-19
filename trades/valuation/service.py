@@ -34,6 +34,8 @@ from ..validator import validate_deal
 
 # --- Valuation engine (pure) ---
 from .deal_evaluator import evaluate_deal_for_team as _evaluate_deal_for_team
+from .market_pricing import MarketPricingConfig
+from .team_utility import TeamUtilityConfig
 from .decision_policy import decide_deal as _decide_deal
 from .types import DealDecision, TeamDealEvaluation, TeamSideValuation
 
@@ -166,6 +168,27 @@ def _build_standings_order_worst_to_best(team_situation_ctx: Any) -> Optional[Se
     # worst -> best: lowest win_pct, then lowest point_diff_pg
     rows_sorted = sorted(rows, key=lambda x: (x[1], x[2], x[0]))
     return [r[0] for r in rows_sorted]
+
+def _extract_salary_cap_from_league_ctx(team_situation_ctx: Any) -> Optional[float]:
+    """Best-effort extraction of current league salary cap from TeamSituationContext.
+
+    SSOT path in this project:
+      team_situation_ctx.league_ctx.trade_rules.salary_cap
+
+    Returns None when unavailable.
+    """
+    try:
+        league_ctx = getattr(team_situation_ctx, "league_ctx", None)
+        if not isinstance(league_ctx, dict):
+            return None
+        trade_rules = league_ctx.get("trade_rules", {}) or {}
+        if not isinstance(trade_rules, dict):
+            return None
+        cap = trade_rules.get("salary_cap")
+        cap_f = float(cap)
+        return cap_f if cap_f > 0 else None
+    except Exception:
+        return None
 
 
 def _strip_breakdown(side: TeamSideValuation, evaluation: TeamDealEvaluation) -> Tuple[TeamSideValuation, TeamDealEvaluation]:
@@ -387,6 +410,11 @@ def evaluate_deal_for_team(
         )
 
     # 5) Pure valuation (market -> team utility -> package effects)
+    #
+    # Cap-normalized valuation: scale salary thresholds by current league cap (SSOT).
+    salary_cap = _extract_salary_cap_from_league_ctx(ts_ctx)
+    market_cfg = MarketPricingConfig(salary_cap=salary_cap) if salary_cap is not None else MarketPricingConfig()
+    team_cfg = TeamUtilityConfig(salary_cap=salary_cap) if salary_cap is not None else TeamUtilityConfig()
     side, evaluation = _evaluate_deal_for_team(
         deal=deal,
         team_id=tid,
@@ -394,6 +422,8 @@ def evaluate_deal_for_team(
         provider=provider,
         include_package_effects=include_package_effects,
         attach_leg_metadata=True,
+        market_config=market_cfg,
+        team_config=team_cfg,
     )
 
     # 6) Decision

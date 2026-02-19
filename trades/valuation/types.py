@@ -27,6 +27,7 @@ from ..models import (
     SwapAsset,
     FixedAsset,
     asset_key,
+    serialize_deal,
 )
 
 # -----------------------------------------------------------------------------
@@ -42,6 +43,44 @@ def to_jsonable(obj: Any) -> JsonValue:
     - server.py에서 breakdown을 그대로 반환할 때 유용.
     - types 모듈에 둬서 모든 valuation 모듈이 동일 규칙을 사용하게 함(SSOT).
     """
+    # IMPORTANT:
+    # Deal/PickAsset의 'protection=None'을 dataclass->dict로 풀어버리면
+    # {"protection": null} 형태가 되어 parse_deal()이 거부한다.
+    # (parse_deal은 protection 키가 있으면 dict를 요구)
+    # 따라서 Deal/Asset은 SSOT serializer(trades.models.serialize_deal) 규칙을 따른다.
+    if isinstance(obj, Deal):
+        try:
+            return to_jsonable(serialize_deal(obj))
+        except Exception:
+            return str(obj)
+    if isinstance(obj, PlayerAsset):
+        out: Dict[str, Any] = {"kind": "player", "player_id": obj.player_id}
+        if getattr(obj, "to_team", None):
+            out["to_team"] = obj.to_team
+        return to_jsonable(out)
+    if isinstance(obj, PickAsset):
+        out = {"kind": "pick", "pick_id": obj.pick_id}
+        if getattr(obj, "to_team", None):
+            out["to_team"] = obj.to_team
+        if getattr(obj, "protection", None) is not None:
+            # Keep protection absent when None (SSOT behavior)
+            out["protection"] = dict(obj.protection)  # type: ignore[arg-type]
+        return to_jsonable(out)
+    if isinstance(obj, SwapAsset):
+        out = {
+            "kind": "swap",
+            "swap_id": obj.swap_id,
+            "pick_id_a": obj.pick_id_a,
+            "pick_id_b": obj.pick_id_b,
+        }
+        if getattr(obj, "to_team", None):
+            out["to_team"] = obj.to_team
+        return to_jsonable(out)
+    if isinstance(obj, FixedAsset):
+        out = {"kind": "fixed_asset", "asset_id": obj.asset_id}
+        if getattr(obj, "to_team", None):
+            out["to_team"] = obj.to_team
+        return to_jsonable(out)
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, Enum):
