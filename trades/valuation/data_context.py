@@ -121,6 +121,8 @@ def contract_snapshot_from_dict(d: Mapping[str, Any], *, current_season_year: Op
     years = _safe_int(d.get("years"), 0)
 
     meta: Dict[str, Any] = dict(d.get("meta") or {})
+    if current_season_year is not None:
+        meta.setdefault("current_season_year", int(current_season_year))
     # Optional derived helper: remaining_years
     if current_season_year is not None and salary_by_year:
         remaining = sum(
@@ -290,7 +292,7 @@ class RepoValuationDataContext(ValuationDataProvider):
             salary_amount=_safe_float(salary_amount, None),
             attrs=attrs,
             contract=contract,
-            meta={},
+            meta={"current_season_year": int(self.current_season_year)},
         )
         self._player_cache[pid] = snap
         return snap
@@ -416,7 +418,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                         salary_amount=_safe_float(salary_amount, None),
                         attrs=attrs,
                         contract=contract,
-                        meta={},
+                        meta={"current_season_year": int(self.current_season_year)},
                     )
                 except Exception:
                     continue
@@ -460,7 +462,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                             salary_amount=_safe_float(salary_amount, None),
                             attrs=attrs,
                             contract=contract,
-                            meta={},
+                            meta={"current_season_year": int(self.current_season_year)},
                         )
                     except Exception:
                         continue
