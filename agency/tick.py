@@ -78,6 +78,7 @@ def _update_minutes_frustration(
     mental: Mapping[str, Any],
     leverage: float,
     injury_status: Optional[str],
+    injury_multiplier: Optional[float],
     cfg: AgencyConfig,
 ) -> Tuple[float, Dict[str, Any]]:
     """Update minutes frustration using a smooth EMA."""
@@ -128,7 +129,16 @@ def _update_minutes_frustration(
         1.75,
     )
 
-    inj_mult = _injury_multiplier(injury_status, cfg)
+    inj_mult: float
+    if injury_multiplier is not None:
+        try:
+            inj_mult = float(injury_multiplier)
+        except Exception:
+            inj_mult = _injury_multiplier(injury_status, cfg)
+        else:
+            inj_mult = float(clamp01(inj_mult))
+    else:
+        inj_mult = _injury_multiplier(injury_status, cfg)
 
     # If the player is "close enough" to expectation *and* not getting DNP'd often,
     # let frustration cool down faster.
@@ -158,6 +168,7 @@ def _update_minutes_frustration(
         "total_pressure": float(total_pressure),
         "gain_mult": float(gain_mult),
         "injury_mult": float(inj_mult),
+        "injury_status": str(injury_status or "").upper(),
         "within": bool(within),
         "within_gap": bool(within_gap),
         "within_dnp": bool(within_dnp),
@@ -601,6 +612,7 @@ def apply_monthly_player_tick(
         mental=inputs.mental,
         leverage=float(st.get("leverage") or 0.0),
         injury_status=inputs.injury_status,
+        injury_multiplier=getattr(inputs, "injury_multiplier", None),
         cfg=cfg,
     )
     st["minutes_frustration"] = float(new_m_fr)
@@ -636,6 +648,7 @@ def apply_monthly_player_tick(
         "games_played": int(gp),
         "month_key": str(inputs.month_key),
         "injury_status": str(inputs.injury_status or ""),
+        "injury_multiplier": getattr(inputs, "injury_multiplier", None),
     }
 
     context["sample"] = {
