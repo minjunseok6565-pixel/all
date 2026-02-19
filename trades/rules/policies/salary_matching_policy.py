@@ -57,7 +57,7 @@ class SalaryMatchingParams:
               match_auto_update is enabled.
             - Bracket thresholds are derived from (mid_add, buffer) to guarantee
               continuity at the boundaries. This prevents non-monotonic allowed
-+             incoming amounts caused by inconsistent constants.
+              incoming amounts caused by inconsistent constants.
         """
 
         tr = trade_rules or {}
