@@ -132,9 +132,25 @@ class MarketPricingConfig:
 
     # --- Contract efficiency (market-level)
     # expected salary as function of ovr -> compare vs actual to compute contract factor
+    # IMPORTANT (cap-normalized salary scale)
+    # --------------------------------------
+    # Salary-related thresholds should scale with the league salary cap over time.
+    # We therefore express the expected-salary curve in *shares of cap* (pct of cap)
+    # and convert to dollars using the SSOT cap value (trade_rules.salary_cap) when
+    # available.
+    #
+    # - When `salary_cap` is provided: use cap-share ratios below.
+    # - When missing: fall back to legacy absolute-dollar defaults for backward
+    #   compatibility (older call sites/tests).
+    salary_cap: Optional[float] = None
+
     expected_salary_ovr_center: float = 75.0
     expected_salary_ovr_scale: float = 7.0
-    expected_salary_midpoint: float = 18_000_000.0  # 달러 가정(프로젝트 단위에 맞게 조정)
+
+    # Cap-normalized defaults derived from the legacy 2025 base-cap tuning:
+    #   midpoint=18M, span=16M at cap=154,647,000
+    expected_salary_midpoint_cap_pct: float = 18_000_000.0 / 154_647_000.0
+    expected_salary_span_cap_pct: float = 16_000_000.0 / 154_647_000.0
     expected_salary_span: float = 16_000_000.0
 
     contract_efficiency_factor_floor: float = 0.70
@@ -403,10 +419,10 @@ class MarketPricer:
                     if vals:
                         actual_salary = float(sorted(vals)[0])
 
-        expected_salary = self._expected_salary_from_ovr(ovr)
+        expected_salary, expected_salary_meta = self._expected_salary_from_ovr(ovr)
         if actual_salary <= cfg.eps:
             # if we truly don't know, neutral
-            return 1.0, {"ovr": ovr, "expected_salary": expected_salary, "actual_salary": None, "years": contract_years}
+            return 1.0, {"ovr": ovr, "expected_salary": expected_salary, "expected_salary_meta": expected_salary_meta, "actual_salary": None, "years": contract_years}
 
         ratio = expected_salary / max(actual_salary, cfg.eps)
         # ratio > 1 => underpaid => value up
@@ -419,22 +435,83 @@ class MarketPricer:
             years_pen = _clamp(years_pen, 0.75, 1.0)
             factor *= years_pen
 
+       # Helpful debug metadata (kept deterministic)
+        salary_cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
+        actual_pct = (actual_salary / salary_cap) if salary_cap > cfg.eps else None
+        expected_pct = (expected_salary / salary_cap) if salary_cap > cfg.eps else None
+
         return float(factor), {
             "ovr": ovr,
             "expected_salary": expected_salary,
+            "expected_salary_meta": expected_salary_meta,
             "actual_salary": actual_salary,
             "salary_ratio": ratio,
             "years": contract_years,
+            "salary_cap": (salary_cap if salary_cap > cfg.eps else None),
+            "actual_salary_cap_pct": actual_pct,
+            "expected_salary_cap_pct": expected_pct,
         }
 
-    def _expected_salary_from_ovr(self, ovr: float) -> float:
+    def _resolve_expected_salary_scale(self) -> Tuple[float, float, Dict[str, Any]]:
+        """Resolve expected-salary curve scale.
+
+        Returns (midpoint_dollars, span_dollars, meta).
+
+        - If config.salary_cap is provided (> eps), we use cap-share ratios.
+        - Otherwise we fall back to legacy absolute-dollar defaults.
+        """
         cfg = self.config
-        # sigmoid mapping to [midpoint - span, midpoint + span]
+
+        salary_cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
+        if salary_cap > cfg.eps:
+            mid_pct = _safe_float(getattr(cfg, "expected_salary_midpoint_cap_pct", None), 0.0)
+            span_pct = _safe_float(getattr(cfg, "expected_salary_span_cap_pct", None), 0.0)
+            midpoint = salary_cap * mid_pct
+            span = salary_cap * span_pct
+            return float(midpoint), float(span), {
+                "source": "cap_pct",
+                "salary_cap": float(salary_cap),
+                "mid_pct": float(mid_pct),
+                "span_pct": float(span_pct),
+            }
+
+        return float(cfg.expected_salary_midpoint), float(cfg.expected_salary_span), {
+            "source": "legacy_abs",
+            "salary_cap": None,
+        }
+
+    def _expected_salary_from_ovr(self, ovr: float) -> Tuple[float, Dict[str, Any]]:
+        cfg = self.config
+
+        # Sigmoid mapping to [midpoint - span, midpoint + span]
         x = (ovr - cfg.expected_salary_ovr_center) / max(cfg.expected_salary_ovr_scale, cfg.eps)
         s = _sigmoid(x)
-        lo = cfg.expected_salary_midpoint - cfg.expected_salary_span
-        hi = cfg.expected_salary_midpoint + cfg.expected_salary_span
-        return lo + (hi - lo) * s
+
+        midpoint, span, scale_meta = self._resolve_expected_salary_scale()
+        lo = midpoint - span
+        hi = midpoint + span
+
+        # Defensive: keep ordering and non-negative lower bound.
+        if hi < lo:
+            lo, hi = hi, lo
+        if lo < 0.0:
+            lo = 0.0
+
+        expected = lo + (hi - lo) * s
+
+        meta: Dict[str, Any] = dict(scale_meta)
+        meta.update(
+            {
+                "ovr": float(ovr),
+                "x": float(x),
+                "sigmoid": float(s),
+                "lo": float(lo),
+                "hi": float(hi),
+                "midpoint": float(midpoint),
+                "span": float(span),
+            }
+        )
+        return float(expected), meta
 
     def _position_scarcity_factor(self, snap: PlayerSnapshot) -> Tuple[float, Dict[str, Any]]:
         """
