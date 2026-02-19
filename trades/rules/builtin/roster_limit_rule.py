@@ -51,4 +51,3 @@ class RosterLimitRule:
                     "Roster size below minimum",
                     {"team_id": team_id, "count": new_count, "min": int(self.min_players)},
                  )
-                )
