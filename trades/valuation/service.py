@@ -34,6 +34,7 @@ from ..validator import validate_deal
 
 # --- Valuation engine (pure) ---
 from .deal_evaluator import evaluate_deal_for_team as _evaluate_deal_for_team
+from .env import ValuationEnv
 from .market_pricing import MarketPricingConfig
 from .team_utility import TeamUtilityConfig
 from .decision_policy import decide_deal as _decide_deal
@@ -187,6 +188,25 @@ def _extract_salary_cap_from_league_ctx(team_situation_ctx: Any) -> Optional[flo
         cap = trade_rules.get("salary_cap")
         cap_f = float(cap)
         return cap_f if cap_f > 0 else None
+    except Exception:
+        return None
+
+
+def _extract_trade_rules_from_league_ctx(team_situation_ctx: Any) -> Optional[Dict[str, Any]]:
+    """Best-effort extraction of league.trade_rules from TeamSituationContext.
+
+    SSOT path in this project:
+      team_situation_ctx.league_ctx.trade_rules
+
+    Returns:
+        dict when available; None otherwise.
+    """
+    try:
+        league_ctx = getattr(team_situation_ctx, "league_ctx", None)
+        if not isinstance(league_ctx, dict):
+            return None
+        trade_rules = league_ctx.get("trade_rules", None)
+        return dict(trade_rules) if isinstance(trade_rules, dict) else None
     except Exception:
         return None
 
@@ -411,8 +431,21 @@ def evaluate_deal_for_team(
 
     # 5) Pure valuation (market -> team utility -> package effects)
     #
-    # Cap-normalized valuation: scale salary thresholds by current league cap (SSOT).
+    # SSOT: build valuation runtime env once and pass it down the pure pipeline.
+    trade_rules = _extract_trade_rules_from_league_ctx(ts_ctx) or {}
+    env = ValuationEnv.from_trade_rules(trade_rules, current_season_year=int(season_year))
+
+    # Cap-normalized valuation: keep config.salary_cap populated for legacy
+    # code paths that still read it (team_utility finance thresholds, etc.).
+    # IMPORTANT: the canonical source is now `env.cap_model`.
     salary_cap = _extract_salary_cap_from_league_ctx(ts_ctx)
+    if salary_cap is None:
+        try:
+            cap_now = float(env.salary_cap())
+            salary_cap = cap_now if cap_now > 0 else None
+        except Exception:
+            salary_cap = None
+            
     market_cfg = MarketPricingConfig(salary_cap=salary_cap) if salary_cap is not None else MarketPricingConfig()
     team_cfg = TeamUtilityConfig(salary_cap=salary_cap) if salary_cap is not None else TeamUtilityConfig()
     side, evaluation = _evaluate_deal_for_team(
@@ -420,6 +453,7 @@ def evaluate_deal_for_team(
         team_id=tid,
         ctx=ctx,
         provider=provider,
+        env=env,
         include_package_effects=include_package_effects,
         attach_leg_metadata=True,
         market_config=market_cfg,
