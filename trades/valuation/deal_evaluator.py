@@ -324,7 +324,7 @@ class DealEvaluator:
             resolved_pick_b_expectation=resolved_b_exp,
         )
 
-        team_val = self._team.value_asset(market, snap, ctx)
+        team_val = self._team.value_asset(market, snap, ctx, env=env)
         return team_val, snap
 
     def _resolve_snapshot(self, *, asset: Asset, provider: ValuationDataProvider) -> AssetSnapshot:
