@@ -39,7 +39,7 @@ from .repo import (
 from .team_transition import apply_team_transition
 from .tick import apply_monthly_player_tick
 from .types import MonthlyPlayerInputs
-from .utils import clamp01, extract_mental_from_attrs, json_loads, make_event_id, norm_date_iso, safe_float, safe_int
+from .utils import clamp01, date_add_days, extract_mental_from_attrs, json_loads, make_event_id, norm_date_iso, safe_float, safe_int
 
 
 logger = logging.getLogger(__name__)
@@ -416,6 +416,85 @@ def apply_monthly_agency_tick(
             target_dates_desc=target_dates_desc,
         )
 
+        # ------------------------------------------------------------------
+        # Injury context (month-based, SSOT = injury_events)
+        # ------------------------------------------------------------------
+        # Treat month_end as inclusive for SSOT windows by querying with an exclusive end.
+        month_end_excl = date_add_days(month_end_date, 1) if month_end_date else str(month_end_date or '')[:10]
+
+        injury_events_available = False
+        injury_windows_by_pid: Dict[str, list[Dict[str, str]]] = {}
+        injury_status_eom_by_pid: Dict[str, str] = {}
+
+        try:
+            repo._conn.execute("SELECT 1 FROM injury_events LIMIT 1;").fetchone()
+            injury_events_available = True
+        except Exception:
+            injury_events_available = False
+
+        if injury_events_available:
+            try:
+                placeholders = ",".join(["?"] * len(player_ids))
+                rows_inj = repo._conn.execute(
+                    f"""
+                    SELECT player_id, date, out_until_date, returning_until_date
+                    FROM injury_events
+                    WHERE player_id IN ({placeholders})
+                      AND date < ?
+                      AND returning_until_date > ?
+                    ORDER BY date ASC;
+                    """,
+                    [*player_ids, str(month_end_excl)[:10], str(month_start_date)[:10]],
+                ).fetchall()
+
+                for pid_i, date_i, out_until_i, ret_until_i in rows_inj:
+                    pid_s = str(pid_i or "")
+                    sd = norm_date_iso(date_i) or str(date_i or "")[:10]
+                    ou = norm_date_iso(out_until_i) or str(out_until_i or "")[:10]
+                    ru = norm_date_iso(ret_until_i) or str(ret_until_i or "")[:10]
+                    if not pid_s or not sd or not ou or not ru:
+                        continue
+                    injury_windows_by_pid.setdefault(pid_s, []).append(
+                        {"start": str(sd), "out_until": str(ou), "returning_until": str(ru)}
+                    )
+            except Exception:
+                # If the injury schema exists but querying failed (corruption/migration),
+                # fall back to current injury state to avoid treating everyone as healthy.
+                injury_events_available = False
+                injury_windows_by_pid = {}
+
+        def _injury_status_on_date(pid: str, on_date_iso: str) -> str:
+            """Return OUT/RETURNING/HEALTHY for the given player on the given date.
+
+            Derived from SSOT injury_events windows for the processed month.
+            """
+            d = str(on_date_iso)[:10]
+            win = injury_windows_by_pid.get(str(pid)) or []
+            if not win:
+                return "HEALTHY"
+            # OUT has priority over RETURNING.
+            for w in win:
+                s = str(w.get("start") or "")[:10]
+                ou = str(w.get("out_until") or "")[:10]
+                if s and ou and s <= d < ou:
+                    return "OUT"
+            for w in win:
+                ou = str(w.get("out_until") or "")[:10]
+                ru = str(w.get("returning_until") or "")[:10]
+                if ou and ru and ou <= d < ru:
+                    return "RETURNING"
+            return "HEALTHY"
+
+        if injury_events_available:
+            injury_status_eom_by_pid = {pid: _injury_status_on_date(pid, month_end_date) for pid in player_ids}
+        else:
+            # Best-effort fallback (may be inaccurate for past months if injuries resolved since).
+            injury_status_eom_by_pid = _best_effort_injury_status_by_pid(repo, player_ids)
+
+        out_games_by_pid_by_team: Dict[str, Dict[str, int]] = {}
+        returning_games_by_pid_by_team: Dict[str, Dict[str, int]] = {}
+
+
         # Schedule presence: how many team games each player could have appeared in during the month,
         # per team, based on SSOT transactions + the schedule-derived team_games_by_date.
         # This is used to compute DNP frequency pressure while keeping MPG = minutes/games_played.
@@ -424,6 +503,15 @@ def apply_monthly_agency_tick(
             for pid in player_ids:
                 by_date = teams_asof_by_pid.get(pid) or {}
                 by_team: Dict[str, int] = schedule_games_by_pid_by_team.setdefault(pid, {})
+
+                # Injury-adjusted counts are only computed when we have SSOT injury windows.
+                win = injury_windows_by_pid.get(pid) or []
+                out_by_team: Optional[Dict[str, int]] = None
+                ret_by_team: Optional[Dict[str, int]] = None
+                if win:
+                    out_by_team = out_games_by_pid_by_team.setdefault(pid, {})
+                    ret_by_team = returning_games_by_pid_by_team.setdefault(pid, {})
+                
                 for d in month_game_dates:
                     tid = str(by_date.get(d) or roster_team_by_pid_now.get(pid) or "").upper()
                     if not tid or tid == "FA":
@@ -432,6 +520,13 @@ def apply_monthly_agency_tick(
                     if n <= 0:
                         continue
                     by_team[tid] = int(by_team.get(tid, 0) + n)
+
+                    if out_by_team is not None and ret_by_team is not None:
+                        st_inj = _injury_status_on_date(pid, d)
+                        if st_inj == "OUT":
+                            out_by_team[tid] = int(out_by_team.get(tid, 0) + n)
+                        elif st_inj == "RETURNING":
+                            ret_by_team[tid] = int(ret_by_team.get(tid, 0) + n)
 
         roster_updated_date_by_pid: Dict[str, str] = {}
         for rr in roster_rows:
@@ -516,8 +611,10 @@ def apply_monthly_agency_tick(
             )
 
 
-        # Injury status (best-effort)
-        injury_status_by_pid = _best_effort_injury_status_by_pid(repo, player_ids)
+        # Injury status for the processed month (end-of-month).
+        # Preferred SSOT source: injury_events windows.
+        # Fallback (older saves): player_injury_state (best-effort).
+        injury_status_by_pid = injury_status_eom_by_pid
 
 
         # Run tick (pass 1): evaluate each player's month under the team they actually played for.
@@ -529,6 +626,7 @@ def apply_monthly_agency_tick(
         eval_team_by_pid: Dict[str, str] = {}
         roster_team_by_pid: Dict[str, str] = {}
         split_summary_by_pid: Dict[str, Dict[str, Any]] = {}
+        pre_eval_team_align_meta_by_pid: Dict[str, Dict[str, Any]] = {}
 
         for rr in roster_rows:
             pid = str(rr["player_id"])
@@ -650,6 +748,27 @@ def apply_monthly_agency_tick(
                 gp_eval = int(games_map.get(pid, 0))
 
 
+            # Injury-adjusted schedule presence for the evaluated team.
+            #
+            # We exclude games where the player was OUT from games_possible to avoid
+            # treating injury absences as healthy DNPs. RETURNING games remain in
+            # the denominator but contribute a partial multiplier to frustration gain.
+            gpos_total = int((schedule_games_by_pid_by_team.get(pid) or {}).get(eval_tid, 0) or 0)
+            out_g = int((out_games_by_pid_by_team.get(pid) or {}).get(eval_tid, 0) or 0)
+            ret_g = int((returning_games_by_pid_by_team.get(pid) or {}).get(eval_tid, 0) or 0)
+
+            gpos_adj = max(0, int(gpos_total) - int(out_g))
+
+            injury_mult: Optional[float] = None
+            if gpos_total > 0 and (injury_windows_by_pid.get(pid) or []):
+                if gpos_adj <= 0:
+                    injury_mult = float(clamp01(cfg.frustration.injury_out_multiplier))
+                else:
+                    rm = float(clamp01(cfg.frustration.injury_returning_multiplier))
+                    rg = max(0, min(int(ret_g), int(gpos_adj)))
+                    injury_mult = ((float(gpos_adj - rg) * 1.0) + (float(rg) * rm)) / float(gpos_adj)
+                    injury_mult = float(clamp01(injury_mult))
+
             inp = MonthlyPlayerInputs(
                 player_id=pid,
                 team_id=eval_tid,
@@ -659,17 +778,57 @@ def apply_monthly_agency_tick(
                 expected_mpg=float(expected_mpg),
                 actual_minutes=float(mins_eval),
                 games_played=int(gp_eval),
-                games_possible=int((schedule_games_by_pid_by_team.get(pid) or {}).get(eval_tid, 0) or 0),
+                games_possible=int(gpos_adj),
                 role_bucket=role_bucket,  # type: ignore[arg-type]
                 leverage=float(leverage),
                 team_win_pct=float(team_win_map.get(eval_tid, 0.5)),
                 injury_status=injury_status_by_pid.get(pid),
+                injury_multiplier=injury_mult,
                 ovr=safe_int(rr.get("ovr"), 0),
                 age=safe_int(rr.get("age"), 0),
                 mental=mental,
             )
 
-            new_state, new_events = apply_monthly_player_tick(prev, inputs=inp, cfg=cfg)
+            # If the previous SSOT state belongs to a different team than the team we are
+            # evaluating this month under (common on mid-month trades), align it first.
+            # This prevents team-scoped fields like trade_request_level from leaking across teams.
+            prev_for_tick = prev
+            if prev_for_tick and isinstance(prev_for_tick, Mapping):
+                prev_tid = str(prev_for_tick.get("team_id") or "").upper()
+                if prev_tid and eval_tid and str(prev_tid) != str(eval_tid).upper():
+                    # Best-effort: use the most recent transaction date that moved the player into eval_tid.
+                    # Fallback to month_start_date so we don't extend cooldowns unnecessarily.
+                    transition_date_iso = norm_date_iso(month_start_date) or str(month_start_date)[:10] or str(now_iso)[:10]
+                    for ev_dt, _ft, _tt in (move_events_by_pid.get(pid) or []):
+                        if str(_tt or "").upper() == str(eval_tid).upper():
+                            transition_date_iso = norm_date_iso(ev_dt) or str(ev_dt)[:10] or transition_date_iso
+                            break
+
+                    out_align = apply_team_transition(
+                        prev_for_tick,
+                        player_id=pid,
+                        season_year=sy,
+                        from_team_id=prev_tid,
+                        to_team_id=eval_tid,
+                        month_key=mk,
+                        now_date_iso=str(transition_date_iso)[:10],
+                        mental=mental,
+                        trade_request_level_before=safe_int(prev_for_tick.get("trade_request_level"), 0),
+                        split_summary=split_summary_by_pid.get(pid),
+                        reason="PRE_EVAL_TEAM_ALIGN",
+                        cfg=cfg.transition,
+                    )
+                    prev_for_tick = out_align.state_after
+                    # Keep small explainability metadata in the persisted context (events are optional).
+                    pre_eval_team_align_meta_by_pid[pid] = {
+                        "from_team_id": prev_tid,
+                        "to_team_id": str(eval_tid).upper(),
+                        "date": str(transition_date_iso)[:10],
+                        "reason": "PRE_EVAL_TEAM_ALIGN",
+                        "transition": dict(out_align.meta or {}),
+                    }
+
+            new_state, new_events = apply_monthly_player_tick(prev_for_tick, inputs=inp, cfg=cfg)
 
             # Attach attribution context for UI / debugging.
             ctx = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
@@ -677,6 +836,9 @@ def apply_monthly_agency_tick(
             ctx.setdefault("evaluation_team_id", eval_tid)
             ctx.setdefault("current_roster_team_id", roster_tid)
             ctx.setdefault("team_end_of_month_id", team_eom_by_pid.get(pid) or str(eval_tid).upper())
+            pre_align = pre_eval_team_align_meta_by_pid.get(pid)
+            if isinstance(pre_align, dict) and pre_align:
+                ctx.setdefault("pre_eval_team_align", pre_align)
             new_state["context"] = ctx
 
             states_eval[pid] = new_state
