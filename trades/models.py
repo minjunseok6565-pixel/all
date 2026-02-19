@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from .errors import TradeError, DEAL_INVALIDATED, MISSING_TO_TEAM, PROTECTION_INVALID
+from .errors import TradeError, DEAL_INVALIDATED, INVALID_TEAM, MISSING_TO_TEAM, PROTECTION_INVALID
 from schema import normalize_player_id, normalize_team_id
 
 
@@ -128,14 +128,19 @@ def _normalize_protection(raw: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_team_id(value: Any, *, context: str) -> str:
     try:
         return str(normalize_team_id(value, strict=True))
-    except ValueError as exc:
-        raise ValueError(f"{context}: invalid team_id {value!r}") from exc
+    except Exception as exc:
+        # Never leak ValueError to API layers; treat invalid IDs as a trade payload error.
+        raise TradeError(
+            INVALID_TEAM,
+            "Invalid team_id in deal payload",
+            {"context": str(context), "value": value},
+        ) from exc
 
 
 def _normalize_player_id(value: Any, *, context: str) -> str:
     try:
         return str(normalize_player_id(value, strict=True))
-    except ValueError as exc:
+    except Exception as exc:
         is_numeric = isinstance(value, str) and value.strip().isdigit()
         is_legacy_int = isinstance(value, int) and not isinstance(value, bool) and value >= 0
         if is_numeric or is_legacy_int:
@@ -147,9 +152,17 @@ def _normalize_player_id(value: Any, *, context: str) -> str:
                         allow_legacy_numeric=True,
                     )
                 )
-            except ValueError as legacy_exc:
-                raise ValueError(f"{context}: invalid player_id {value!r}") from legacy_exc
-        raise ValueError(f"{context}: invalid player_id {value!r}") from exc
+            except Exception as legacy_exc:
+                raise TradeError(
+                    DEAL_INVALIDATED,
+                    "Invalid player_id in deal payload",
+                    {"context": str(context), "value": value},
+                ) from legacy_exc
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Invalid player_id in deal payload",
+            {"context": str(context), "value": value},
+        ) from exc
 
 
 def _parse_asset(raw: Dict[str, Any]) -> Asset:
