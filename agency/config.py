@@ -11,7 +11,9 @@ Important:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Mapping
+from typing import Dict, Mapping, Optional
+
+from config import CAP_BASE_SALARY_CAP
 
 from .month_context import MonthContextConfig
 from .team_transition import TransitionConfig
@@ -156,8 +158,27 @@ class OptionsConfig:
     """Decision logic settings for PLAYER option and ETO."""
 
     # Expected salary curve (sigmoid mapping)
+    #
+    # IMPORTANT (cap-normalized salary scale)
+    # --------------------------------------
+    # Salary scales drift over long simulations if expressed as fixed dollar amounts
+    # while the league salary cap grows season-to-season.
+    #
+    # Therefore, we express the curve in *shares of cap* (pct of cap) and convert
+    # to dollars using the SSOT cap value (trade_rules.salary_cap) when available.
+    #
+    # - When `salary_cap` is provided: use cap-share ratios below.
+    # - When missing: fall back to legacy absolute-dollar defaults for backward
+    #   compatibility (older call sites/tests).
+    salary_cap: Optional[float] = None
+  
     expected_salary_ovr_center: float = 75.0
     expected_salary_ovr_scale: float = 7.0
+  
+    # Cap-normalized defaults derived from the legacy 2025 base-cap tuning:
+    #   midpoint=18M, span=16M at cap=CAP_BASE_SALARY_CAP
+    expected_salary_midpoint_cap_pct: float = 18_000_000.0 / float(CAP_BASE_SALARY_CAP)
+    expected_salary_span_cap_pct: float = 16_000_000.0 / float(CAP_BASE_SALARY_CAP)
     expected_salary_midpoint: float = 18_000_000.0
     expected_salary_span: float = 16_000_000.0
 
