@@ -7,7 +7,7 @@ The engine is deterministic and explainable:
 - Borderline cases use deterministic 'randomness' (stable_u01) based on session/player context.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .config import ContractNegotiationConfig, DEFAULT_CONTRACT_NEGOTIATION_CONFIG
@@ -30,15 +30,42 @@ def expected_market_aav_from_ovr(ovr: float, *, cfg: ContractNegotiationConfig) 
             from agency.config import DEFAULT_CONFIG as _AGENCY_DEFAULT
             from agency.options import expected_market_aav_from_ovr as _agency_curve
 
-            return float(_agency_curve(float(ovr), cfg=_AGENCY_DEFAULT.options))
+            # Cap-normalized curve: propagate salary_cap when available.
+            opt_cfg = _AGENCY_DEFAULT.options
+            cap = safe_float(getattr(cfg, "salary_cap", None), 0.0)
+            if cap > 1e-9:
+                try:
+                    opt_cfg = replace(opt_cfg, salary_cap=float(cap))
+                except Exception:
+                    opt_cfg = _AGENCY_DEFAULT.options
+
+            return float(_agency_curve(float(ovr), cfg=opt_cfg))
         except Exception:
             # Fall back to local curve below.
             pass
 
     x = (float(ovr) - float(cfg.expected_salary_ovr_center)) / max(float(cfg.expected_salary_ovr_scale), 1e-9)
     s = sigmoid(float(x))
-    lo = float(cfg.expected_salary_midpoint) - float(cfg.expected_salary_span)
-    hi = float(cfg.expected_salary_midpoint) + float(cfg.expected_salary_span)
+
+    # Cap-normalized local fallback curve.
+    cap = safe_float(getattr(cfg, "salary_cap", None), 0.0)
+    if cap > 1e-9:
+        mid_pct = safe_float(getattr(cfg, "expected_salary_midpoint_cap_pct", None), 0.0)
+        span_pct = safe_float(getattr(cfg, "expected_salary_span_cap_pct", None), 0.0)
+        midpoint = float(cap) * float(mid_pct)
+        span = float(cap) * float(span_pct)
+    else:
+        midpoint = float(cfg.expected_salary_midpoint)
+        span = float(cfg.expected_salary_span)
+
+    lo = float(midpoint) - float(span)
+    hi = float(midpoint) + float(span)
+
+    # Defensive: keep ordering and non-negative lower bound.
+    if hi < lo:
+        lo, hi = hi, lo
+    if lo < 0.0:
+        lo = 0.0
     return float(lo + (hi - lo) * s)
 
 
