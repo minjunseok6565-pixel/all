@@ -26,6 +26,14 @@ import logging
 import math
 from role_need_tags import role_to_need_tag
 
+# SSOT: contract schedule interpretation (remaining years, salary for a season).
+try:  # project layout
+    from contracts.terms import remaining_years as _contract_remaining_years
+    from contracts.terms import salary_for_season as _contract_salary_for_season
+except Exception:  # pragma: no cover
+    _contract_remaining_years = None  # type: ignore
+    _contract_salary_for_season = None  # type: ignore
+
 from schema import normalize_team_id, normalize_player_id
 import state
 from league_repo import LeagueRepo
@@ -1389,7 +1397,17 @@ class TeamSituationEvaluator:
             season_year = int(cd.year if int(cd.month) >= start_month else (cd.year - 1))
 
 
-        def salary_for_year(sby: Any, year: int) -> Optional[float]:
+        def salary_for_contract(contract: Any, year: int) -> Optional[float]:
+            """SSOT-backed current-season salary lookup for a contract dict."""
+            if _contract_salary_for_season is not None:
+                try:
+                    return float(_contract_salary_for_season(contract, int(year)))
+                except Exception:
+                    pass
+            # Legacy fallback: salary_by_year lookup (int/str keys)
+            if not isinstance(contract, dict):
+                return None
+            sby = contract.get("salary_by_year") or {}
             if not isinstance(sby, dict):
                 return None
             val = None
@@ -1419,7 +1437,7 @@ class TeamSituationEvaluator:
             if cid and isinstance(contracts, dict):
                 c = contracts.get(str(cid))
                 if isinstance(c, dict) and str(c.get("team_id", "")).upper() == team_id:
-                    sal = salary_for_year(c.get("salary_by_year") or {}, int(season_year))
+                    sal = salary_for_contract(c, int(season_year))
 
             if sal is None:
                 # Safe fallback: roster salary_amount reflects current-team salary in this project.
@@ -1435,7 +1453,7 @@ class TeamSituationEvaluator:
                     continue
                 if str(c.get("team_id", "")).upper() != team_id:
                     continue
-                sal = salary_for_year(c.get("salary_by_year") or {}, int(season_year))
+                sal = salary_for_contract(c, int(season_year))
                 total += _safe_float(sal, 0.0)
 
         return float(total)
