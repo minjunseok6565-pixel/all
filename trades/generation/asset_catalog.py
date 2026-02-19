@@ -548,7 +548,10 @@ def build_trade_asset_catalog(
         raise RuntimeError("build_trade_asset_catalog: tick_ctx.repo missing")
 
     # --- Pricing + fit engines (pure + cached)
-    pricer = MarketPricer(config=MarketPricingConfig())
+    salary_cap = _safe_float(trade_rules.get("salary_cap"), 0.0) or 0.0
+    pricer = MarketPricer(
+        config=MarketPricingConfig(salary_cap=float(salary_cap)) if salary_cap > 0.0 else MarketPricingConfig()
+    )
     fit_engine = FitEngine(config=FitEngineConfig())
 
     # --- Stepien helper (shared policy)
