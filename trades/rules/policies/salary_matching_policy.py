@@ -52,18 +52,38 @@ class SalaryMatchingParams:
     def from_trade_rules(cls, trade_rules: Mapping[str, Any]) -> "SalaryMatchingParams":
         """Build params from league.trade_rules.
 
-        Defaults are intentionally kept identical to SalaryMatchingRule.
+        Notes:
+            - `match_mid_add` is season-scaled in state_modules/state_cap.py when
+              match_auto_update is enabled.
+            - Bracket thresholds are derived from (mid_add, buffer) to guarantee
+              continuity at the boundaries. This prevents non-monotonic allowed
++             incoming amounts caused by inconsistent constants.
         """
 
         tr = trade_rules or {}
+
+        # Core matching knobs.
+        match_mid_add_d = _to_int_dollars(
+            tr.get("match_mid_add")
+            or tr.get("match_base_mid_add")
+            or 8_527_000
+        )
+        match_buffer_d = _to_int_dollars(tr.get("match_buffer") or 250_000)
+
+        # Derive thresholds for continuity:
+        #   2*out + buffer == out + mid_add  at out = mid_add - buffer
+        #   out + mid_add  == 1.25*out + buffer at out = 4*(mid_add - buffer)
+        match_small_out_max_d = max(0, int(match_mid_add_d) - int(match_buffer_d))
+        match_mid_out_max_d = int(match_small_out_max_d * 4)
+        
         return cls(
             salary_cap_d=_to_int_dollars(tr.get("salary_cap") or 0.0),
             first_apron_d=_to_int_dollars(tr.get("first_apron") or 0.0),
             second_apron_d=_to_int_dollars(tr.get("second_apron") or 0.0),
-            match_small_out_max_d=_to_int_dollars(tr.get("match_small_out_max") or 7_500_000),
-            match_mid_out_max_d=_to_int_dollars(tr.get("match_mid_out_max") or 29_000_000),
-            match_mid_add_d=_to_int_dollars(tr.get("match_mid_add") or 7_500_000),
-            match_buffer_d=_to_int_dollars(tr.get("match_buffer") or 250_000),
+            match_small_out_max_d=match_small_out_max_d,
+            match_mid_out_max_d=match_mid_out_max_d,
+            match_mid_add_d=match_mid_add_d,
+            match_buffer_d=match_buffer_d,
             first_apron_mult=float(tr.get("first_apron_mult") or 1.10),
             second_apron_mult=float(tr.get("second_apron_mult") or 1.00),
         )
