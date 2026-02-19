@@ -5,6 +5,32 @@ from typing import Any, Dict, Mapping, Optional, Tuple, Iterable, List
 
 import math
 
+# Salary cap model (pure). Used for cap%%-based fair salary estimation.
+# Keep import flexible to survive refactors / package layouts.
+try:  # main project layout
+    from config import (
+        CAP_BASE_SEASON_YEAR,
+        CAP_BASE_SALARY_CAP,
+        CAP_ANNUAL_GROWTH_RATE,
+        CAP_ROUND_UNIT,
+    )
+except Exception:  # pragma: no cover
+    CAP_BASE_SEASON_YEAR = 2025
+    CAP_BASE_SALARY_CAP = 154_647_000
+    CAP_ANNUAL_GROWTH_RATE = 0.10
+    CAP_ROUND_UNIT = 1000
+
+
+def _round_to_unit(v: float, unit: int) -> float:
+    u = max(int(unit), 1)
+    return float(int(round(float(v) / u) * u))
+
+
+def _salary_cap_for_season(season_year: int) -> float:
+    years_passed = int(season_year) - int(CAP_BASE_SEASON_YEAR)
+    mult = (1.0 + float(CAP_ANNUAL_GROWTH_RATE)) ** years_passed
+    return _round_to_unit(float(CAP_BASE_SALARY_CAP) * mult, int(CAP_ROUND_UNIT))
+
 from .types import (
     AssetKind,
     AssetSnapshot,
@@ -153,6 +179,20 @@ class MarketPricingConfig:
     expected_salary_span_cap_pct: float = 16_000_000.0 / 154_647_000.0
     expected_salary_span: float = 16_000_000.0
 
+    # Fair salary curve (cap%-based).
+    # - Designed to cover max salary ranges (superstars can be underpaid even at max).
+    fair_salary_pct_lo: float = 0.02
+    fair_salary_pct_hi: float = 0.47
+    fair_salary_ovr_center: float = 86.0
+    fair_salary_ovr_scale: float = 7.0
+
+    # Contract surplus (fair - actual) is converted into value units and ADDED to player value.
+    # This allows truly bad contracts to become negative assets.
+    contract_surplus_value_per_cap_pct: float = 0.90  # 1% of cap surplus ~= 0.9 value units (tunable)
+    contract_year_discount_rate: float = 0.12
+    contract_value_abs_cap: float = 40.0
+    contract_fallback_years_cap: int = 6
+
     contract_efficiency_factor_floor: float = 0.70
     contract_efficiency_factor_cap: float = 1.35
     contract_years_penalty_per_year: float = 0.03  # 긴 계약은 market에서 살짝 할인
@@ -273,6 +313,9 @@ class MarketPricer:
         ovr = _safe_float(snap.ovr, 70.0)
         age = _safe_float(snap.age, 27.0)
 
+        # -----------------------------------------------------------------
+        # Basketball value (pure talent/age/market scarcity).
+        # -----------------------------------------------------------------
         # 1) OVR -> now base (sigmoid-like)
         now_base = self._ovr_to_now_value(ovr)
         steps.append(
@@ -300,7 +343,7 @@ class MarketPricer:
                 )
             )
 
-        base = _vc(now=now_base + star_bonus, future=0.0)
+        base_now = now_base + star_bonus
 
         # 3) Age -> future multiplier (market-level expected horizon)
         age_future_factor = self._age_to_future_factor(age)
@@ -317,9 +360,7 @@ class MarketPricer:
         )
 
         # We create a future component from current base using the factor.
-        # This is "market expectation" and does not consider team window.
-        future_from_age = base.total * (age_future_factor - 1.0)
-        # If factor < 1, future_from_age becomes negative: we keep it as a reduction.
+        future_from_age = base_now * (age_future_factor - 1.0)
         steps.append(
             ValuationStep(
                 stage=ValuationStage.MARKET,
@@ -331,23 +372,9 @@ class MarketPricer:
             )
         )
 
-        value = _vc(now=base.now, future=future_from_age)
+        basketball_value = _vc(now=base_now, future=future_from_age)
 
-        # 4) Contract efficiency factor (market-level)
-        contract_factor, contract_meta = self._contract_efficiency_factor(snap)
-        steps.append(
-            ValuationStep(
-                stage=ValuationStage.MARKET,
-                mode=StepMode.MUL,
-                code="CONTRACT_EFF_FACTOR",
-                label="계약 효율(연봉/기간) 배율",
-                factor=contract_factor,
-                meta=contract_meta,
-            )
-        )
-        value = value.scale(contract_factor)
-
-        # 5) Position scarcity (optional, market-level)
+        # 4) Position scarcity (market-level) -> applies to basketball value only.
         pos_factor, pos_meta = self._position_scarcity_factor(snap)
         if abs(pos_factor - 1.0) > cfg.eps:
             steps.append(
@@ -360,7 +387,44 @@ class MarketPricer:
                     meta=pos_meta,
                 )
             )
-            value = value.scale(pos_factor)
+            basketball_value = basketball_value.scale(pos_factor)
+
+        # -----------------------------------------------------------------
+        # Contract value (fair salary - actual salary), ADDED as a separate component.
+        # This allows bad contracts to become negative assets and fixes superstar max bias.
+        # -----------------------------------------------------------------
+        contract_delta, contract_meta = self._contract_value_delta(snap)
+        if abs(contract_delta.now) + abs(contract_delta.future) > cfg.eps:
+            steps.append(
+                ValuationStep(
+                    stage=ValuationStage.MARKET,
+                    mode=StepMode.ADD,
+                    code="CONTRACT_SURPLUS_DELTA",
+                    label="계약 가치(시장가-실제연봉) 델타",
+                    delta=contract_delta,
+                    meta=contract_meta,
+                )
+            )
+
+        value = basketball_value + contract_delta
+
+        meta = {
+            "name": snap.name,
+            "pos": snap.pos,
+            "team_id": snap.team_id,
+            "value_breakdown": {
+                "basketball": {
+                    "now": basketball_value.now,
+                    "future": basketball_value.future,
+                    "total": basketball_value.total,
+                },
+                "contract": {
+                    "now": contract_delta.now,
+                    "future": contract_delta.future,
+                    "total": contract_delta.total,
+                },
+            },
+        }
 
         return MarketValuation(
             asset_key=asset_key,
@@ -368,8 +432,136 @@ class MarketPricer:
             ref_id=str(snap.player_id),
             value=value,
             steps=tuple(steps),
-            meta={"name": snap.name, "pos": snap.pos, "team_id": snap.team_id},
+            meta=meta,
         )
+
+    # -------------------------------------------------------------------------
+    # Contract helpers (market-level, pure)
+    # -------------------------------------------------------------------------
+    def _infer_current_season_year(self, snap: PlayerSnapshot) -> Optional[int]:
+        if isinstance(snap.meta, dict) and snap.meta.get("current_season_year") is not None:
+            y = _safe_int(snap.meta.get("current_season_year"), 0)
+            if y > 0:
+                return int(y)
+        if snap.contract is not None and isinstance(snap.contract.meta, dict):
+            y = _safe_int(snap.contract.meta.get("current_season_year"), 0)
+            if y > 0:
+                return int(y)
+        return None
+
+    def _fair_salary_pct_from_ovr(self, ovr: float) -> float:
+        cfg = self.config
+        x = (ovr - cfg.fair_salary_ovr_center) / max(cfg.fair_salary_ovr_scale, cfg.eps)
+        s = _sigmoid(x)
+        return cfg.fair_salary_pct_lo + (cfg.fair_salary_pct_hi - cfg.fair_salary_pct_lo) * s
+
+    def _remaining_salary_schedule(self, snap: PlayerSnapshot, *, current_season_year: int) -> List[Tuple[int, float]]:
+        cfg = self.config
+        cur = int(current_season_year)
+
+        # 1) salary_by_year (best signal)
+        if snap.contract is not None and isinstance(snap.contract.salary_by_year, dict) and snap.contract.salary_by_year:
+            out: List[Tuple[int, float]] = []
+            for y, v in snap.contract.salary_by_year.items():
+                yy = int(y)
+                sal = _safe_float(v, 0.0)
+                if yy < cur:
+                    continue
+                if sal <= cfg.eps:
+                    continue
+                out.append((yy, float(sal)))
+            out.sort(key=lambda t: t[0])
+            if out:
+                return out
+
+        # 2) fallback: salary_amount + remaining years
+        salary_now = _safe_float(snap.salary_amount, 0.0)
+        years = 0
+        if snap.contract is not None:
+            if isinstance(snap.contract.meta, dict) and snap.contract.meta.get("remaining_years") is not None:
+                try:
+                    years = int(float(snap.contract.meta.get("remaining_years")))
+                except Exception:
+                    years = 0
+            if years <= 0:
+                years = _safe_int(snap.contract.years, 0)
+
+        years = max(0, years)
+        years = min(years, int(cfg.contract_fallback_years_cap))
+        if salary_now <= cfg.eps or years <= 0:
+            return []
+
+        return [(cur + i, float(salary_now)) for i in range(years)]
+
+    def _clamp_abs_mass(self, v: ValueComponents, abs_cap: float) -> ValueComponents:
+        m = abs(float(v.now)) + abs(float(v.future))
+        if abs_cap <= 0 or m <= abs_cap:
+            return v
+        f = abs_cap / max(m, self.config.eps)
+        return ValueComponents(v.now * f, v.future * f)
+
+    def _contract_value_delta(self, snap: PlayerSnapshot) -> Tuple[ValueComponents, Dict[str, Any]]:
+        cfg = self.config
+        ovr = _safe_float(snap.ovr, 70.0)
+
+        cur = self._infer_current_season_year(snap)
+        if cur is None:
+            return ValueComponents.zero(), {"reason": "no_current_season_year"}
+
+        sched = self._remaining_salary_schedule(snap, current_season_year=int(cur))
+        if not sched:
+            return ValueComponents.zero(), {"reason": "no_salary_schedule", "cur": int(cur)}
+
+        fair_pct = self._fair_salary_pct_from_ovr(ovr)
+
+        now_units = 0.0
+        fut_units = 0.0
+        rows: List[Dict[str, Any]] = []
+
+        for (year, actual) in sched:
+            cap_y = _salary_cap_for_season(int(year))
+            fair_y = cap_y * fair_pct
+            surplus = float(fair_y) - float(actual)
+            surplus_frac = surplus / max(cap_y, cfg.eps)  # cap fraction
+
+            years_ahead = max(int(year) - int(cur), 0)
+            disc = (1.0 - cfg.contract_year_discount_rate) ** years_ahead
+            disc = _clamp(disc, 0.35, 1.00)
+
+            # Convert cap%% surplus into internal value units.
+            units = (surplus_frac * 100.0) * cfg.contract_surplus_value_per_cap_pct * disc
+
+            if int(year) == int(cur):
+                now_units += units
+            else:
+                fut_units += units
+
+            rows.append(
+                {
+                    "year": int(year),
+                    "cap": cap_y,
+                    "fair_pct": fair_pct,
+                    "fair_salary": fair_y,
+                    "actual_salary": float(actual),
+                    "surplus": surplus,
+                    "surplus_cap_pct": surplus_frac * 100.0,
+                    "disc": disc,
+                    "units": units,
+                }
+            )
+
+        delta = ValueComponents(now_units, fut_units)
+        delta = self._clamp_abs_mass(delta, cfg.contract_value_abs_cap)
+
+        meta = {
+            "cur": int(cur),
+            "ovr": ovr,
+            "fair_salary_pct": fair_pct,
+            "rows": rows,
+            "delta": {"now": delta.now, "future": delta.future, "total": delta.total},
+        }
+        return delta, meta
+
 
     def _ovr_to_now_value(self, ovr: float) -> float:
         cfg = self.config
