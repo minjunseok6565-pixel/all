@@ -27,7 +27,7 @@ class PickRulesRule:
 
         league = ctx.game_state.get("league", {})
         try:
-            current_season_year = int(league.get("draft_year") or 0)
+            current_draft_year = int(league.get("draft_year") or 0)
         except (TypeError, ValueError):
             current_season_year = 0
         if current_season_year <= 0:
@@ -63,7 +63,7 @@ class PickRulesRule:
                         },
                     )
                 pick_year = int(pick.get("year") or 0)
-                if pick_year > current_season_year + max_pick_years_ahead:
+                if pick_year > current_draft_year + max_pick_years_ahead:
                     raise TradeError(
                         DEAL_INVALIDATED,
                         "Pick too far in future",
@@ -95,7 +95,7 @@ class PickRulesRule:
             violation = check_stepien_violation(
                 team_id=team_id,
                 draft_picks=draft_picks,  # type: ignore[arg-type]
-                current_draft_year=current_season_year,
+                current_draft_year=current_draft_year,
                 lookahead=stepien_lookahead,
                 owner_after=owner_after,
             )
