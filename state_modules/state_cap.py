@@ -13,7 +13,12 @@ from config import (
 
 
 def _apply_cap_model_for_season(league: Dict[str, Any], season_year: int) -> None:
-    """Apply the season-specific cap/apron values to trade rules."""
+    """Apply the season-specific cap/apron values to trade rules.
+
+    This is the SSOT for season-based cap numbers. We also piggy-back salary
+    matching (below-1st-apron) parameters here because, in the real NBA, those
+    thresholds scale with the cap over time.
+    """
     trade_rules = league.setdefault("trade_rules", {})
     if trade_rules.get("cap_auto_update") is False:
         return
@@ -72,3 +77,48 @@ def _apply_cap_model_for_season(league: Dict[str, Any], season_year: int) -> Non
     trade_rules["salary_cap"] = salary_cap
     trade_rules["first_apron"] = first_apron
     trade_rules["second_apron"] = second_apron
+
+    # --- Salary matching parameters (below 1st apron) ---
+    # The matching brackets are intentionally derived from (mid_add, buffer)
+    # to guarantee continuity at thresholds:
+    #   2*out + buffer  == out + mid_add  at out = mid_add - buffer
+    #   out + mid_add   == 1.25*out + buffer at out = 4*(mid_add - buffer)
+    #
+    # We scale mid_add by the cap ratio each season when match_auto_update is enabled.
+    if trade_rules.get("match_auto_update") is not False:
+        # base_mid_add corresponds to the base season cap values.
+        try:
+            base_mid_add = float(trade_rules.get("match_base_mid_add", 8_527_000))
+        except (TypeError, ValueError):
+            base_mid_add = 8_527_000.0
+
+        # Keep base_salary_cap consistent with what we used above.
+        base_salary_cap_for_match = base_salary_cap
+        if base_salary_cap_for_match <= 0:
+            base_salary_cap_for_match = float(CAP_BASE_SALARY_CAP)
+        if base_salary_cap_for_match <= 0:
+            base_salary_cap_for_match = 1.0
+
+        # match_buffer is not scaled (CBA uses a fixed $250k buffer).
+        try:
+            match_buffer_d = int(round(float(trade_rules.get("match_buffer", 250_000))))
+        except (TypeError, ValueError):
+            match_buffer_d = 250_000
+        if match_buffer_d < 0:
+            match_buffer_d = 0
+
+        # Scale by cap ratio, then round to the same unit used for the cap.
+        scaled_mid_add = base_mid_add * (float(salary_cap) / float(base_salary_cap_for_match))
+        match_mid_add_d = _round_to_unit(scaled_mid_add)
+        if match_mid_add_d < match_buffer_d:
+            # Prevent negative/invalid thresholds.
+            match_mid_add_d = match_buffer_d
+
+        # Derive bracket thresholds.
+        match_small_out_max_d = max(0, int(match_mid_add_d) - match_buffer_d)
+        match_mid_out_max_d = int(match_small_out_max_d * 4)
+
+        trade_rules["match_mid_add"] = int(match_mid_add_d)
+        trade_rules["match_small_out_max"] = int(match_small_out_max_d)
+        trade_rules["match_mid_out_max"] = int(match_mid_out_max_d)
+
