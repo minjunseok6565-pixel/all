@@ -31,6 +31,33 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from decision_context import DecisionContext
 
+# Salary cap model (pure). Used to price cap-room usage as a real trade resource.
+# Keep import flexible to survive refactors / package layouts.
+try:  # main project layout
+    from config import (
+        CAP_BASE_SEASON_YEAR,
+        CAP_BASE_SALARY_CAP,
+        CAP_ANNUAL_GROWTH_RATE,
+        CAP_ROUND_UNIT,
+    )
+except Exception:  # pragma: no cover
+    CAP_BASE_SEASON_YEAR = 2025
+    CAP_BASE_SALARY_CAP = 154_647_000
+    CAP_ANNUAL_GROWTH_RATE = 0.10
+    CAP_ROUND_UNIT = 1000
+
+
+def _round_to_unit(v: float, unit: int) -> float:
+    u = max(int(unit), 1)
+    return float(int(round(float(v) / u) * u))
+
+
+def _salary_cap_for_season(season_year: int) -> float:
+    years_passed = int(season_year) - int(CAP_BASE_SEASON_YEAR)
+    mult = (1.0 + float(CAP_ANNUAL_GROWTH_RATE)) ** years_passed
+    return _round_to_unit(float(CAP_BASE_SALARY_CAP) * mult, int(CAP_ROUND_UNIT))
+
+
 try:  # path safety (project integration will likely use relative import)
     from role_need_tags import role_to_need_tag_only
 except Exception:  # pragma: no cover
@@ -292,6 +319,17 @@ class PackageEffectsConfig:
     cap_flex_scale: float = 0.00000006  # scale salary*years (dollars) -> value units
     cap_flex_cap_ratio: float = 0.16
 
+    # Cap-room usage cost ("cap space is an asset")
+    # - Applies when net incoming salary is absorbed using positive cap space.
+    # - This should NOT be clamped by outgoing package value; it is its own real cost.
+    cap_room_weight_base: float = 0.35  # even if CAP_FLEX need is low, cap room still has some cost
+    cap_room_value_per_cap_fraction: float = 90.0  # using 100% of cap (hypothetical) => ~90 value units before weighting
+    cap_room_cost_exponent: float = 1.25
+    cap_room_abs_cap: float = 22.0
+
+    # Commitment delta cap (future)
+    cap_commit_abs_cap: float = 18.0
+
     # --- Upgrade needs
     upgrade_scale: float = 0.75
     defense_proxy_floor: float = 0.35
@@ -327,9 +365,17 @@ class PackageEffects:
 
         base_in = self._sum_team_values(incoming)
         base_out = self._sum_team_values(outgoing)
-        base_out_total = max(base_out.total, self.config.eps)
-        base_in_total = max(base_in.total, self.config.eps)
-        package_scale_total = max(base_in_total, base_out_total)
+        # NOTE: With negative assets enabled (bad contracts), totals can be negative or cancel out.
+        # For deal-structure caps we use absolute mass (|now|+|future|) to keep scaling stable.
+        def _side_mass(items: Sequence[Tuple[TeamValuation, AssetSnapshot]]) -> float:
+            m = 0.0
+            for tv, _ in items:
+                m += abs(_safe_float(tv.team_value.now, 0.0)) + abs(_safe_float(tv.team_value.future, 0.0))
+            return float(m)
+
+        base_out_mass = max(_side_mass(outgoing), self.config.eps)
+        base_in_mass = max(_side_mass(incoming), self.config.eps)
+        package_scale_total = max(base_in_mass, base_out_mass)
 
         # 5) Consolidation / dispersion structure
         delta1 = self._consolidation_effect(incoming, outgoing, ctx, package_scale_total, steps)
@@ -338,23 +384,23 @@ class PackageEffects:
         delta2 = self._diminishing_returns(incoming, steps)
 
         # 7) Soft roster slot / rotation waste (too many incoming players)
-        delta3 = self._roster_excess_waste(incoming, outgoing, base_out_total, steps)
+        delta3 = self._roster_excess_waste(incoming, outgoing, base_out_mass, steps)
 
         # Depth needs (GUARD/WING/BIG/BENCH) based on deal delta *only*
         delta4 = self._depth_need_adjustment(incoming, outgoing, ctx, steps)
 
         # 8) Outgoing hole penalty (position discontinuity)
-        delta5 = self._outgoing_hole_penalty(incoming, outgoing, base_out_total, steps)
+        delta5 = self._outgoing_hole_penalty(incoming, outgoing, base_out_mass, steps)
 
         # CAP_FLEX adjustment (contract commitment delta)
-        delta6 = self._cap_flex_adjustment(incoming, outgoing, ctx, current_season_year, base_out_total, steps)
+        delta6 = self._cap_flex_adjustment(incoming, outgoing, ctx, current_season_year, steps)
 
         # OFF/DEF upgrade adjustments
         delta7 = self._upgrade_adjustment(incoming, outgoing, ctx, steps)
 
         total = delta1 + delta2 + delta3 + delta4 + delta5 + delta6 + delta7
-        meta["base_in"] = {"now": base_in.now, "future": base_in.future, "total": base_in.total}
-        meta["base_out"] = {"now": base_out.now, "future": base_out.future, "total": base_out.total}
+        meta["base_in"] = {"now": base_in.now, "future": base_in.future, "total": base_in.total, "mass": base_in_mass}
+        meta["base_out"] = {"now": base_out.now, "future": base_out.future, "total": base_out.total, "mass": base_out_mass}
         meta["package_delta"] = {"now": total.now, "future": total.future, "total": total.total}
         meta["team_id"] = str(team_id)
 
@@ -756,7 +802,6 @@ class PackageEffects:
         outgoing: Sequence[Tuple[TeamValuation, AssetSnapshot]],
         ctx: DecisionContext,
         current_season_year: Optional[int],
-        base_out_total: float,
         steps: List[ValuationStep],
     ) -> ValueComponents:
         cfg = self.config
@@ -767,46 +812,121 @@ class PackageEffects:
                 need_map = dict(ctx.policies.fit.need_map or {})
             except Exception:
                 need_map = {}
-        w = _clamp(_safe_float(need_map.get(CAP_FLEX), 0.0), 0.0, 1.0)
-        if w <= cfg.eps:
-            return ValueComponents.zero()
+        w_need = _clamp(_safe_float(need_map.get(CAP_FLEX), 0.0), 0.0, 1.0)
 
+        # --------------------------------------------------------------
+        # (A) Cap-room usage cost (NOW): using cap space is a real resource.
+        # --------------------------------------------------------------
+        cap_space_before = 0.0
+        if isinstance(getattr(ctx, "debug", None), dict):
+            cap_space_before = _safe_float(ctx.debug.get("cap_space"), 0.0)
+        cap_space_before = max(0.0, float(cap_space_before))
+
+        cur_sy = int(current_season_year) if current_season_year is not None else None
+        cap_now = _salary_cap_for_season(cur_sy) if cur_sy is not None else float(CAP_BASE_SALARY_CAP)
+
+        def salary_now(p: PlayerSnapshot) -> float:
+            # Prefer roster salary_amount (current season).
+            s = _safe_float(p.salary_amount, 0.0)
+            if s > cfg.eps:
+                return float(s)
+            # Fallback: contract salary_by_year for current season
+            if cur_sy is not None and p.contract is not None and isinstance(p.contract.salary_by_year, dict):
+                if int(cur_sy) in p.contract.salary_by_year:
+                    return float(_safe_float(p.contract.salary_by_year.get(int(cur_sy)), 0.0))
+            # Last resort: average of known years
+            if p.contract is not None and isinstance(p.contract.salary_by_year, dict) and p.contract.salary_by_year:
+                vals = [float(_safe_float(v, 0.0)) for v in p.contract.salary_by_year.values()]
+                vals = [v for v in vals if v > 0.0]
+                if vals:
+                    return float(sum(vals) / max(1, len(vals)))
+            return 0.0
+
+        def sum_salary_now(items: Sequence[Tuple[TeamValuation, AssetSnapshot]]) -> float:
+            acc = 0.0
+            for tv, snap in items:
+                if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
+                    continue
+                acc += salary_now(snap)
+            return float(acc)
+
+        in_sal = sum_salary_now(incoming)
+        out_sal = sum_salary_now(outgoing)
+        net_added = in_sal - out_sal
+
+        cap_room_used = min(max(net_added, 0.0), cap_space_before)
+        used_frac = cap_room_used / max(cap_now, cfg.eps)
+
+        # even if CAP_FLEX need is low, cap room isn't free
+        w_room = _clamp(cfg.cap_room_weight_base + (1.0 - cfg.cap_room_weight_base) * w_need, 0.0, 1.0)
+        raw_now = -w_room * cfg.cap_room_value_per_cap_fraction * (used_frac ** cfg.cap_room_cost_exponent)
+        raw_now = _clamp(raw_now, -cfg.cap_room_abs_cap, 0.0)
+
+        delta_now = ValueComponents.zero()
+        if abs(raw_now) > cfg.eps:
+            delta_now = _vc(now=raw_now, future=0.0)
+            steps.append(
+                ValuationStep(
+                    stage=ValuationStage.PACKAGE,
+                    mode=StepMode.ADD,
+                    code="CAP_ROOM_USED_COST",
+                    label="캡스페이스 사용 비용(자원)",
+                    delta=delta_now,
+                    meta={
+                        "weight_need": w_need,
+                        "weight_effective": w_room,
+                        "cap_space_before": cap_space_before,
+                        "cap_now": cap_now,
+                        "incoming_salary_now": in_sal,
+                        "outgoing_salary_now": out_sal,
+                        "net_added_salary_now": net_added,
+                        "cap_room_used": cap_room_used,
+                        "used_frac": used_frac,
+                        "value_per_cap_fraction": cfg.cap_room_value_per_cap_fraction,
+                        "exponent": cfg.cap_room_cost_exponent,
+                    },
+                )
+            )
+
+        # --------------------------------------------------------------
+        # (B) Commitment delta (FUTURE): long-term flexibility preference.
+        # --------------------------------------------------------------
         def sum_commit(items: Sequence[Tuple[TeamValuation, AssetSnapshot]]) -> float:
             acc = 0.0
             for tv, snap in items:
                 if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
                     continue
                 acc += _commitment_metric(snap, current_season_year=current_season_year)
-            return acc
+            return float(acc)
 
         in_c = sum_commit(incoming)
         out_c = sum_commit(outgoing)
         delta_commit = in_c - out_c
 
-        raw = -w * delta_commit * cfg.cap_flex_scale
-        cap = cfg.cap_flex_cap_ratio * max(base_out_total, cfg.eps)
-        raw = _clamp(raw, -cap, cap)
-        if abs(raw) <= cfg.eps:
-            return ValueComponents.zero()
+        raw_fut = -w_need * delta_commit * cfg.cap_flex_scale
+        raw_fut = _clamp(raw_fut, -cfg.cap_commit_abs_cap, cfg.cap_commit_abs_cap)
 
-        delta = _vc(now=0.0, future=raw)
-        steps.append(
-            ValuationStep(
-                stage=ValuationStage.PACKAGE,
-                mode=StepMode.ADD,
-                code="CAP_FLEX_DELTA",
-                label="유연성(CAP_FLEX) 딜 델타 보정",
-                delta=delta,
-                meta={
-                    "weight": w,
-                    "delta_commitment": delta_commit,
-                    "scale": cfg.cap_flex_scale,
-                    "incoming_commit": in_c,
-                    "outgoing_commit": out_c,
-                },
+        delta_fut = ValueComponents.zero()
+        if abs(raw_fut) > cfg.eps:
+            delta_fut = _vc(now=0.0, future=raw_fut)
+            steps.append(
+                ValuationStep(
+                    stage=ValuationStage.PACKAGE,
+                    mode=StepMode.ADD,
+                    code="CAP_FLEX_COMMITMENT_DELTA",
+                    label="유연성(CAP_FLEX) 커미트먼트 델타",
+                    delta=delta_fut,
+                    meta={
+                        "weight": w_need,
+                        "delta_commitment": delta_commit,
+                        "scale": cfg.cap_flex_scale,
+                        "incoming_commit": in_c,
+                        "outgoing_commit": out_c,
+                        "abs_cap": cfg.cap_commit_abs_cap,
+                    },
+                )
             )
-        )
-        return delta
+        return delta_now + delta_fut
 
     # ------------------------------------------------------------------
     # OFF/DEF upgrade (need_map-driven)
