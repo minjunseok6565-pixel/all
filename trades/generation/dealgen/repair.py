@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import math
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from ...errors import TradeError
@@ -9,6 +7,8 @@ from ...models import PlayerAsset, PickAsset, Asset, resolve_asset_receiver
 
 from ..generation_tick import TradeGenerationTickContext
 from ..asset_catalog import TradeAssetCatalog, BucketId
+
+from ...rules.policies.salary_matching_policy import SalaryMatchingParams, check_salary_matching
 
 from .types import DealGeneratorConfig, DealGeneratorBudget, DealGeneratorStats, DealCandidate, RuleFailureKind, parse_trade_error
 from .utils import (
@@ -199,132 +199,12 @@ def _apply_prune_side_effects(
             banned_receivers_by_player.setdefault(pid_s, set()).add(to_u)
 
 
-@dataclass(frozen=True, slots=True)
-class SalaryMatchSimResult:
-    """SalaryMatchingRule의 핵심 계산을 로컬에서 재현한 결과(달러 단위 정수).
-
-    SSOT(TradeGenerationTickContext.validate_deal)에서 나온 TradeError.details를 기반으로,
-    repair 단계에서 '이 filler를 추가하면 통과할 가능성이 있는가?'를 빠르게 판정하기 위해 사용한다.
-
-    주의:
-    - 실제 SSOT는 float + math.floor 기반이므로, floor 연산에는 eps를 더해 부동소수 오차를 상쇄한다.
-    - BELOW_FIRST_APRON의 large 구간(1.25배)은 정수 연산((out*5)//4)로 정확히 재현한다.
-    """
-
-    ok: bool
-    status: str
-    method: str
-    allowed_in_d: int
-    payroll_after_d: int
-    max_incoming_cap_room_d: Optional[int] = None
-    reason: Optional[str] = None
-
-
 def _to_int_dollars(x: Any) -> int:
     """float/int/str 등을 달러 단위 정수로 안전하게 변환."""
     try:
         return int(round(float(x)))
     except Exception:
         return 0
-
-
-def _simulate_salary_matching(
-    *,
-    payroll_before_d: int,
-    outgoing_salary_d: int,
-    incoming_salary_d: int,
-    trade_rules: Mapping[str, Any],
-    eps: float = 1e-6,
-) -> SalaryMatchSimResult:
-    """SalaryMatchingRule.validate()의 계산을 달러 정수로 재현.
-
-    Returns:
-        SalaryMatchSimResult(ok, status, method, allowed_in_d, payroll_after_d, ...)
-    """
-
-    # defaults: trade/trades/rules/builtin/salary_matching_rule.py 와 동일
-    salary_cap_d = _to_int_dollars(trade_rules.get("salary_cap") or 0.0)
-    first_apron_d = _to_int_dollars(trade_rules.get("first_apron") or 0.0)
-    second_apron_d = _to_int_dollars(trade_rules.get("second_apron") or 0.0)
-
-    match_small_out_max_d = _to_int_dollars(trade_rules.get("match_small_out_max") or 7_500_000)
-    match_mid_out_max_d = _to_int_dollars(trade_rules.get("match_mid_out_max") or 29_000_000)
-    match_mid_add_d = _to_int_dollars(trade_rules.get("match_mid_add") or 7_500_000)
-    match_buffer_d = _to_int_dollars(trade_rules.get("match_buffer") or 250_000)
-
-    first_apron_mult = float(trade_rules.get("first_apron_mult") or 1.10)
-    second_apron_mult = float(trade_rules.get("second_apron_mult") or 1.00)
-
-    payroll_after_d = int(payroll_before_d - outgoing_salary_d + incoming_salary_d)
-
-    if payroll_after_d >= second_apron_d:
-        status = "SECOND_APRON"
-    elif payroll_after_d >= first_apron_d:
-        status = "FIRST_APRON"
-    else:
-        status = "BELOW_FIRST_APRON"
-
-    # cap-room exception (SSOT와 동일한 위치/순서)
-    if payroll_before_d < salary_cap_d:
-        cap_room_d = salary_cap_d - payroll_before_d
-        max_incoming_d = cap_room_d + outgoing_salary_d
-        if incoming_salary_d <= max_incoming_d:
-            return SalaryMatchSimResult(
-                ok=True,
-                status=status,
-                method="cap_room",
-                allowed_in_d=max_incoming_d,
-                payroll_after_d=payroll_after_d,
-                max_incoming_cap_room_d=max_incoming_d,
-                reason="cap_room_ok",
-            )
-
-    if outgoing_salary_d <= 0:
-        return SalaryMatchSimResult(
-            ok=False,
-            status=status,
-            method="outgoing_required",
-            allowed_in_d=0,
-            payroll_after_d=payroll_after_d,
-            reason="outgoing_required",
-        )
-
-    # NOTE: SECOND_APRON one-for-one 제약은 여기서는 다루지 않는다.
-    # (generator가 SECOND_APRON에 대해 별도 repair 루트를 가지며, 이 helper는 'allowed_in' 계산 목적)
-
-    if status == "SECOND_APRON":
-        allowed_in_d = int(math.floor(outgoing_salary_d * second_apron_mult + eps))
-        method = "outgoing_second_apron"
-    elif status == "FIRST_APRON":
-        allowed_in_d = int(math.floor(outgoing_salary_d * first_apron_mult + eps))
-        method = "outgoing_first_apron"
-    else:
-        if outgoing_salary_d <= match_small_out_max_d:
-            allowed_in_d = int(2 * outgoing_salary_d + match_buffer_d)
-        elif outgoing_salary_d <= match_mid_out_max_d:
-            allowed_in_d = int(outgoing_salary_d + match_mid_add_d)
-        else:
-            allowed_in_d = int((outgoing_salary_d * 5) // 4 + match_buffer_d)
-        method = "outgoing_below_first_apron"
-
-    if incoming_salary_d > allowed_in_d:
-        return SalaryMatchSimResult(
-            ok=False,
-            status=status,
-            method=method,
-            allowed_in_d=allowed_in_d,
-            payroll_after_d=payroll_after_d,
-            reason="incoming_gt_allowed_in",
-        )
-
-    return SalaryMatchSimResult(
-        ok=True,
-        status=status,
-        method=method,
-        allowed_in_d=allowed_in_d,
-        payroll_after_d=payroll_after_d,
-        reason="ok",
-    )
 
 
 def _repair_salary_matching(
@@ -381,6 +261,7 @@ def _repair_salary_matching(
 
     # max_players_per_side guard는 이미 위에서 통과했으므로, 여기서는 후보 스캔/선정만 한다.
     already = {a.player_id for a in cand.deal.legs.get(failing_team, []) if isinstance(a, PlayerAsset)}
+    outgoing_players0 = len(already)
     # aggregation_solo_only는 "묶음(2+ outgoing) 금지"이므로,
     # 현재 outgoing이 0명(=단독 트레이드)인 경우에만 허용한다.
     allow_solo_only = (len(already) == 0)
@@ -391,6 +272,22 @@ def _repair_salary_matching(
     passing: List[Tuple[int, float, str]] = []  # (salary_d, market_total, player_id)
 
     trade_rules = catalog.trade_rules or {}
+
+    params = SalaryMatchingParams.from_trade_rules(trade_rules)
+    team_u = str(failing_team).upper()
+    incoming_players0 = 0
+    for sender_team, assets in (cand.deal.legs or {}).items():
+        if str(sender_team).upper() == team_u:
+            continue
+        for a in assets or []:
+            if not isinstance(a, PlayerAsset):
+                continue
+            try:
+                recv = str(resolve_asset_receiver(cand.deal, sender_team, a)).upper()
+            except Exception:
+                continue
+            if recv == team_u:
+                incoming_players0 += 1
 
     for b in buckets:
         for pid in out_catalog.player_ids_by_bucket.get(b, tuple()):
@@ -414,11 +311,13 @@ def _repair_salary_matching(
             if filler_salary_d <= 0:
                 continue
 
-            sim = _simulate_salary_matching(
+            sim = check_salary_matching(
                 payroll_before_d=payroll_before_d,
                 outgoing_salary_d=outgoing_salary_d0 + filler_salary_d,
                 incoming_salary_d=incoming_salary_d0,
-                trade_rules=trade_rules,
+                outgoing_players=outgoing_players0 + 1,
+                incoming_players=incoming_players0,
+                params=params,
             )
             if not sim.ok:
                 continue
