@@ -194,6 +194,12 @@ class TeamUtilityAdjuster:
         단일 진입점.
         - ctx는 knobs/need_map의 공급자.
         - snap은 fit/risk/finance 신호 제공자(공급 측).
+
+        NOTE
+        ----
+        Player 자산은 MarketValuation에서 "농구가치(basketball)"와 "계약가치(contract)"를 분리해 전달한다.
+        팀 성향/리스크/재정/핏은 농구가치에만 적용하고,
+        계약가치는 (가중치 적용 후) 그대로 더한다.
         """
         key = (str(ctx.team_id), str(market.asset_key))
         cached = self._cache.get(key)
@@ -204,6 +210,67 @@ class TeamUtilityAdjuster:
         ref_id = snapshot_ref_id(snap)
 
         team_steps: List[ValuationStep] = []
+
+        # -----------------------------------------------------------------
+        # Player path: apply team multipliers to basketball value only.
+        # -----------------------------------------------------------------
+        if kind == AssetKind.PLAYER and isinstance(snap, PlayerSnapshot):
+            bball, contract, market_star_total = self._extract_market_breakdown(market)
+
+            # 1) Apply now/future weights (DecisionContext.knobs) once, to both components.
+            w_now, w_fut = self._compute_now_future_weights(ctx)
+            team_steps.append(
+                ValuationStep(
+                    stage=ValuationStage.TEAM,
+                    mode=StepMode.MUL,
+                    code="WEIGHT_NOW_FUTURE",
+                    label="팀 윈도우 기반 now/future 가중",
+                    factor=None,
+                    meta={"w_now": w_now, "w_future": w_fut},
+                )
+            )
+            bball = _scale_components(bball, now_factor=w_now, future_factor=w_fut)
+            contract = _scale_components(contract, now_factor=w_now, future_factor=w_fut)
+
+            # 2) Team preference multipliers (basketball only)
+            bball = self._apply_youth_preference(bball, snap, ctx, team_steps)
+            bball = self._apply_star_preference(bball, market_total=market_star_total, ctx=ctx, steps=team_steps)
+
+            # 3) Fit / needs matching (players only; need_map is consumed, never created)
+            fit: Optional[FitAssessment] = None
+            bball, fit = self._apply_fit(bball, snap, ctx, team_steps)
+
+            # 4) Risk discount (basketball only)
+            bball = self._apply_risk_discount(bball, snap, ctx, team_steps)
+
+            # 5) Finance penalty (basketball only)
+            bball = self._apply_finance_penalty(bball, snap, ctx, team_steps)
+
+            value = _add_components(bball, contract)
+
+            out = TeamValuation(
+                asset_key=market.asset_key,
+                kind=kind,
+                ref_id=str(ref_id),
+                market_value=market.value,
+                team_value=value,
+                market_steps=market.steps,
+                team_steps=tuple(team_steps),
+                fit=fit,
+                meta={
+                    "team_id": ctx.team_id,
+                    "team_value_breakdown": {
+                        "basketball": {"now": bball.now, "future": bball.future, "total": bball.total},
+                        "contract": {"now": contract.now, "future": contract.future, "total": contract.total},
+                    },
+                },
+            )
+            self._cache[key] = out
+            return out
+
+        # -----------------------------------------------------------------
+        # Non-player path: keep existing behavior.
+        # -----------------------------------------------------------------
         value = market.value
 
         # 1) Apply now/future weights (DecisionContext.knobs)
@@ -213,28 +280,6 @@ class TeamUtilityAdjuster:
         if kind in (AssetKind.PICK, AssetKind.SWAP):
             value = self._apply_pick_preference(value, ctx, team_steps)
 
-        if kind == AssetKind.PLAYER:
-            value = self._apply_youth_preference(value, snap, ctx, team_steps)
-            value = self._apply_star_preference(value, market, ctx, team_steps)
-
-        # 3) Fit / needs matching (players only; need_map is consumed, never created)
-        fit: Optional[FitAssessment] = None
-        if kind == AssetKind.PLAYER:
-            value, fit = self._apply_fit(value, snap, ctx, team_steps)
-
-        # NOTE:
-        # fit은 "측정 가능한 태그"에 대해서만 적용한다.
-        # DecisionContext.need_map에 포함된 depth/upgrade/cap-flex 등의 니즈는
-        # fit 스코어를 0점으로 끌어내리는 방식으로 반영하지 않는다(과벌점 방지).
-
-        # 4) Risk discount (players primarily; team preference)
-        if kind == AssetKind.PLAYER:
-            value = self._apply_risk_discount(value, snap, ctx, team_steps)
-
-        # 5) Finance penalty (players primarily; team preference)
-        if kind == AssetKind.PLAYER:
-            value = self._apply_finance_penalty(value, snap, ctx, team_steps)
-
         out = TeamValuation(
             asset_key=market.asset_key,
             kind=kind,
@@ -243,12 +288,47 @@ class TeamUtilityAdjuster:
             team_value=value,
             market_steps=market.steps,
             team_steps=tuple(team_steps),
-            fit=fit,
+            fit=None,
             meta={"team_id": ctx.team_id},
         )
         self._cache[key] = out
         return out
 
+    # -------------------------------------------------------------------------
+    # Internal helpers
+    # -------------------------------------------------------------------------
+    def _compute_now_future_weights(self, ctx: DecisionContext) -> Tuple[float, float]:
+        cfg = self.config
+        w_now = _clamp(_safe_float(ctx.knobs.w_now, 1.0), cfg.weight_now_floor, cfg.weight_now_cap)
+        w_fut = _clamp(_safe_float(ctx.knobs.w_future, 1.0), cfg.weight_future_floor, cfg.weight_future_cap)
+        return float(w_now), float(w_fut)
+
+    def _extract_market_breakdown(self, market: MarketValuation) -> Tuple[ValueComponents, ValueComponents, float]:
+        """
+        Extract (basketball_value, contract_value, market_star_total) from MarketValuation.meta.
+        - basketball_value: value affected by team preferences
+        - contract_value: added after weights, not affected by team multipliers
+        - market_star_total: star preference reference (basketball total)
+
+        Backward compatible: if breakdown is missing, treats entire market value as basketball.
+        """
+        if isinstance(market.meta, dict):
+            bd = market.meta.get("value_breakdown")
+            if isinstance(bd, dict):
+                bb = bd.get("basketball") or {}
+                cc = bd.get("contract") or {}
+                bball = _vc(
+                    now=_safe_float(bb.get("now"), market.value.now),
+                    future=_safe_float(bb.get("future"), market.value.future),
+                )
+                contract = _vc(
+                    now=_safe_float(cc.get("now"), 0.0),
+                    future=_safe_float(cc.get("future"), 0.0),
+                )
+                market_star_total = _safe_float(bb.get("total"), bball.total)
+                return bball, contract, market_star_total
+        return market.value, ValueComponents.zero(), market.value.total
+    
     # -------------------------------------------------------------------------
     # 1) Weights: now vs future
     # -------------------------------------------------------------------------
@@ -336,20 +416,26 @@ class TeamUtilityAdjuster:
     def _apply_star_preference(
         self,
         v: ValueComponents,
-        market: MarketValuation,
+        *,
+        market_total: float,
         ctx: DecisionContext,
         steps: List[ValuationStep],
     ) -> ValueComponents:
         """
         시장가를 다시 만들지 않고,
         팀이 "상위 자산을 더 비싸게/덜 비싸게" 치는 성향을 factor로 환산해 적용한다.
+
+        NOTE
+        ----
+        Player의 경우 market_total은 "basketball" 부분의 total을 사용한다.
+        (bad contract 음수 가치가 스타 판단을 망치지 않도록)
         """
         cfg = self.config
         exp = _safe_float(ctx.knobs.star_premium_exponent, 1.0)
         exp = _clamp(exp, 0.75, 1.60)
 
         ref = max(cfg.star_reference_total, cfg.fit.eps)
-        x = max(market.value.total, cfg.fit.eps) / ref
+        x = max(float(market_total), cfg.fit.eps) / ref
 
         # exp=1 -> 1.0
         # exp>1 -> big assets get factor up
@@ -364,7 +450,7 @@ class TeamUtilityAdjuster:
                 code="STAR_PREMIUM_FACTOR",
                 label="상위 자산(스타) 선호 배율",
                 factor=factor,
-                meta={"star_premium_exponent": exp, "market_total": market.value.total, "reference_total": ref},
+                meta={"star_premium_exponent": exp, "market_total": float(market_total), "reference_total": ref},
             )
         )
         return v.scale(factor)
