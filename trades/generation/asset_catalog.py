@@ -47,6 +47,7 @@ from ..rules.policies.stepien_policy import check_stepien_violation
 
 from ..valuation.fit_engine import FitEngine, FitEngineConfig
 from ..valuation.market_pricing import MarketPricer, MarketPricingConfig
+from ..valuation.env import ValuationEnv
 from ..valuation.data_context import contract_snapshot_from_dict
 from ..valuation.types import (
     PlayerSnapshot,
@@ -385,9 +386,11 @@ def _lock_info_for_asset_key(
 def _market_summary_for_player(
     pricer: MarketPricer,
     snap: PlayerSnapshot,
+    *,
+    env: Optional[ValuationEnv] = None,
 ) -> MarketValueSummary:
     a = PlayerAsset(kind="player", player_id=snap.player_id, to_team=None)
-    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a))
+    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), env=env)
     return MarketValueSummary.from_components(mv.value)
 
 
@@ -395,10 +398,11 @@ def _market_summary_for_pick(
     pricer: MarketPricer,
     snap: PickSnapshot,
     *,
+    env: Optional[ValuationEnv] = None,
     pick_expectation: Optional[Any],
 ) -> MarketValueSummary:
     a = PickAsset(kind="pick", pick_id=snap.pick_id, to_team=None, protection=snap.protection)
-    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), pick_expectation=pick_expectation)
+    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), env=env, pick_expectation=pick_expectation)
     return MarketValueSummary.from_components(mv.value)
 
 
@@ -548,7 +552,17 @@ def build_trade_asset_catalog(
         raise RuntimeError("build_trade_asset_catalog: tick_ctx.repo missing")
 
     # --- Pricing + fit engines (pure + cached)
+    # SSOT: build valuation runtime env once per tick so catalog pricing matches deal evaluation.
+    env = ValuationEnv.from_trade_rules(trade_rules, current_season_year=int(season_year))
+
+    # Cap-normalized market config: keep salary_cap populated for legacy code paths.
     salary_cap = _safe_float(trade_rules.get("salary_cap"), 0.0) or 0.0
+    if salary_cap <= 0.0:
+        try:
+            salary_cap = float(env.salary_cap())
+        except Exception:
+            salary_cap = 0.0
+          
     pricer = MarketPricer(
         config=MarketPricingConfig(salary_cap=float(salary_cap)) if salary_cap > 0.0 else MarketPricingConfig()
     )
@@ -678,7 +692,7 @@ def build_trade_asset_catalog(
                 meta={},
             )
 
-            market = _market_summary_for_player(pricer, snap)
+            market = _market_summary_for_player(pricer, snap, env=env)
             supply = fit_engine.compute_player_supply_vector(snap)
             fit_score, _, _ = fit_engine.score_fit(dc.need_map or {}, supply)
             top_tags = _compute_top_tags(supply)
@@ -906,7 +920,12 @@ def build_trade_asset_catalog(
             if not within_max:
                 continue
 
-            market = _market_summary_for_pick(pricer, snap_pick, pick_expectation=getattr(provider, "pick_expectations", {}).get(pid))
+            market = _market_summary_for_pick(
+                pricer,
+                snap_pick,
+                env=env,
+                pick_expectation=getattr(provider, "pick_expectations", {}).get(pid),
+            )
 
             if int(snap_pick.round) != 1:
                 cand = PickTradeCandidate(
