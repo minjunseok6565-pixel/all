@@ -29,8 +29,8 @@ class PickRulesRule:
         try:
             current_draft_year = int(league.get("draft_year") or 0)
         except (TypeError, ValueError):
-            current_season_year = 0
-        if current_season_year <= 0:
+            current_draft_year = 0
+        if current_draft_year <= 0:
             raise TradeError(
                 DEAL_INVALIDATED,
                 "Missing league draft_year",
@@ -72,7 +72,7 @@ class PickRulesRule:
                             "pick_id": asset.pick_id,
                             "reason": "pick_too_far",
                             "year": pick_year,
-                            "current_season_year": current_season_year,
+                            "current_draft_year": current_draft_year,
                             "max_pick_years_ahead": max_pick_years_ahead,
                         },
                     )
