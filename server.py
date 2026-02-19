@@ -3139,7 +3139,7 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                 counter_prop = None
 
             if counter_prop is not None and getattr(counter_prop, "deal", None) is not None:
-                # Replace the placeholder counter in decision_policy with the real one.
+                # Attach the generated counter proposal to the decision (SSOT).
                 decision = DealDecision(
                     verdict=decision.verdict,
                     required_surplus=float(decision.required_surplus),
@@ -3189,12 +3189,7 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                 except Exception:
                     pass
 
-                # Response: include counter payload for UI convenience.
-                counter_payload = None
-                if isinstance(counter_prop.meta, dict):
-                    counter_payload = counter_prop.meta.get("deal_serialized")
-                if not isinstance(counter_payload, dict):
-                    counter_payload = serialize_deal(counter_prop.deal)
+                # Response: counter details are embedded in ai_decision.counter (SSOT).
 
                 return {
                     "ok": True,
@@ -3204,10 +3199,6 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                     "ai_verdict": to_jsonable(decision.verdict),
                     "ai_decision": to_jsonable(decision),
                     "ai_evaluation": eval_summary,
-                    "counter": counter_payload,
-                    "counter_hash": counter_prop.meta.get("counter_hash") if isinstance(counter_prop.meta, dict) else None,
-                    "counter_message": counter_prop.meta.get("message") if isinstance(counter_prop.meta, dict) else None,
-                    "counter_diff": counter_prop.meta.get("diff") if isinstance(counter_prop.meta, dict) else None,
                 }
 
             # If we couldn't build a legal/acceptable counter, fall back conservatively to REJECT.
