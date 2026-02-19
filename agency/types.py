@@ -136,6 +136,14 @@ class MonthlyPlayerInputs:
     # Injury availability (optional; v1 strings align with injury subsystem)
     injury_status: Optional[str] = None  # HEALTHY/OUT/RETURNING
 
+    # Injury availability multiplier for frustration accumulation.
+    #
+    # If provided by the service layer, tick.py will prefer this over the coarse
+    # injury_status string. This enables month-based injury attribution (e.g., a
+    # player was OUT earlier in the processed month but is HEALTHY today) while
+    # keeping tick logic DB-free.
+    injury_multiplier: Optional[float] = None
+
     # Player profile
     ovr: Optional[int] = None
     age: Optional[int] = None
