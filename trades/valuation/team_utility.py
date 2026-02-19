@@ -7,6 +7,8 @@ from decision_context import DecisionContext
 
 from .fit_engine import FitEngine, FitEngineConfig
 
+from .env import ValuationEnv
+
 from .types import (
     AssetKind,
     AssetSnapshot,
@@ -174,8 +176,9 @@ class TeamUtilityAdjuster:
 
     _fit_engine: FitEngine = field(init=False, repr=False)
 
-    # team-specific cache: (team_id, asset_key) -> TeamValuation
-    _cache: Dict[Tuple[str, str], TeamValuation] = field(default_factory=dict, init=False)
+    # team-specific cache: (team_id, asset_key, season_year_ctx) -> TeamValuation
+    # NOTE: team utility can depend on season-year via cap-scaled finance thresholds.
+    _cache: Dict[Tuple[str, str, int], TeamValuation] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         # Single Source of Truth for fit evaluation.
@@ -189,6 +192,7 @@ class TeamUtilityAdjuster:
         market: MarketValuation,
         snap: AssetSnapshot,
         ctx: DecisionContext,
+        env: Optional[ValuationEnv] = None,
     ) -> TeamValuation:
         """
         단일 진입점.
@@ -201,7 +205,8 @@ class TeamUtilityAdjuster:
         팀 성향/리스크/재정/핏은 농구가치에만 적용하고,
         계약가치는 (가중치 적용 후) 그대로 더한다.
         """
-        key = (str(ctx.team_id), str(market.asset_key))
+        env_key = int(getattr(env, "current_season_year", 0) or 0)
+        key = (str(ctx.team_id), str(market.asset_key), env_key)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
@@ -244,7 +249,7 @@ class TeamUtilityAdjuster:
             bball = self._apply_risk_discount(bball, snap, ctx, team_steps)
 
             # 5) Finance penalty (basketball only)
-            bball = self._apply_finance_penalty(bball, snap, ctx, team_steps)
+            bball = self._apply_finance_penalty(bball, snap, ctx, team_steps, env=env)
 
             value = _add_components(bball, contract)
 
@@ -527,6 +532,8 @@ class TeamUtilityAdjuster:
         snap: PlayerSnapshot,
         ctx: DecisionContext,
         steps: List[ValuationStep],
+        *,
+        env: Optional[ValuationEnv] = None,
     ) -> ValueComponents:
         cfg = self.config
         scale = _safe_float(ctx.knobs.finance_penalty_scale, 0.0)
@@ -547,7 +554,19 @@ class TeamUtilityAdjuster:
         lo_pct = None
         hi_pct = None
 
-        cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
+        cap = 0.0
+        cap_source = "none"
+        if env is not None:
+            try:
+                cap = float(env.salary_cap())
+                cap_source = "env"
+            except Exception:
+                cap = 0.0
+                cap_source = "env_error"
+        if cap <= cfg.fit.eps:
+            cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
+            if cap > cfg.fit.eps:
+                cap_source = "config"
         if cap > cfg.fit.eps:
             lo_pct = _safe_float(getattr(cfg, "finance_salary_lo_cap_pct", None), 0.0)
             hi_pct = _safe_float(getattr(cfg, "finance_salary_hi_cap_pct", None), 0.0)
@@ -581,6 +600,8 @@ class TeamUtilityAdjuster:
                     "finance_penalty_scale": scale,
                     "salary": salary,
                     "salary_cap": (cap if cap > cfg.fit.eps else None),
+                    "salary_cap_source": cap_source,
+                    "env_current_season_year": (int(getattr(env, "current_season_year", 0) or 0) if env is not None else None),
                     "salary_cap_pct": salary_cap_pct,
                     "salary_lo": salary_lo,
                     "salary_hi": salary_hi,
