@@ -22,12 +22,12 @@ import hashlib
 import sqlite3
 from typing import Any, Callable, Dict, Literal, Mapping, Optional, Tuple
 
-from config import (
-    CAP_ANNUAL_GROWTH_RATE,
-    CAP_BASE_SALARY_CAP,
-    CAP_BASE_SEASON_YEAR,
-    CAP_ROUND_UNIT,
-)
+# SSOT: season-based salary cap numbers (no duplicated cap math in this module)
+try:
+    from cap_model import CapModel
+except Exception:  # pragma: no cover
+    CapModel = None  # type: ignore
+    
 from schema import normalize_player_id
 
 Decision = Literal["EXERCISE", "DECLINE"]
@@ -274,25 +274,40 @@ def _coerce_int(value: object, default: int = 0) -> int:
 
 
 def _cap_for_season_year_from_state(game_state: dict, season_year: int) -> int:
-    """Compute salary cap for a given season_year using state trade_rules if present."""
+    """Return salary cap for `season_year` using the SSOT CapModel + state trade_rules.
+
+    IMPORTANT (SSOT)
+    ---------------
+    This function intentionally avoids duplicating cap math (growth/rounding)
+    and defers to `cap_model.CapModel`.
+    """
     y = int(season_year)
     league = game_state.get("league") if isinstance(game_state, dict) else None
     trade_rules = league.get("trade_rules") if isinstance(league, dict) else None
     if not isinstance(trade_rules, dict):
         trade_rules = {}
 
-    base_year = _coerce_int(trade_rules.get("cap_base_season_year"), int(CAP_BASE_SEASON_YEAR))
-    base_cap = _coerce_float(trade_rules.get("cap_base_salary_cap"), float(CAP_BASE_SALARY_CAP))
-    growth = _coerce_float(trade_rules.get("cap_annual_growth_rate"), float(CAP_ANNUAL_GROWTH_RATE))
-    round_unit = _coerce_int(trade_rules.get("cap_round_unit"), int(CAP_ROUND_UNIT) or 1)
-    if round_unit <= 0:
-        round_unit = int(CAP_ROUND_UNIT) or 1
+    # Best-effort "current season" extraction for frozen-cap semantics.
+    cur_sy: Optional[int] = None
+    if isinstance(league, dict):
+        cur_sy_raw = league.get("season_year") or league.get("current_season_year") or league.get("year")
+        cur_sy_i = _coerce_int(cur_sy_raw, 0)
+        if cur_sy_i > 0:
+            cur_sy = int(cur_sy_i)
 
-    years_passed = y - int(base_year)
-    mult = (1.0 + float(growth)) ** years_passed
-    raw = float(base_cap) * float(mult)
-    return int(round(raw / float(round_unit)) * int(round_unit))
+    # If CapModel isn't available for some reason, fall back to state-provided cap only.
+    # (No formula duplication here.)
+    if CapModel is None:
+        cap_now = _coerce_int(trade_rules.get("salary_cap"), 0)
+        return int(cap_now) if cap_now > 0 else 0
 
+    try:
+        cap_model = CapModel.from_trade_rules(trade_rules, current_season_year=cur_sy)
+        return int(cap_model.salary_cap_for_season(int(y)))
+    except Exception:
+        # Last-resort fallback: use state cap if present.
+        cap_now = _coerce_int(trade_rules.get("salary_cap"), 0)
+        return int(cap_now) if cap_now > 0 else 0
 
 def make_ai_team_option_decision_policy(
     *,
