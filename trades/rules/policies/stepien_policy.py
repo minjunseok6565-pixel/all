@@ -124,7 +124,7 @@ def check_stepien_violation(
 
     max_first_round_year_in_data = compute_max_first_round_year_in_data(draft_picks)
 
-    start = base_year + 1
+    start = base_year
     end = base_year + la
     # Clamp end so that (year+1) is still within available pick data.
     # If max_first_round_year_in_data is 0, we can't clamp safely (no data), so keep original end.
@@ -175,7 +175,7 @@ def check_stepien_violation_with_evidence(
     except (TypeError, ValueError):
         base_year = 0
         la = 0
-    start = base_year + 1 if base_year > 0 else 0
+    start = base_year if base_year > 0 else 0
     end = base_year + la if base_year > 0 else 0
     if max_first_round_year_in_data > 0:
         end = min(end, max_first_round_year_in_data - 1)
