@@ -251,11 +251,11 @@ class MarketPricer:
         cache_key = (str(ref_id), int(env_key))
 
         if kind == AssetKind.PLAYER:
-            cached = self._cache_pick.get(cache_key)
+            cached = self._cache_player.get(cache_key)
             if cached is not None:
                 return cached
-            out = self._price_pick(snap, asset_key=asset_key, expectation=pick_expectation, env=env)
-            self._cache_pick[cache_key] = out
+            out = self._price_player(snap, asset_key=asset_key, env=env)
+            self._cache_player[cache_key] = out
             return out
 
         if kind == AssetKind.PICK:
