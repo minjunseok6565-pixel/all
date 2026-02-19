@@ -325,19 +325,33 @@ class CounterOfferBuilder:
         # Tick context (cache reuse)
         if tick_ctx is None:
             # Build lightweight tick ctx; we can opt out of repo.validate_integrity for hot paths.
-            tick_ctx = build_trade_generation_tick_context(
+            with build_trade_generation_tick_context(
                 current_date=current_date,
                 db_path=db_path,
-                team_ids={user, other},
+                team_ids=(user, other),
                 validate_integrity=not bool(skip_repo_integrity_check),
-            )
-            # If we skipped validation, mark as validated to prevent validate_deal() from
-            # invoking repo.validate_integrity() implicitly.
-            if bool(skip_repo_integrity_check):
-                try:
-                    tick_ctx.rule_tick_ctx.integrity_validated = True
-                except Exception:
-                    pass
+            ) as tc:
+                # If we skipped validation, mark as validated to prevent validate_deal() from
+                # invoking repo.validate_integrity() implicitly.
+                if bool(skip_repo_integrity_check):
+                    try:
+                        tc.rule_tick_ctx.integrity_validated = True
+                    except Exception:
+                        pass
+
+                # Re-enter with an injected tick_ctx so we reuse caches while guaranteeing
+                # the underlying repo is closed when this build() finishes.
+                return self.build(
+                    offer=offer,
+                    user_team_id=user,
+                    other_team_id=other,
+                    current_date=current_date,
+                    db_path=db_path,
+                    session=session,
+                    allow_locked_by_deal_id=allow_locked_by_deal_id,
+                    tick_ctx=tc,
+                    skip_repo_integrity_check=skip_repo_integrity_check,
+                )
 
         # Validate base deal legality (SSOT)
         try:
