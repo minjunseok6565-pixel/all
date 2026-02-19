@@ -17,6 +17,7 @@ NOTE:
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import sqlite3
 from typing import Any, Callable, Dict, Literal, Mapping, Optional, Tuple
@@ -210,6 +211,15 @@ def default_option_decision_policy(
         from agency.options import decide_player_option
         from agency.types import PlayerOptionInputs
 
+        # Cap-normalized option curve: anchor market AAV to the cap for that season.
+        opt_cfg = DEFAULT_CONFIG.options
+        try:
+            cap_y = float(_cap_for_season_year_from_state(game_state, int(season_year)))
+            if cap_y > 0.0:
+                opt_cfg = replace(opt_cfg, salary_cap=float(cap_y))
+        except Exception:
+            opt_cfg = DEFAULT_CONFIG.options
+        
         res = decide_player_option(
             PlayerOptionInputs(
                 player_id=str(player_id),
@@ -221,7 +231,7 @@ def default_option_decision_policy(
                 injury_risk=0.0,
                 mental=mental or {},
             ),
-            cfg=DEFAULT_CONFIG.options,
+            cfg=opt_cfg,
             seed_salt=str(season_year),
         )
         return res.decision
