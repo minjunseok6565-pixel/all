@@ -5,31 +5,10 @@ from typing import Any, Dict, Mapping, Optional, Tuple, Iterable, List
 
 import math
 
-# Salary cap model (pure). Used for cap%%-based fair salary estimation.
-# Keep import flexible to survive refactors / package layouts.
-try:  # main project layout
-    from config import (
-        CAP_BASE_SEASON_YEAR,
-        CAP_BASE_SALARY_CAP,
-        CAP_ANNUAL_GROWTH_RATE,
-        CAP_ROUND_UNIT,
-    )
-except Exception:  # pragma: no cover
-    CAP_BASE_SEASON_YEAR = 2025
-    CAP_BASE_SALARY_CAP = 154_647_000
-    CAP_ANNUAL_GROWTH_RATE = 0.10
-    CAP_ROUND_UNIT = 1000
+# SSOT helpers
+from contracts.terms import player_contract_terms
 
-
-def _round_to_unit(v: float, unit: int) -> float:
-    u = max(int(unit), 1)
-    return float(int(round(float(v) / u) * u))
-
-
-def _salary_cap_for_season(season_year: int) -> float:
-    years_passed = int(season_year) - int(CAP_BASE_SEASON_YEAR)
-    mult = (1.0 + float(CAP_ANNUAL_GROWTH_RATE)) ** years_passed
-    return _round_to_unit(float(CAP_BASE_SALARY_CAP) * mult, int(CAP_ROUND_UNIT))
+from .env import ValuationEnv
 
 from .types import (
     AssetKind,
@@ -236,10 +215,10 @@ class MarketPricer:
     """
     config: MarketPricingConfig = field(default_factory=MarketPricingConfig)
 
-    _cache_player: Dict[str, MarketValuation] = field(default_factory=dict, init=False)
-    _cache_pick: Dict[str, MarketValuation] = field(default_factory=dict, init=False)
-    _cache_swap: Dict[str, MarketValuation] = field(default_factory=dict, init=False)
-    _cache_fixed: Dict[str, MarketValuation] = field(default_factory=dict, init=False)
+    _cache_player: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
+    _cache_pick: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
+    _cache_swap: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
+    _cache_fixed: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -249,6 +228,7 @@ class MarketPricer:
         snap: AssetSnapshot,
         *,
         asset_key: str,
+        env: Optional[ValuationEnv] = None,
         pick_expectation: Optional[PickExpectation] = None,
         resolved_pick_a: Optional[PickSnapshot] = None,
         resolved_pick_b: Optional[PickSnapshot] = None,
@@ -265,24 +245,29 @@ class MarketPricer:
         kind = snapshot_kind(snap)
         ref_id = snapshot_ref_id(snap)
 
+        # Cache key includes runtime season-year context.
+        # - When env is missing, fall back to 0 (neutral/no-season).
+        env_key = int(getattr(env, "current_season_year", 0) or 0)
+        cache_key = (str(ref_id), int(env_key))
+
         if kind == AssetKind.PLAYER:
-            cached = self._cache_player.get(ref_id)
+            cached = self._cache_pick.get(cache_key)
             if cached is not None:
                 return cached
-            out = self._price_player(snap, asset_key=asset_key)
-            self._cache_player[ref_id] = out
+            out = self._price_pick(snap, asset_key=asset_key, expectation=pick_expectation, env=env)
+            self._cache_pick[cache_key] = out
             return out
 
         if kind == AssetKind.PICK:
-            cached = self._cache_pick.get(ref_id)
+            cached = self._cache_pick.get(cache_key)
             if cached is not None:
                 return cached
-            out = self._price_pick(snap, asset_key=asset_key, expectation=pick_expectation)
-            self._cache_pick[ref_id] = out
+            out = self._price_pick(snap, asset_key=asset_key, expectation=pick_expectation, env=env)
+            self._cache_pick[cache_key] = out
             return out
 
         if kind == AssetKind.SWAP:
-            cached = self._cache_swap.get(ref_id)
+            cached = self._cache_swap.get(cache_key)
             if cached is not None:
                 return cached
             out = self._price_swap(
@@ -292,21 +277,28 @@ class MarketPricer:
                 pick_b=resolved_pick_b,
                 pick_a_expectation=resolved_pick_a_expectation,
                 pick_b_expectation=resolved_pick_b_expectation,
+                env=env,
             )
-            self._cache_swap[ref_id] = out
+            self._cache_swap[cache_key] = out
             return out
 
-        cached = self._cache_fixed.get(ref_id)
+        cached = self._cache_fixed.get(cache_key)
         if cached is not None:
             return cached
         out = self._price_fixed(snap, asset_key=asset_key)
-        self._cache_fixed[ref_id] = out
+        self._cache_fixed[cache_key] = out
         return out
 
     # -------------------------------------------------------------------------
     # Player pricing
     # -------------------------------------------------------------------------
-    def _price_player(self, snap: PlayerSnapshot, *, asset_key: str) -> MarketValuation:
+    def _price_player(
+        self,
+        snap: PlayerSnapshot,
+        *,
+        asset_key: str,
+        env: Optional[ValuationEnv],
+    ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
 
@@ -393,7 +385,7 @@ class MarketPricer:
         # Contract value (fair salary - actual salary), ADDED as a separate component.
         # This allows bad contracts to become negative assets and fixes superstar max bias.
         # -----------------------------------------------------------------
-        contract_delta, contract_meta = self._contract_value_delta(snap)
+        contract_delta, contract_meta = self._contract_value_delta(snap, env=env)
         if abs(contract_delta.now) + abs(contract_delta.future) > cfg.eps:
             steps.append(
                 ValuationStep(
@@ -438,17 +430,6 @@ class MarketPricer:
     # -------------------------------------------------------------------------
     # Contract helpers (market-level, pure)
     # -------------------------------------------------------------------------
-    def _infer_current_season_year(self, snap: PlayerSnapshot) -> Optional[int]:
-        if isinstance(snap.meta, dict) and snap.meta.get("current_season_year") is not None:
-            y = _safe_int(snap.meta.get("current_season_year"), 0)
-            if y > 0:
-                return int(y)
-        if snap.contract is not None and isinstance(snap.contract.meta, dict):
-            y = _safe_int(snap.contract.meta.get("current_season_year"), 0)
-            if y > 0:
-                return int(y)
-        return None
-
     def _fair_salary_pct_from_ovr(self, ovr: float) -> float:
         cfg = self.config
         x = (ovr - cfg.fair_salary_ovr_center) / max(cfg.fair_salary_ovr_scale, cfg.eps)
@@ -500,17 +481,25 @@ class MarketPricer:
         f = abs_cap / max(m, self.config.eps)
         return ValueComponents(v.now * f, v.future * f)
 
-    def _contract_value_delta(self, snap: PlayerSnapshot) -> Tuple[ValueComponents, Dict[str, Any]]:
+    def _contract_value_delta(
+        self,
+        snap: PlayerSnapshot,
+        *,
+        env: Optional[ValuationEnv],
+    ) -> Tuple[ValueComponents, Dict[str, Any]]:
         cfg = self.config
         ovr = _safe_float(snap.ovr, 70.0)
 
-        cur = self._infer_current_season_year(snap)
-        if cur is None:
-            return ValueComponents.zero(), {"reason": "no_current_season_year"}
+        # SSOT: current season context comes from env, NOT snapshot.meta.
+        if env is None or int(getattr(env, "current_season_year", 0) or 0) <= 0:
+            return ValueComponents.zero(), {"reason": "no_env"}
 
-        sched = self._remaining_salary_schedule(snap, current_season_year=int(cur))
+        cur = int(env.current_season_year)
+
+        terms = player_contract_terms(snap, current_season_year=cur)
+        sched = list(terms.schedule)
         if not sched:
-            return ValueComponents.zero(), {"reason": "no_salary_schedule", "cur": int(cur)}
+            return ValueComponents.zero(), {"reason": "no_salary_schedule", "cur": int(cur), "terms_meta": terms.meta}
 
         fair_pct = self._fair_salary_pct_from_ovr(ovr)
 
@@ -519,7 +508,7 @@ class MarketPricer:
         rows: List[Dict[str, Any]] = []
 
         for (year, actual) in sched:
-            cap_y = _salary_cap_for_season(int(year))
+            cap_y = float(env.cap_model.salary_cap_for_season(int(year)))
             fair_y = cap_y * fair_pct
             surplus = float(fair_y) - float(actual)
             surplus_frac = surplus / max(cap_y, cfg.eps)  # cap fraction
@@ -557,6 +546,7 @@ class MarketPricer:
             "cur": int(cur),
             "ovr": ovr,
             "fair_salary_pct": fair_pct,
+            "terms_meta": terms.meta,
             "rows": rows,
             "delta": {"now": delta.now, "future": delta.future, "total": delta.total},
         }
@@ -667,7 +657,10 @@ class MarketPricer:
                 "span_pct": float(span_pct),
             }
 
-        return float(cfg.expected_salary_midpoint), float(cfg.expected_salary_span), {
+        # Backward-compat / defensive: expected_salary_midpoint was removed from the
+        # new contract-value design, but legacy helpers may still call this.
+        midpoint_abs = _safe_float(getattr(cfg, "expected_salary_midpoint", None), 18_000_000.0)
+        return float(midpoint_abs), float(cfg.expected_salary_span), {
             "source": "legacy_abs",
             "salary_cap": None,
         }
@@ -728,6 +721,7 @@ class MarketPricer:
         *,
         asset_key: str,
         expectation: Optional[PickExpectation],
+        env: Optional[ValuationEnv],
     ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
@@ -772,14 +766,17 @@ class MarketPricer:
 
         value = _vc(now=0.0, future=base + curve_bonus)
 
-        # 3) year discount (needs 'current season year' info to be perfect)
-        # market_pricing 자체는 season_year를 모르므로, 기대연도 할인은 meta 기준으로 처리:
-        # - expectation.meta["current_season_year"]가 있으면 사용
-        cur_sy = None
-        if expectation is not None and isinstance(expectation.meta, dict):
+        # 3) year discount
+        # SSOT: prefer env.current_season_year when available.
+        cur_sy_i: Optional[int] = None
+        if env is not None and int(getattr(env, "current_season_year", 0) or 0) > 0:
+            cur_sy_i = int(env.current_season_year)
+        elif expectation is not None and isinstance(expectation.meta, dict):
             cur_sy = expectation.meta.get("current_season_year")
-        if cur_sy is not None:
-            cur_sy_i = _safe_int(cur_sy, year)
+            if cur_sy is not None:
+                cur_sy_i = _safe_int(cur_sy, year)
+
+        if cur_sy_i is not None:
             years_ahead = max(year - cur_sy_i, 0)
             disc = (1.0 - cfg.pick_year_discount_rate) ** years_ahead
             disc = _clamp(disc, 0.35, 1.0)
@@ -922,6 +919,7 @@ class MarketPricer:
         pick_b: Optional[PickSnapshot],
         pick_a_expectation: Optional[PickExpectation],
         pick_b_expectation: Optional[PickExpectation],
+        env: Optional[ValuationEnv],
     ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
@@ -958,11 +956,13 @@ class MarketPricer:
             pick_a,
             asset_key=f"pick:{pick_a.pick_id}",
             expectation=pick_a_expectation,
+            env=env,
         )
         mv_b = self._price_pick(
             pick_b,
             asset_key=f"pick:{pick_b.pick_id}",
             expectation=pick_b_expectation,
+            env=env,
         )
 
         v_a = float(mv_a.value.future)
