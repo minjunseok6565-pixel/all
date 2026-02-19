@@ -17,6 +17,7 @@ from .errors import (
     DEAL_EXPIRED,
     DEAL_INVALIDATED,
     DEAL_ALREADY_EXECUTED,
+    PLAYER_NOT_OWNED,
 )
 from .models import (
     Asset,
@@ -52,17 +53,51 @@ def _compute_assets_hash(deal: Deal, db_path: Optional[str] = None) -> str:
             for asset in assets:
                 asset_key_value = asset_key(asset)
                 if isinstance(asset, PlayerAsset):
-                    pid = str(normalize_player_id(asset.player_id, strict=False, allow_legacy_numeric=True))
-                    from_team_id = str(normalize_team_id(team_id, strict=True))
+                    try:
+                        pid = str(normalize_player_id(asset.player_id, strict=False, allow_legacy_numeric=True))
+                    except Exception as exc:
+                        raise TradeError(
+                            DEAL_INVALIDATED,
+                            "Invalid player_id in deal",
+                            {"player_id": asset.player_id},
+                        ) from exc
+                    try:
+                        from_team_id = str(normalize_team_id(team_id, strict=True))
+                    except Exception as exc:
+                        raise TradeError(
+                            DEAL_INVALIDATED,
+                            "Invalid team_id in deal",
+                            {"team_id": team_id},
+                        ) from exc
                     try:
                         current_team_id = repo.get_team_id_by_player(pid)
                     except Exception as exc:
-                        raise ValueError(f"Player not found in roster: {asset.player_id}") from exc
+                        raise TradeError(
+                            PLAYER_NOT_OWNED,
+                            "Player not found in roster",
+                            {"player_id": asset.player_id, "team_id": team_id},
+                        ) from exc
                     if current_team_id != from_team_id:
-                        raise ValueError(
-                            f"Player {asset.player_id} not owned by {from_team_id} (current: {current_team_id})"
+                        raise TradeError(
+                            PLAYER_NOT_OWNED,
+                            "Player not owned by team",
+                            {
+                                "player_id": asset.player_id,
+                                "from_team_id": from_team_id,
+                                "current_team_id": current_team_id,
+                            },
                         )
-                    to_team_id = str(normalize_team_id(resolve_asset_receiver(deal, team_id, asset), strict=True))
+                    try:
+                        to_team_raw = resolve_asset_receiver(deal, team_id, asset)
+                        to_team_id = str(normalize_team_id(to_team_raw, strict=True))
+                    except TradeError:
+                        raise
+                    except Exception as exc:
+                        raise TradeError(
+                            DEAL_INVALIDATED,
+                            "Invalid receiver team in deal asset",
+                            {"team_id": team_id, "player_id": asset.player_id},
+                        ) from exc
                     salary_amount = repo.get_salary_amount(pid)
                     player_snapshots.append(
                         {
@@ -167,9 +202,50 @@ def verify_committed_deal(deal_id: str, current_date: Optional[date] = None) -> 
         raise TradeError(DEAL_EXPIRED, "Deal expired")
 
     deal_payload = entry.get("deal") or {}
-    deal = canonicalize_deal(parse_deal(deal_payload))
+    try:
+        deal = canonicalize_deal(parse_deal(deal_payload))
+    except TradeError as exc:
+        entry["status"] = "INVALIDATED"
+        trade_agreements_set(agreements)
+        release_locks_for_deal(deal_id)
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Committed deal payload invalid",
+            {"cause_code": exc.code, "cause": exc.message},
+        ) from exc
+    except Exception as exc:
+        entry["status"] = "INVALIDATED"
+        trade_agreements_set(agreements)
+        release_locks_for_deal(deal_id)
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Committed deal payload invalid",
+            {"exc_type": type(exc).__name__, "error": str(exc)},
+        ) from exc
 
-    if entry.get("assets_hash") != _compute_assets_hash(deal):
+    try:
+        current_hash = _compute_assets_hash(deal)
+    except TradeError as exc:
+        entry["status"] = "INVALIDATED"
+        trade_agreements_set(agreements)
+        release_locks_for_deal(deal_id)
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Deal assets verification failed",
+            {"cause_code": exc.code, "cause": exc.message},
+        ) from exc
+    except Exception as exc:
+        entry["status"] = "INVALIDATED"
+        trade_agreements_set(agreements)
+        release_locks_for_deal(deal_id)
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Deal assets verification failed",
+            {"exc_type": type(exc).__name__, "error": str(exc)},
+        ) from exc
+
+    if entry.get("assets_hash") != current_hash:
+
         entry["status"] = "INVALIDATED"
         trade_agreements_set(agreements)
         release_locks_for_deal(deal_id)
