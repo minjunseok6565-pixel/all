@@ -11,7 +11,7 @@ Key responsibilities:
 - Commit accepted deals into the DB via LeagueService
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import game_time
@@ -53,6 +53,52 @@ from .store import (
 )
 from .types import ContractOffer, NegotiationDecision, PlayerPosition
 from .utils import coerce_date_iso, date_add_days, safe_float, safe_int
+
+
+def _extract_salary_cap_from_state() -> Optional[float]:
+    """Best-effort SSOT salary cap extraction.
+
+    SSOT: state.get_league_context_snapshot().trade_rules.salary_cap
+
+    Returns None when unavailable.
+    """
+    try:
+        import state
+
+        ctx = state.get_league_context_snapshot() or {}
+        if not isinstance(ctx, Mapping):
+            return None
+        trade_rules = ctx.get("trade_rules") if isinstance(ctx, Mapping) else None
+        if not isinstance(trade_rules, Mapping):
+            trade_rules = {}
+        cap = trade_rules.get("salary_cap")
+        cap_f = float(safe_float(cap, 0.0))
+        return cap_f if cap_f > 0.0 else None
+    except Exception:
+        return None
+
+
+def _with_salary_cap(cfg: ContractNegotiationConfig) -> ContractNegotiationConfig:
+    """Return a cfg where salary_cap is populated (if possible).
+
+    - If cfg already has salary_cap (>0), it is preserved.
+    - Otherwise we read salary_cap from SSOT (state.trade_rules).
+    """
+    try:
+        existing = float(safe_float(getattr(cfg, "salary_cap", None), 0.0))
+        if existing > 0.0:
+            return cfg
+    except Exception:
+        pass
+
+    cap = _extract_salary_cap_from_state()
+    if cap is None:
+        return cfg
+
+    try:
+        return replace(cfg, salary_cap=float(cap))
+    except Exception:
+        return cfg
 
 
 def _now_iso() -> str:
@@ -324,15 +370,17 @@ def start_contract_negotiation(
             "win_pct": float(safe_float(team_win_pct, 0.5)),
         }
 
+        cfg_eff = _with_salary_cap(cfg)
+
         pos = build_player_position(
             player_snapshot,
             team_snapshot,
             agency_snapshot,
             mode=mode_u,
-            cfg=cfg,
+            cfg=cfg_eff,
         )
 
-        days = int(valid_days) if isinstance(valid_days, int) else int(cfg.session_valid_days_default)
+        days = int(valid_days) if isinstance(valid_days, int) else int(cfg_eff.session_valid_days_default)
         valid_until = date_add_days(now_date, days)
 
         session = create_session(
@@ -414,7 +462,8 @@ def submit_contract_offer(
         ) from exc
 
     # Evaluate
-    decision: NegotiationDecision = evaluate_offer(session, offer, cfg=cfg)
+    cfg_eff = _with_salary_cap(cfg)
+    decision: NegotiationDecision = evaluate_offer(session, offer, cfg=cfg_eff)
 
     # Persist session tracking
     set_last_offer(session_id, offer.to_payload())
