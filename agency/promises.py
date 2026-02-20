@@ -629,7 +629,7 @@ def _eval_role(
         "closes_rate": float(c),
         "min_starts_rate": float(clamp01(min_s)),
         "min_closes_rate": float(clamp01(min_c)),
-        "max_starts_rate": float(clamp01(max_sixth)),
+        "max_starts_rate": float(clamp01(max_s_sixth)),
     }
 
     if ok:
