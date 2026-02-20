@@ -166,6 +166,20 @@ class FrustrationConfig:
     # Team win% target (below this contributes to "badness")
     team_good_win_pct: float = 0.55
 
+    # Team direction mismatch (WIN_NOW vs REBUILD/etc)
+    #
+    # Added in v2 to make "direction" conflicts show up even when win% is not terrible.
+    team_strategy_weight: float = 0.45
+    team_strategy_age_weight: float = 0.20
+    team_strategy_values: Dict[str, float] = field(
+        default_factory=lambda: {
+            "WIN_NOW": 1.00,
+            "BALANCED": 0.65,
+            "DEVELOP": 0.45,
+            "REBUILD": 0.25,
+        }
+    )
+
 
 # ---------------------------------------------------------------------------
 # Event thresholds / cooldowns

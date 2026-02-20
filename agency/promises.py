@@ -22,7 +22,7 @@ Design principles
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
-from .utils import clamp, clamp01, mental_norm, norm_date_iso, norm_month_key, safe_float
+from .utils import clamp, clamp01, mental_norm, norm_date_iso, norm_month_key, safe_float, safe_float_opt
 
 
 PromiseType = Literal[
@@ -497,11 +497,11 @@ def _eval_load(
     cfg: PromiseConfig,
 ) -> PromiseEvaluationResult:
     # LOAD is evaluated primarily as a max MPG cap (lower is better).
-    cap = safe_float(promise.get("target_value"), None)
+    cap = safe_float_opt(promise.get("target_value"))
     if cap is None:
         target = promise.get("target")
         if isinstance(target, Mapping) and target.get("max_mpg") is not None:
-            cap = safe_float(target.get("max_mpg"), None)
+            cap = safe_float_opt(target.get("max_mpg"))
     if cap is None:
         return _defer(
             promise,
@@ -583,8 +583,8 @@ def _eval_role(
 
     desired = str(target.get("role") or target.get("target_role") or "STARTER").upper()
 
-    s = safe_float(ctx.starts_rate, None)
-    c = safe_float(ctx.closes_rate, None)
+    s = safe_float_opt(ctx.starts_rate)
+    c = safe_float_opt(ctx.closes_rate)
     if s is None or c is None:
         return _defer(
             promise,

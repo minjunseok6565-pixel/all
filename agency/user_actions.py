@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .promises import PromiseSpec, PromiseType, due_month_from_now
-from .utils import clamp, clamp01, mental_norm, norm_date_iso, safe_float
+from .utils import clamp, clamp01, mental_norm, norm_date_iso, safe_float, safe_float_opt
 
 
 UserActionType = Literal[
@@ -111,7 +111,7 @@ def apply_user_action(
     # ------------------------------------------------------------------
 
     if at == "MEET_PLAYER":
-        dt = float(getattr(cfg.responses, "trust_acknowledge", 0.03)) * impact * pos_mult
+        dt = float(getattr(cfg.frustration, "trust_recovery", 0.03)) * impact * pos_mult
         trust1 += dt
 
         focus = str(payload.get("focus_axis") or "").upper()
@@ -173,18 +173,52 @@ def apply_user_action(
 
         due = due_month_from_now(now_d, int(payload.get("due_months") or due_months))
 
-        target_value = payload.get("target_value")
-        tv = safe_float(target_value, None)
-        if tv is None:
-            tv = None
+        # Optional numeric target (some promise types require it).
+        tv = safe_float_opt(payload.get("target_value"))
 
         target: Dict[str, Any] = dict(payload.get("target") or {}) if isinstance(payload.get("target"), Mapping) else {}
+
         # Common convenience keys
         if ptype == "ROLE" and "role" not in target:
             tr = str(payload.get("target_role") or payload.get("role") or "STARTER").upper()
             target["role"] = tr
-        if ptype == "LOAD" and (tv is None) and "max_mpg" in payload:
-            tv = safe_float(payload.get("max_mpg"), None)
+
+        # Convenience for MINUTES/LOAD targets
+        if ptype == "MINUTES" and tv is None:
+            tv = safe_float_opt(payload.get("target_mpg"))
+
+        if ptype == "LOAD" and tv is None:
+            tv = safe_float_opt(payload.get("max_mpg"))
+            if tv is None:
+                tv = safe_float_opt(payload.get("target_mpg"))
+
+        # HELP convenience: allow need_tags list
+        if ptype == "HELP" and "need_tags" not in target:
+            nt = payload.get("need_tags")
+            if isinstance(nt, list) and nt:
+                target["need_tags"] = [str(x).upper() for x in nt if str(x).strip()]
+
+        # Validation: MINUTES/LOAD promises must include a numeric target.
+        if ptype in {"MINUTES", "LOAD"} and tv is None:
+            return UserActionOutcome(
+                ok=False,
+                action_type=at,
+                event_type="USER_ACTION",
+                reasons=[{
+                    "code": "USER_EXPECTATION_MISSING_TARGET_VALUE",
+                    "evidence": {"promise_type": ptype, "required": True},
+                }],
+            )
+
+        # Normalize targets
+        if ptype == "MINUTES" and tv is not None:
+            tv = float(clamp(tv, 0.0, 48.0))
+            target.setdefault("target_mpg", float(tv))
+
+        if ptype == "LOAD" and tv is not None:
+            tv = float(clamp(tv, 8.0, 40.0))
+            target.setdefault("max_mpg", float(tv))
+            target.setdefault("mode", "MAX_MPG")
 
         promise = PromiseSpec(
             promise_type=ptype,  # type: ignore[arg-type]

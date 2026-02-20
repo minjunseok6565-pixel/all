@@ -205,6 +205,8 @@ def _update_team_frustration(
     *,
     prev: float,
     team_win_pct: float,
+    team_strategy: Optional[str],
+    age: Optional[int],
     mental: Mapping[str, Any],
     leverage: float,
     cfg: AgencyConfig,
@@ -218,10 +220,58 @@ def _update_team_frustration(
     badness = clamp01((target - win_pct) / max(target, 1e-9))
 
     amb = mental_norm(mental, "ambition")
+    ego = mental_norm(mental, "ego")
     loy = mental_norm(mental, "loyalty")
+    adapt = mental_norm(mental, "adaptability")
     lev = clamp01(leverage)
 
-    pressure = badness * (0.35 + 0.65 * amb) * (0.40 + 0.60 * lev) * (1.10 - 0.80 * loy)
+    # Base pressure: losing when the player wants to win.
+    base_pressure = badness * (0.35 + 0.65 * amb) * (0.40 + 0.60 * lev) * (1.10 - 0.80 * loy)
+
+    # Direction mismatch pressure: player wants to compete, team is rebuilding/developing.
+    strat = str(team_strategy or "BALANCED").upper()
+
+    strat_map = getattr(fcfg, "team_strategy_values", None)
+    if isinstance(strat_map, dict):
+        try:
+            team_compete = float(strat_map.get(strat, strat_map.get("BALANCED", 0.65)))
+        except Exception:
+            team_compete = 0.65
+    else:
+        team_compete = {
+            "WIN_NOW": 1.00,
+            "BALANCED": 0.65,
+            "DEVELOP": 0.45,
+            "REBUILD": 0.25,
+        }.get(strat, 0.65)
+
+    # Age factor: older players are less tolerant of long timelines.
+    age_i: Optional[int]
+    try:
+        age_i = int(age) if age is not None else None
+    except Exception:
+        age_i = None
+
+    age_factor = 0.0
+    if age_i is not None:
+        age_factor = clamp01((float(age_i) - 24.0) / 10.0)
+
+    age_w = float(getattr(fcfg, "team_strategy_age_weight", 0.20))
+    player_compete = clamp01(
+        0.30
+        + 0.65 * amb
+        + 0.15 * ego
+        + age_w * age_factor
+        + 0.10 * lev
+        - 0.10 * loy
+        - 0.10 * adapt
+    )
+
+    mismatch = clamp01(player_compete - team_compete)
+    strategy_pressure = mismatch * (0.45 + 0.55 * lev) * (1.10 - 0.80 * loy)
+
+    strategy_w = float(getattr(fcfg, "team_strategy_weight", 0.45))
+    pressure = float(base_pressure) + float(strategy_w) * float(strategy_pressure)
 
     # If team is doing well, decay slightly faster.
     decay = float(fcfg.team_decay) * (1.35 if win_pct >= target else 1.0)
@@ -233,9 +283,19 @@ def _update_team_frustration(
         "team_win_pct": float(win_pct),
         "target_win_pct": float(target),
         "badness": float(badness),
+        "base_pressure": float(base_pressure),
+        "team_strategy": str(strat),
+        "team_compete": float(team_compete),
+        "player_compete": float(player_compete),
+        "age": age_i,
+        "age_factor": float(age_factor),
+        "strategy_weight": float(strategy_w),
+        "strategy_pressure": float(strategy_pressure),
+        "mismatch": float(mismatch),
         "pressure": float(pressure),
     }
     return updated, meta
+
 
 
 def _update_role_frustration(
@@ -717,7 +777,7 @@ def _stage_weight(stage: int) -> float:
             "payload": payload,
         },
         state_updates=state_updates,
-        mem_updates={"last_major_issue_axis": "ROLE", "last_major_issue_month": str(inputs.month_key)},
+        mem_updates={"last_major_issue_axis": "ROLE", "last_major_issue_month": str(inputs.month_key), "public_blowups_inc": 1 if int(stage) >= 3 else 0},
     )
 
 
@@ -815,7 +875,7 @@ def _candidate_contract_issue(
             "payload": payload,
         },
         state_updates=state_updates,
-        mem_updates={"last_major_issue_axis": "CONTRACT", "last_major_issue_month": str(inputs.month_key)},
+        mem_updates={"last_major_issue_axis": "CONTRACT", "last_major_issue_month": str(inputs.month_key), "public_blowups_inc": 1 if int(stage) >= 3 else 0},
     )
 
 
@@ -911,7 +971,7 @@ def _candidate_health_issue(
             "payload": payload,
         },
         state_updates=state_updates,
-        mem_updates={"last_major_issue_axis": "HEALTH", "last_major_issue_month": str(inputs.month_key)},
+        mem_updates={"last_major_issue_axis": "HEALTH", "last_major_issue_month": str(inputs.month_key), "public_blowups_inc": 1 if int(stage) >= 3 else 0},
     )
 
 
@@ -1007,7 +1067,7 @@ def _candidate_chemistry_issue(
             "payload": payload,
         },
         state_updates=state_updates,
-        mem_updates={"last_major_issue_axis": "CHEMISTRY", "last_major_issue_month": str(inputs.month_key)},
+        mem_updates={"last_major_issue_axis": "CHEMISTRY", "last_major_issue_month": str(inputs.month_key), "public_blowups_inc": 1 if int(stage) >= 3 else 0},
     )
 
 
@@ -1109,7 +1169,7 @@ def _candidate_team_issue(
             "payload": payload,
         },
         state_updates=state_updates,
-        mem_updates={"last_major_issue_axis": "TEAM", "last_major_issue_month": str(inputs.month_key)},
+        mem_updates={"last_major_issue_axis": "TEAM", "last_major_issue_month": str(inputs.month_key), "public_blowups_inc": 1 if int(stage) >= 3 else 0},
     )
 
 
@@ -1398,6 +1458,8 @@ def apply_monthly_player_tick(
     new_t_fr, meta_t = _update_team_frustration(
         prev=float(st.get("team_frustration") or 0.0),
         team_win_pct=float(inputs.team_win_pct),
+        team_strategy=getattr(inputs, "team_strategy", None),
+        age=getattr(inputs, "age", None),
         mental=inputs.mental,
         leverage=float(st.get("leverage") or 0.0),
         cfg=cfg,
