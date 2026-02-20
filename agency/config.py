@@ -213,6 +213,16 @@ class EventConfig:
     chemistry_issue_min_leverage: float = 0.20
     cooldown_chemistry_days: int = 50
 
+    # v2: team-level locker room meeting (service pass)
+    locker_room_meeting_threshold: float = 0.68
+    locker_room_meeting_softness: float = 0.14
+    locker_room_meeting_min_players: int = 8
+    locker_room_meeting_cooldown_days: int = 55
+
+    # v2: locker room social contagion (pushes chemistry frustration upward)
+    locker_room_contagion_threshold: float = 0.50
+    locker_room_contagion_strength: float = 0.06
+
     # v2: team direction concern (pre-help-demand)
     team_issue_threshold: float = 0.56
     team_issue_softness: float = 0.20
@@ -351,6 +361,9 @@ class AgencyConfig:
             "chemistry_private": "CHEMISTRY_PRIVATE",
             "chemistry_agent": "CHEMISTRY_AGENT",
             "chemistry_public": "CHEMISTRY_PUBLIC",
+
+            # v2 team pass
+            "locker_room_meeting": "LOCKER_ROOM_MEETING",
         }
     )
 

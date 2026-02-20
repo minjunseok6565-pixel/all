@@ -391,22 +391,91 @@ def respond_to_agency_event(
                 )
 
             # Update player agency state (keep all other fields intact)
-            new_state = dict(prev_state)
-            new_state.update(outcome.state_updates or {})
-            new_state["player_id"] = ev["player_id"]
-            new_state["team_id"] = ev["team_id"]
-            new_state["season_year"] = int(ev["season_year"])
+            #
+            # Team events may return bulk_state_deltas to be applied to multiple players.
+            bulk_deltas = outcome.bulk_state_deltas or {}
+            bulk_skipped: list[str] = []
 
-            # Defensive clamp
-            new_state["trust"] = float(clamp01(new_state.get("trust", 0.5)))
-            new_state["minutes_frustration"] = float(clamp01(new_state.get("minutes_frustration", 0.0)))
-            new_state["team_frustration"] = float(clamp01(new_state.get("team_frustration", 0.0)))
-            try:
-                new_state["trade_request_level"] = int(max(0, min(2, int(new_state.get("trade_request_level") or 0))))
-            except Exception:
-                new_state["trade_request_level"] = int(prev_state.get("trade_request_level") or 0)
+            if bulk_deltas:
+                affected_pids = [str(pid) for pid in bulk_deltas.keys() if str(pid).strip()]
 
-            upsert_player_agency_states(cur, {ev["player_id"]: new_state}, now=str(now_iso))
+                # Filter to players currently on this team (stale events may include traded players)
+                on_team: set[str] = set()
+                if affected_pids:
+                    placeholders = ",".join(["?"] * len(affected_pids))
+                    rows_on = cur.execute(
+                        f"""
+                        SELECT player_id
+                        FROM roster
+                        WHERE status='active' AND team_id=? AND player_id IN ({placeholders});
+                        """,
+                        [user_tid, *affected_pids],
+                    ).fetchall()
+                    on_team = {str(r[0]) for r in rows_on if r and r[0] is not None}
+
+                prev_states_bulk = get_player_agency_states(cur, affected_pids) if affected_pids else {}
+
+                updated_by_pid: Dict[str, Dict[str, Any]] = {}
+                for pid in affected_pids:
+                    if pid not in on_team:
+                        bulk_skipped.append(pid)
+                        continue
+
+                    st0 = prev_states_bulk.get(pid)
+                    if not st0:
+                        st0 = _default_state_for_event({"player_id": pid, "team_id": user_tid, "season_year": ev.get("season_year"), "payload": {}})
+
+                    st1 = dict(st0)
+                    deltas = bulk_deltas.get(pid) or {}
+
+                    # Apply deltas (not absolutes)
+                    for k, dv in deltas.items():
+                        if k in {
+                            "trust",
+                            "minutes_frustration",
+                            "team_frustration",
+                            "role_frustration",
+                            "contract_frustration",
+                            "health_frustration",
+                            "chemistry_frustration",
+                            "usage_frustration",
+                        }:
+                            st1[k] = float(clamp01(safe_float(st1.get(k), 0.0) + safe_float(dv, 0.0)))
+                        elif k == "trade_request_level":
+                            st1[k] = int(max(0, min(2, safe_int(st1.get(k), 0) + safe_int(dv, 0))))
+                        else:
+                            # Unknown keys are ignored (future-proofing)
+                            continue
+
+                    st1["player_id"] = pid
+                    st1["team_id"] = user_tid
+                    st1["season_year"] = int(ev.get("season_year") or 0)
+
+                    updated_by_pid[pid] = st1
+
+                if updated_by_pid:
+                    upsert_player_agency_states(cur, updated_by_pid, now=str(now_iso))
+
+                # Best-effort state for the spokesperson
+                new_state = updated_by_pid.get(str(ev.get("player_id") or "")) or prev_state
+
+            else:
+                new_state = dict(prev_state)
+                new_state.update(outcome.state_updates or {})
+                new_state["player_id"] = ev["player_id"]
+                new_state["team_id"] = ev["team_id"]
+                new_state["season_year"] = int(ev["season_year"])
+
+                # Defensive clamp
+                new_state["trust"] = float(clamp01(new_state.get("trust", 0.5)))
+                new_state["minutes_frustration"] = float(clamp01(new_state.get("minutes_frustration", 0.0)))
+                new_state["team_frustration"] = float(clamp01(new_state.get("team_frustration", 0.0)))
+                try:
+                    new_state["trade_request_level"] = int(max(0, min(2, int(new_state.get("trade_request_level") or 0))))
+                except Exception:
+                    new_state["trade_request_level"] = int(prev_state.get("trade_request_level") or 0)
+
+                upsert_player_agency_states(cur, {ev["player_id"]: new_state}, now=str(now_iso))
 
             # Insert response event into agency_events (UI + analytics)
             trust_delta = safe_float(outcome.meta.get("deltas", {}).get("trust"), 0.0) if isinstance(outcome.meta, Mapping) else 0.0
@@ -430,6 +499,8 @@ def respond_to_agency_event(
                     "player_reply": outcome.player_reply,
                     "reasons": outcome.reasons,
                     "state_updates": outcome.state_updates,
+                    "bulk_state_deltas": outcome.bulk_state_deltas,
+                    "bulk_skipped_player_ids": list(bulk_skipped or []),
                     "meta": outcome.meta,
                 },
             }
@@ -754,7 +825,7 @@ def apply_user_agency_action(
             new_state['team_id'] = user_tid
             new_state['season_year'] = int(sy)
 
-            upsert_player_agency_states(cur, [new_state], now=str(now_iso))
+            upsert_player_agency_states(cur, {pid: new_state}, now=str(now_iso))
 
             # Persist action event
             action_event = {
