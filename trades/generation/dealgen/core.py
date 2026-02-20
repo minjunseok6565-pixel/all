@@ -18,6 +18,7 @@ from .utils import (
     _get_trade_deadline_date,
     _get_second_apron_threshold,
     _estimate_team_payroll_after_dollars,
+    _player_salary_dollars,
     _can_absorb_without_outgoing,
     _count_players,
 )
@@ -1019,23 +1020,27 @@ def _soft_guard_second_apron_candidates(
     candidates: List[DealCandidate],
     tick_ctx: TradeGenerationTickContext,
 ) -> List[DealCandidate]:
-    """Soft guard: 2nd apron one-for-one 제약을 위반할 가능성이 큰 후보를 제거한다.
+    """Soft guard: 2nd apron *aggregation ban* 위반 가능성이 큰 후보를 제거한다.
 
-    SSOT는 validate_deal(SalaryMatchingRule)이며, 이 함수는 탐색 낭비를 줄이기 위한 휴리스틱이다.
+    SSOT는 validate_deal(SalaryMatchingRule / SalaryMatchingPolicy)이며,
+    이 함수는 탐색 낭비를 줄이기 위한 휴리스틱이다.
 
-    핵심 변경점(SSOT aligned)
-    - TeamConstraints.apron_status(현 상태)로만 판단하지 않고,
-      deal 적용 후 추정 payroll_after가 second_apron 이상일 때만 one-for-one을 강제한다.
+    2026+ (post-2024 CBA) 가정에서 SECOND_APRON의 핵심 제약은 one-for-one이 아니라:
+      - incoming_total <= max_single_outgoing  (outgoing salary aggregation 금지)
 
-    구현
+    구현(2-team deal 가정)
     - payroll_after_est = payroll_before - outgoing_salary + incoming_salary (dollars)
     - if payroll_after_est >= second_apron:
-        outgoing_players_count <= 1 AND incoming_players_count <= 1 이어야 통과
+        incoming_total_dollars <= max_single_outgoing_dollars 이어야 통과
 
-    fallback
-    - second_apron 값을 SSOT에서 읽을 수 없으면 기존처럼 constraints.apron_status 기반으로만 soft guard.
+    보수적 정책
+    - salary lookup이 불완전한 경우(0/None 등)에는 prune하지 않고 통과시킨다(fail open).
     """
     second_apron = _get_second_apron_threshold(tick_ctx)
+
+    # Heuristic slack to avoid false-prunes due to tiny rounding differences
+    EPS_D = 1_000  # $1k
+    
     out: List[DealCandidate] = []
     for c in candidates:
         d = c.deal
@@ -1051,7 +1056,7 @@ def _soft_guard_second_apron_candidates(
                 except Exception:
                     requires_guard = False
             else:
-                # fallback: 기존 휴리스틱
+                # fallback: 기존 휴리스틱(팀 상황 기반)
                 try:
                     ts = tick_ctx.get_team_situation(tid)
                     status = str(getattr(getattr(ts, "constraints", None), "apron_status", "") or "")
@@ -1060,10 +1065,45 @@ def _soft_guard_second_apron_candidates(
                 except Exception:
                     requires_guard = False
 
-            if requires_guard:
-                if _count_players(d, tid) > 1 or _incoming_player_count(d, tid) > 1:
-                    ok = False
-                    break
+            if not requires_guard:
+                continue
+
+            # SECOND_APRON aggregation ban guard: incoming_total <= max_single_outgoing
+            max_out_d = 0
+            incoming_total_d = 0
+            has_unknown = False
+
+            # outgoing: only this team's leg
+            for a in d.legs.get(tid, []) or []:
+                if not isinstance(a, PlayerAsset):
+                    continue
+                sal_d = int(round(_player_salary_dollars(tick_ctx, a.player_id) or 0.0))
+                if sal_d <= 0:
+                    has_unknown = True
+                    continue
+                if sal_d > max_out_d:
+                    max_out_d = sal_d
+
+            # incoming: all other legs (2-team deal 가정)
+            for from_team, assets in (d.legs or {}).items():
+                if str(from_team).upper() == tid:
+                    continue
+                for a in assets or []:
+                    if not isinstance(a, PlayerAsset):
+                        continue
+                    sal_d = int(round(_player_salary_dollars(tick_ctx, a.player_id) or 0.0))
+                    if sal_d <= 0:
+                        has_unknown = True
+                        continue
+                    incoming_total_d += sal_d
+
+            # Fail-open if we couldn't reliably price the deal's salaries.
+            if has_unknown:
+                continue
+
+            if incoming_total_d > (max_out_d + EPS_D):
+                ok = False
+                break
         if ok:
             out.append(c)
     return out
