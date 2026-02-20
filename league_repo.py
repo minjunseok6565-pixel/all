@@ -555,7 +555,9 @@ class LeagueRepo:
         rows = cur.execute(
             """
             SELECT
-                p.pick_id, p.year, p.round, p.original_team, p.owner_team, p.protection_json
+                p.pick_id, p.year, p.round, p.original_team, p.owner_team, p.protection_json,
+                p.trade_locked, p.trade_lock_reason, p.trade_lock_start_season_year,
+                p.trade_lock_eval_seasons, p.trade_lock_below_count, p.trade_lock_escalated
             FROM draft_picks p
             LEFT JOIN draft_results r ON r.pick_id = p.pick_id
             WHERE r.pick_id IS NULL;
@@ -578,6 +580,12 @@ class LeagueRepo:
                 "original_team": str(r["original_team"]).upper(),
                 "owner_team": str(r["owner_team"]).upper(),
                 "protection": protection,
+                "trade_locked": bool(int(r["trade_locked"]) if r["trade_locked"] is not None else 0),
+                "trade_lock_reason": str(r["trade_lock_reason"]) if r["trade_lock_reason"] else None,
+                "trade_lock_start_season_year": int(r["trade_lock_start_season_year"]) if r["trade_lock_start_season_year"] is not None else None,
+                "trade_lock_eval_seasons": int(r["trade_lock_eval_seasons"] or 0),
+                "trade_lock_below_count": int(r["trade_lock_below_count"] or 0),
+                "trade_lock_escalated": bool(int(r["trade_lock_escalated"]) if r["trade_lock_escalated"] is not None else 0),
             }
             out[pick["pick_id"]] = pick
         return out
