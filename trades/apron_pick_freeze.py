@@ -105,22 +105,43 @@ def ensure_second_apron_frozen_picks(
         team_ids: list[str] = []
         try:
             team_rows = cur.execute(
-                "SELECT DISTINCT team_id FROM roster WHERE status='active' ORDER BY team_id;"
+                "SELECT team_id FROM gm_profiles ORDER BY team_id;"
             ).fetchall()
             team_ids = [str(r["team_id"]).upper() for r in team_rows if r["team_id"] is not None]
         except sqlite3.OperationalError:
             team_ids = []
 
+        team_ids = [tid for tid in team_ids if tid and tid != "FA"]
+
         if not team_ids:
             try:
                 team_rows = cur.execute(
-                    "SELECT team_id FROM gm_profiles ORDER BY team_id;"
+                    "SELECT DISTINCT team_id FROM roster WHERE status='active' ORDER BY team_id;"
                 ).fetchall()
-                team_ids = [
-                    str(r["team_id"]).upper() for r in team_rows if r["team_id"] is not None
-                ]
+                team_ids = [str(r["team_id"]).upper() for r in team_rows if r["team_id"] is not None]
             except sqlite3.OperationalError:
                 team_ids = []
+
+            team_ids = [tid for tid in team_ids if tid and tid != "FA"]
+
+        if not team_ids:
+            try:
+                from config import ALL_TEAM_IDS
+
+                team_ids = [str(t).upper() for t in ALL_TEAM_IDS if t is not None]
+            except Exception:
+                team_ids = []
+
+        team_ids = sorted({tid for tid in team_ids if tid and tid != "FA"})
+
+        if not team_ids:
+            conn.commit()
+            return {
+                "ok": True,
+                "skipped": True,
+                "season_year": int(season_year),
+                "draft_year": int(draft_year),
+            }
 
         payroll_by_team: Dict[str, int] = {}
         try:
@@ -128,7 +149,7 @@ def ensure_second_apron_frozen_picks(
                 """
                 SELECT team_id, SUM(COALESCE(salary_amount, 0)) AS payroll
                 FROM roster
-                WHERE status='active'
+                WHERE status='active' AND UPPER(team_id) != 'FA'
                 GROUP BY team_id;
                 """
             ).fetchall()
@@ -136,7 +157,22 @@ def ensure_second_apron_frozen_picks(
                 tid = str(r["team_id"]).upper()
                 payroll_by_team[tid] = _coerce_int(r["payroll"], 0)
         except sqlite3.OperationalError:
-            payroll_by_team = {}
+            conn.commit()
+            return {
+                "ok": True,
+                "skipped": True,
+                "season_year": int(season_year),
+                "draft_year": int(draft_year),
+            }
+
+        if not payroll_by_team:
+            conn.commit()
+            return {
+                "ok": True,
+                "skipped": True,
+                "season_year": int(season_year),
+                "draft_year": int(draft_year),
+            }
 
         above_second_apron: Dict[str, bool] = {}
         for tid in team_ids:
