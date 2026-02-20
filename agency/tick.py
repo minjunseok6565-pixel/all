@@ -171,8 +171,8 @@ def _update_minutes_frustration(
 
     updated = (
         float(prev) * max(0.0, 1.0 - decay)
-        float(total_pressure) * float(fcfg.minutes_base_gain) * gain_mult * inj_mult
-    ) 
+        + float(total_pressure) * float(fcfg.minutes_base_gain) * gain_mult * inj_mult
+    )
     updated = float(clamp01(updated))
 
     meta = {
@@ -678,7 +678,7 @@ def _stage_weight(stage: int) -> float:
     return 1.30
 
 
-+def _candidate_role_issue(
+def _candidate_role_issue(
     *,
     state: Mapping[str, Any],
     inputs: MonthlyPlayerInputs,
@@ -1211,20 +1211,19 @@ def _candidate_trade_request(
     fr_chem = float(clamp01(state.get("chemistry_frustration")))
 
     request_score = (
-        0.30 * fr_role
-        0.30 * fr_team
-        0.15 * fr_contract
-        0.15 * fr_health
-        0.10 * fr_chem
-        0.05 * ego
+        + 0.30 * fr_team
+        + 0.15 * fr_contract
+        + 0.15 * fr_health
+        + 0.10 * fr_chem
+        + 0.05 * ego
     )
     request_score *= (0.40 + 0.60 * lev)
 
     base = float(ecfg.trade_request_threshold_base)
     threshold = (
         base
-         float(ecfg.trade_request_threshold_loyalty_bonus) * loy
-         float(ecfg.trade_request_threshold_ambition_bonus) * amb
+        + float(ecfg.trade_request_threshold_loyalty_bonus) * loy
+        + float(ecfg.trade_request_threshold_ambition_bonus) * amb
     )
 
     # Trust can delay a request slightly.
@@ -1468,6 +1467,7 @@ def apply_monthly_player_tick(
 
     new_r_fr, meta_r = _update_role_frustration(
         prev=float(st.get("role_frustration") or 0.0),
+        minutes_frustration=float(st.get("minutes_frustration") or 0.0),
         role_bucket=str(st.get("role_bucket") or "UNKNOWN"),
         starts_rate=float(st.get("starts_rate") or 0.0),
         closes_rate=float(st.get("closes_rate") or 0.0),
