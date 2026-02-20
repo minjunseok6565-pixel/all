@@ -17,6 +17,7 @@ Design
 - Uses existing SSOT logic:
   - locks: same semantics as AssetLockRule (expires_at + allow_locked_by_deal_id)
   - player bans: same policy helpers used by rules/team_situation
+  - contract terms: contracts/terms.py SSOT (remaining years / salary schedule)
   - fit: FitEngine SSOT
   - market: MarketPricer SSOT
   - Stepien: stepien_policy SSOT (shared with PickRulesRule)
@@ -31,6 +32,12 @@ try:
     from league_repo import LeagueRepo  # type: ignore
 except Exception:  # pragma: no cover
     from trade.league_repo import LeagueRepo  # type: ignore
+
+# SSOT: contract schedule interpretation (remaining years, salary for a season).
+try:
+    from contracts.terms import player_contract_terms as _player_contract_terms  # type: ignore
+except Exception:  # pragma: no cover
+    _player_contract_terms = None  # type: ignore
 
 # Config (team list)
 try:
@@ -125,31 +132,21 @@ def _parse_iso_date(value: Any) -> Optional[date]:
         return None
 
 
-def _remaining_years_from_contract(contract: Optional[ContractSnapshot], season_year: int) -> float:
-    """Compute remaining years (inclusive) from contract snapshot.
+def _remaining_years_for_player_snapshot(snap: PlayerSnapshot, season_year: int) -> float:
+    """SSOT: remaining seasons >= current season with salary>0.
 
-    Mirrors TeamSituationEvaluator._remaining_years_for_player semantics.
+    Uses `contracts.terms.player_contract_terms` so behavior matches valuation:
+    - if `snap.contract` exists: schedule length from contract salary_by_year
+    - else: salary_amount fallback (1-year if salary known)
     """
-    if contract is None:
+    if _player_contract_terms is None:
         return 0.0
-
-    start = _safe_int(getattr(contract, "start_season_year", None), 0)
-    years = _safe_int(getattr(contract, "years", None), 0)
-    end_year: Optional[int] = None
-    if start > 0 and years > 0:
-        end_year = start + years - 1
-    else:
-        try:
-            keys = [int(k) for k in (getattr(contract, "salary_by_year", {}) or {}).keys()]
-            end_year = max(keys) if keys else None
-        except Exception:
-            end_year = None
-
-    if end_year is None:
+    try:
+        terms = _player_contract_terms(snap, current_season_year=int(season_year))
+        ry = int(getattr(terms, "remaining_years", 0) or 0)
+        return float(max(0, ry))
+    except Exception:
         return 0.0
-    if season_year > end_year:
-        return 0.0
-    return float(end_year - season_year + 1)
 
 
 # =============================================================================
@@ -697,7 +694,7 @@ def build_trade_asset_catalog(
             fit_score, _, _ = fit_engine.score_fit(dc.need_map or {}, supply)
             top_tags = _compute_top_tags(supply)
 
-            remaining_years = _remaining_years_from_contract(contract, int(season_year))
+            remaining_years = _remaining_years_for_player_snapshot(snap, int(season_year))
             is_expiring = bool(remaining_years <= 1.0 + 1e-9)
             salary_m = float((snap.salary_amount or 0.0) / 1_000_000.0)
 
