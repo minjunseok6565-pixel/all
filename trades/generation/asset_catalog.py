@@ -45,6 +45,9 @@ from ..rules.policies.player_ban_policy import (
 )
 from ..rules.policies.stepien_policy import check_stepien_violation
 
+# SSOT helpers (contract schedule/terms interpretation)
+from contracts.terms import player_contract_terms
+
 from ..valuation.fit_engine import FitEngine, FitEngineConfig
 from ..valuation.market_pricing import MarketPricer, MarketPricingConfig
 from ..valuation.data_context import contract_snapshot_from_dict
@@ -122,34 +125,6 @@ def _parse_iso_date(value: Any) -> Optional[date]:
         return date.fromisoformat(str(value))
     except Exception:
         return None
-
-
-def _remaining_years_from_contract(contract: Optional[ContractSnapshot], season_year: int) -> float:
-    """Compute remaining years (inclusive) from contract snapshot.
-
-    Mirrors TeamSituationEvaluator._remaining_years_for_player semantics.
-    """
-    if contract is None:
-        return 0.0
-
-    start = _safe_int(getattr(contract, "start_season_year", None), 0)
-    years = _safe_int(getattr(contract, "years", None), 0)
-    end_year: Optional[int] = None
-    if start > 0 and years > 0:
-        end_year = start + years - 1
-    else:
-        try:
-            keys = [int(k) for k in (getattr(contract, "salary_by_year", {}) or {}).keys()]
-            end_year = max(keys) if keys else None
-        except Exception:
-            end_year = None
-
-    if end_year is None:
-        return 0.0
-    if season_year > end_year:
-        return 0.0
-    return float(end_year - season_year + 1)
-
 
 # =============================================================================
 # Data structures
@@ -683,8 +658,9 @@ def build_trade_asset_catalog(
             fit_score, _, _ = fit_engine.score_fit(dc.need_map or {}, supply)
             top_tags = _compute_top_tags(supply)
 
-            remaining_years = _remaining_years_from_contract(contract, int(season_year))
-            is_expiring = bool(remaining_years <= 1.0 + 1e-9)
+            contract_terms = player_contract_terms(snap, current_season_year=int(season_year))
+            remaining_years = float(contract_terms.remaining_years)
+            is_expiring = bool(contract_terms.remaining_years <= 1)
             salary_m = float((snap.salary_amount or 0.0) / 1_000_000.0)
 
             # Return-to-trading-team bans: season-specific list keyed by str(season_year).
