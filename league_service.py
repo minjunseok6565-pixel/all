@@ -899,6 +899,7 @@ class LeagueService:
                 serialize_deal,
                 asset_key,
             )
+            from trades.identity import deal_identity_hash, deal_execution_id
             from trades.swap_integrity import validate_swap_asset_in_cur
             from trades.errors import (
                 TradeError,
@@ -932,10 +933,14 @@ class LeagueService:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid trade_date_iso: {trade_date_iso!r}") from exc
 
-        # If deal_id not provided, derive a deterministic id from canonical payload.
+        # SSOT: transactional identity ignores deal.meta.
+        deal_identity = deal_identity_hash(deal_obj)
+
+        # If deal_id not provided, derive an execution id (identity + trade_date).
         if not deal_id:
-            payload = serialize_deal(deal_obj)
-            deal_id = hashlib.sha1(_json_dumps(payload).encode("utf-8")).hexdigest()
+            deal_id = deal_execution_id(deal_obj, trade_date=trade_date_as_date)
+
+        deal_id = str(deal_id)
 
         # Idempotency: if already executed, return the stored transaction payload (or a stable error).
         conn = getattr(self.repo, "_conn", None)
@@ -949,6 +954,7 @@ class LeagueService:
                 if not isinstance(existing, dict):
                     existing = {"type": "trade", "deal_id": str(deal_id)}
                 existing.setdefault("deal_id", str(deal_id))
+                existing.setdefault("deal_identity", str(deal_identity))
                 existing["already_executed"] = True
                 return existing
 
@@ -1057,6 +1063,7 @@ class LeagueService:
             "player_moves": [],  # filled at commit time (resolved from SSOT)
             "source": str(source),
             "deal_id": str(deal_id),
+            "deal_identity": str(deal_identity),
         }
 
         now = _utc_now_iso()

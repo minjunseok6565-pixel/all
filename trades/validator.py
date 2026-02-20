@@ -4,7 +4,7 @@ from datetime import date
 from typing import Optional, TYPE_CHECKING
 
 from .errors import TradeError, DEAL_INVALIDATED
-from .models import Deal
+from .models import Deal, canonicalize_deal
 from .rules import build_trade_context, validate_all
 
 if TYPE_CHECKING:
@@ -26,6 +26,8 @@ def validate_deal(
 
     ctx = None
     try:
+        deal = canonicalize_deal(deal)
+
         ctx = build_trade_context(
             deal,
             current_date=current_date,
