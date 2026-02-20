@@ -4,7 +4,7 @@ import random
 from typing import List, Optional, Set, Tuple
 
 from ...errors import TradeError
-from ...models import Deal, PickAsset, SwapAsset, Asset, asset_key
+from ...models import Deal, PickAsset, SwapAsset, Asset, asset_key, compute_swap_id
 from ...valuation.types import DealVerdict, TeamDealEvaluation
 
 from ..generation_tick import TradeGenerationTickContext
@@ -399,6 +399,8 @@ def _collect_sweetener_candidates(
     if bucket == 'SWAP':
         if _count_swaps(deal, giver_team) >= 1:
             return out
+
+        # 1) Existing swap_rights in SSOT (if any)
         cands = list(out_cat.swap_ids or ())
         rng.shuffle(cands)
         for sid in cands:
@@ -407,7 +409,7 @@ def _collect_sweetener_candidates(
                 continue
             if _is_locked_candidate(getattr(s, 'lock', None), allow_locked_by_deal_id=allow_locked_by_deal_id):
                 continue
-            a = s.as_asset()
+            a = s.as_asset(to_team=receiver_team)
             k = asset_key(a)
             if k in banned_asset_keys:
                 continue
@@ -416,6 +418,118 @@ def _collect_sweetener_candidates(
             out.append(a)
             if len(out) >= int(limit):
                 break
+
+        if len(out) >= int(limit):
+            return out
+
+        # 2) Synthetic (deal-local) swap_rights: allow proposing a new swap right
+        # even when the league starts with no existing swap_rights in SSOT.
+        if not bool(getattr(config, 'sweetener_allow_synthetic_swaps', True)):
+            return out
+
+        recv_cat = catalog.outgoing_by_team.get(receiver_team)
+        if recv_cat is None:
+            return out
+
+        # Avoid entangling swap creation with picks already present in the deal.
+        excluded_pick_ids: Set[str] = {
+            a.pick_id for leg in deal.legs.values() for a in (leg or []) if isinstance(a, PickAsset)
+        }
+
+        def _pick_ok(cat: TeamOutgoingCatalog, pid: str) -> bool:
+            p = cat.picks.get(str(pid))
+            if p is None:
+                return False
+            if not bool(getattr(p, 'within_max_years', True)):
+                return False
+            if _is_locked_candidate(getattr(p, 'lock', None), allow_locked_by_deal_id=allow_locked_by_deal_id):
+                return False
+            return True
+
+        def _swap_pick_pool(cat: TeamOutgoingCatalog) -> List[str]:
+            # Prefer 1st round picks (safe + sensitive), fallback to 2nds if none exist.
+            ids: List[str] = []
+            for b in ('FIRST_SAFE', 'FIRST_SENSITIVE'):
+                ids.extend([str(pid) for pid in (cat.pick_ids_by_bucket.get(b, tuple()) or tuple())])
+            if not ids:
+                ids.extend([str(pid) for pid in (cat.pick_ids_by_bucket.get('SECOND', tuple()) or tuple())])
+
+            # Filter: exclude picks already used in deal + basic availability checks.
+            ids = [pid for pid in ids if pid not in excluded_pick_ids and _pick_ok(cat, pid)]
+
+            # Optional cap (defensive): keep combinatorics small.
+            max_pool = int(getattr(config, 'sweetener_synthetic_swap_pick_pool', 8) or 8)
+            if max_pool > 0:
+                ids = ids[:max_pool]
+            return ids
+
+        giver_picks = _swap_pick_pool(out_cat)
+        recv_picks = _swap_pick_pool(recv_cat)
+        if not giver_picks or not recv_picks:
+            return out
+
+        # Pre-group receiver picks by (year, round) for matching.
+        recv_by_key = {}
+        for rpid in recv_picks:
+            rp = recv_cat.picks.get(str(rpid))
+            if rp is None:
+                continue
+            try:
+                key = (int(rp.snap.year), int(rp.snap.round))
+            except Exception:
+                continue
+            recv_by_key.setdefault(key, []).append(str(rpid))
+
+        # Build candidate pairs and sort by a cheap heuristic: how close the swap
+        # might be to target_value (using pick market totals as a proxy).
+        swap_scale = float(getattr(config, 'sweetener_synthetic_swap_value_scale', 0.25) or 0.25)
+        pairs: List[Tuple[float, int, str, str]] = []
+        for gpid in giver_picks:
+            gp = out_cat.picks.get(str(gpid))
+            if gp is None:
+                continue
+            try:
+                key = (int(gp.snap.year), int(gp.snap.round))
+            except Exception:
+                continue
+            rpids = recv_by_key.get(key) or []
+            if not rpids:
+                continue
+            g_mv = float(getattr(gp.market, 'total', 0.0) or 0.0)
+            for rpid in rpids:
+                rp = recv_cat.picks.get(str(rpid))
+                if rp is None:
+                    continue
+                r_mv = float(getattr(rp.market, 'total', 0.0) or 0.0)
+                # swap value ~= (gap in pick values) * some scale
+                approx = abs(g_mv - r_mv) * swap_scale
+                score = abs(approx - float(target_value))
+                # tie-break with earlier year then stable ids
+                pairs.append((score, int(gp.snap.year), str(gpid), str(rpid)))
+
+        pairs.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+
+        seen_swap_ids: Set[str] = {a.swap_id for leg in deal.legs.values() for a in (leg or []) if isinstance(a, SwapAsset)}
+        # also include any swaps already queued in out from existing rights
+        for a in out:
+            if isinstance(a, SwapAsset):
+                seen_swap_ids.add(str(a.swap_id))
+
+        for _, _, gpid, rpid in pairs:
+            if len(out) >= int(limit):
+                break
+            sid = compute_swap_id(gpid, rpid)
+            if sid in seen_swap_ids:
+                continue
+            a = SwapAsset(kind='swap', swap_id=sid, pick_id_a=str(gpid), pick_id_b=str(rpid), to_team=receiver_team)
+            k = asset_key(a)
+            if k in banned_asset_keys:
+                continue
+            if _asset_in_deal(deal, a):
+                continue
+            out.append(a)
+            seen_swap_ids.add(sid)
+
         return out
 
     # pick buckets
