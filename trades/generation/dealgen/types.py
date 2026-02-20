@@ -15,6 +15,7 @@ from ...errors import (
     SWAP_NOT_FOUND,
     SWAP_INVALID,
     TRADE_DEADLINE_PASSED,
+    TRADE_DEADLINE_INVALID,
     DUPLICATE_ASSET,
 )
 from ...models import Deal
@@ -340,7 +341,7 @@ def parse_trade_error(err: TradeError) -> RuleFailure:
         details = dict(err.details)  # shallow copy
 
     # --- code-first
-    if err.code == TRADE_DEADLINE_PASSED:
+    if err.code in (TRADE_DEADLINE_PASSED, TRADE_DEADLINE_INVALID):
         return RuleFailure(
             kind=RuleFailureKind.DEADLINE,
             code=err.code,

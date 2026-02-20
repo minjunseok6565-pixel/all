@@ -12,6 +12,7 @@ from ...models import (
     SwapAsset,
     resolve_asset_receiver,
 )
+from ...trade_rules import parse_trade_deadline
 
 from ..generation_tick import TradeGenerationTickContext
 from ..asset_catalog import (
@@ -44,10 +45,8 @@ def _get_trade_deadline_date(tick_ctx: TradeGenerationTickContext) -> Optional[d
     raw = tr.get("trade_deadline")
     if not raw:
         return None
-    try:
-        return date.fromisoformat(str(raw))
-    except Exception:
-        return None
+    # SSOT: parse_trade_deadline() is robust; raises ValueError on invalid config.
+    return parse_trade_deadline(raw)
 
 
 def _get_second_apron_threshold(tick_ctx: TradeGenerationTickContext) -> float:

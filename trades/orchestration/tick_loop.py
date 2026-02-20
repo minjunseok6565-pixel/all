@@ -27,6 +27,7 @@ from .actor_selection import select_trade_actors
 from .promotion import promote_and_commit, compute_deal_key
 from .telemetry import build_tick_summary_payload, emit_tick_summary_event
 from . import policy
+from ..trade_rules import parse_trade_deadline
 
 
 def _allow_state_mutation(current_date_override: Optional[date]) -> bool:
@@ -193,16 +194,23 @@ def run_trade_orchestration_tick(
             db_path=resolved_db_path,
             validate_integrity=bool(validate_integrity),
         ) as tick_ctx:
-            # trade_deadline 하드스탑
+            # trade_deadline hard stop (SSOT: trades.trade_rules.parse_trade_deadline)
             try:
                 league = (tick_ctx.rule_tick_ctx.ctx_state_base or {}).get("league", {})
                 tr = (league or {}).get("trade_rules", {}) if isinstance(league, dict) else {}
-                deadline = tr.get("trade_deadline")
-                if deadline:
-                    d = date.fromisoformat(str(deadline)[:10])
-                    if today > d:
+                deadline_raw = tr.get("trade_deadline")
+                if deadline_raw:
+                    try:
+                        d = parse_trade_deadline(deadline_raw)
+                    except ValueError:
+                        report.skipped = True
+                        report.skip_reason = "DEADLINE_PARSE_ERROR"
+                        report.meta["trade_deadline_raw"] = repr(deadline_raw)
+                        return report
+                    if d is not None and today > d:
                         report.skipped = True
                         report.skip_reason = "DEADLINE_PASSED"
+                        report.meta["trade_deadline"] = d.isoformat()
                         return report
             except Exception:
                 report.skipped = True

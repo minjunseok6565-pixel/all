@@ -146,8 +146,12 @@ class DealGenerator:
 
         tid = str(team_id).upper()
 
-        # trade deadline hard stop (SSOT: DeadlineRule)
-        deadline = _get_trade_deadline_date(tick_ctx)
+        # trade deadline hard stop (SSOT: DeadlineRule / parse_trade_deadline)
+        try:
+            deadline = _get_trade_deadline_date(tick_ctx)
+        except ValueError:
+            self.last_stats = DealGeneratorStats(mode="SKIP_DEADLINE_INVALID")
+            return []
         if deadline is not None and tick_ctx.current_date > deadline:
             self.last_stats = DealGeneratorStats(mode="SKIP_DEADLINE")
             return []
