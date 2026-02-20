@@ -63,6 +63,18 @@ class PickRulesRule:
                         },
                     )
                 pick_year = int(pick.get("year") or 0)
+                if pick_year < current_draft_year:
+                    raise TradeError(
+                        DEAL_INVALIDATED,
+                        "Pick is in the past",
+                        {
+                            "rule": self.rule_id,
+                            "pick_id": asset.pick_id,
+                            "reason": "pick_in_past",
+                            "year": pick_year,
+                            "current_draft_year": current_draft_year,
+                        },
+                    )
                 if pick_year > current_draft_year + max_pick_years_ahead:
                     raise TradeError(
                         DEAL_INVALIDATED,
