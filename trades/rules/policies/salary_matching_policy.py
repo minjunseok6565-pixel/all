@@ -101,7 +101,7 @@ class SalaryMatchingResult:
     allowed_in_d: int
     payroll_after_d: int
     max_incoming_cap_room_d: Optional[int] = None
-    max_single_outgoing_salary_d: Optional[int] = None,
+    max_single_outgoing_salary_d: Optional[int] = None
     reason: Optional[str] = None
 
 
@@ -120,6 +120,7 @@ def check_salary_matching(
     incoming_salary_d: int,
     outgoing_players: int,
     incoming_players: int,
+    max_single_outgoing_salary_d: Optional[int] = None,
     params: SalaryMatchingParams,
     eps: float = 1e-6,
 ) -> SalaryMatchingResult:
