@@ -155,12 +155,10 @@ def repair_once(
             return False
         return _repair_roster_limit(cand, team_id, catalog, config)
 
-    if failure.kind in (RuleFailureKind.SALARY_MATCHING, RuleFailureKind.SECOND_APRON_ONE_FOR_ONE):
+    if failure.kind == RuleFailureKind.SALARY_MATCHING:
         team_id = str(failure.team_id or "").upper()
         if not team_id:
             return False
-        if failure.kind == RuleFailureKind.SECOND_APRON_ONE_FOR_ONE:
-            return _repair_second_apron_one_for_one(cand, team_id, catalog)
         return _repair_salary_matching(cand, team_id, catalog, config, failure)
 
     if failure.kind == RuleFailureKind.PICK_RULES:
@@ -219,14 +217,14 @@ def _repair_salary_matching(
     가장 안전한 수리:
     - failing_team outgoing에 filler 1명을 추가(FILLER_CHEAP -> EXPIRING -> FILLER_BAD_CONTRACT)
 
-    단, failure.details.status == SECOND_APRON이면 multi-player가 2nd apron one-for-one을
-    촉발할 가능성이 매우 높으므로 여기서 추가 수리를 시도하지 않는다.
+    단, SECOND_APRON 팀은 post-2024 CBA 기준으로 outgoing salary aggregation이 금지되므로
+    (incoming이 단일 outgoing 계약으로 매칭 가능해야 함) 여기서는 보수적으로 제한된 수리만 시도한다.
     """
 
     status = str(failure.status or "")
     method = str(failure.method or "")
     if status == "SECOND_APRON":
-        # second_apron_one_for_one은 RuleFailureKind.SECOND_APRON_ONE_FOR_ONE로 별도 수리된다.
+        # SECOND_APRON salary matching: incoming must be matchable by a single outgoing salary (no aggregation).
         if method == "outgoing_second_apron":
             return _repair_second_apron_salary_mismatch(cand, failing_team, catalog, config, failure)
         return False
@@ -524,59 +522,6 @@ def _repair_second_apron_salary_mismatch(
     cand.deal.legs[other] = new_leg
     cand.tags.append("repair:second_apron_swap_in_down")
     return True
-
-
-def _repair_second_apron_one_for_one(cand: DealCandidate, failing_team: str, catalog: TradeAssetCatalog) -> bool:
-    """2nd apron one-for-one 위반: failing_team의 in/out player count를 1로 낮춘다.
-
-    - market 기반으로 "가치가 낮아 보이는"(대개 filler) 플레이어를 우선 제거
-    - 단, deal shape가 더 망가지면 prune(상위에서 재시도하게)
-    """
-
-    team = str(failing_team).upper()
-
-    # outgoing trim (failing_team leg)
-    out_assets = list(cand.deal.legs.get(team, []))
-    out_players = [a for a in out_assets if isinstance(a, PlayerAsset)]
-    if len(out_players) > 1:
-        out_cat = catalog.outgoing_by_team.get(team)
-        if out_cat is not None:
-            def market(pid: str) -> float:
-                c = out_cat.players.get(pid)
-                return float(c.market.total) if c is not None else 0.0
-            # keep the highest market (core-like), drop the rest
-            keep = sorted(out_players, key=lambda a: market(a.player_id), reverse=True)[0]
-        else:
-            keep = out_players[0]
-
-        cand.deal.legs[team] = [a for a in out_assets if not (isinstance(a, PlayerAsset) and a.player_id != keep.player_id)]
-        cand.tags.append("repair:second_apron_trim_out")
-        return True
-
-    # incoming trim (other leg players are incoming to failing_team)
-    other = [t for t in cand.deal.teams if str(t).upper() != team]
-    if not other:
-        return False
-    other_team = str(other[0]).upper()
-
-    other_assets = list(cand.deal.legs.get(other_team, []))
-    other_players = [a for a in other_assets if isinstance(a, PlayerAsset)]
-    if len(other_players) > 1:
-        other_out = catalog.outgoing_by_team.get(other_team)
-        if other_out is not None:
-            def market(pid: str) -> float:
-                c = other_out.players.get(pid)
-                return float(c.market.total) if c is not None else 0.0
-            # remove the lowest market (filler-like)
-            pid_remove = sorted([p.player_id for p in other_players], key=market)[0]
-        else:
-            pid_remove = other_players[-1].player_id
-
-        cand.deal.legs[other_team] = [a for a in other_assets if not (isinstance(a, PlayerAsset) and a.player_id == pid_remove)]
-        cand.tags.append("repair:second_apron_trim_in")
-        return True
-
-    return False
 
 
 def _repair_roster_limit(cand: DealCandidate, problem_team: str, catalog: TradeAssetCatalog, config: DealGeneratorConfig) -> bool:
