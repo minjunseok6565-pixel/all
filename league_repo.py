@@ -505,7 +505,7 @@ class LeagueRepo:
             raise ImportError("trades.protection is required") from exc
         rows = cur.execute(
             """
-            SELECT pick_id, year, round, original_team, owner_team, protection_json
+            SELECT pick_id, year, round, original_team, owner_team, protection_json, trade_locked, trade_lock_reason, trade_lock_start_season_year, trade_lock_eval_seasons, trade_lock_below_count, trade_lock_escalated
             FROM draft_picks;
             """
         ).fetchall()
@@ -525,6 +525,12 @@ class LeagueRepo:
                 "original_team": str(r["original_team"]).upper(),
                 "owner_team": str(r["owner_team"]).upper(),
                 "protection": protection,
+                "trade_locked": bool(int(r["trade_locked"]) if r["trade_locked"] is not None else 0),
+                "trade_lock_reason": str(r["trade_lock_reason"]) if r["trade_lock_reason"] else None,
+                "trade_lock_start_season_year": int(r["trade_lock_start_season_year"]) if r["trade_lock_start_season_year"] is not None else None,
+                "trade_lock_eval_seasons": int(r["trade_lock_eval_seasons"] or 0),
+                "trade_lock_below_count": int(r["trade_lock_below_count"] or 0),
+                "trade_lock_escalated": bool(int(r["trade_lock_escalated"]) if r["trade_lock_escalated"] is not None else 0),
             }
             out[pick["pick_id"]] = pick
         return out
