@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 import game_time
 from config import BASE_DIR, ALL_TEAM_IDS
 from league_repo import LeagueRepo
-from league_service import LeagueService
+from league_service import LeagueService, CapViolationError
 from schema import normalize_team_id, normalize_player_id
 import state
 from sim.league_sim import simulate_single_game, advance_league_until
@@ -2627,22 +2627,33 @@ def _commit_accepted_contract_negotiation(
     # Apply SSOT write via LeagueService (DB-backed).
     with LeagueRepo(db_path) as repo:
         svc = LeagueService(repo)
-        if mode == "SIGN_FA":
-            event = svc.sign_free_agent(
-                team_id=team_norm,
-                player_id=pid_norm,
-                signed_date=signed_date_iso,
-                years=int(offer.years),
-                salary_by_year=offer.salary_by_year,
-            )
-        else:
-            # RE_SIGN and EXTEND both map to the same SSOT operation.
-            event = svc.re_sign_or_extend(
-                team_id=team_norm,
-                player_id=pid_norm,
-                signed_date=signed_date_iso,
-                years=int(offer.years),
-                salary_by_year=offer.salary_by_year,
+        try:
+            if mode == "SIGN_FA":
+                event = svc.sign_free_agent(
+                    team_id=team_norm,
+                    player_id=pid_norm,
+                    signed_date=signed_date_iso,
+                    years=int(offer.years),
+                    salary_by_year=offer.salary_by_year,
+                )
+            else:
+                # RE_SIGN and EXTEND both map to the same SSOT operation.
+                event = svc.re_sign_or_extend(
+                    team_id=team_norm,
+                    player_id=pid_norm,
+                    signed_date=signed_date_iso,
+                    years=int(offer.years),
+                    salary_by_year=offer.salary_by_year,
+                )
+        except CapViolationError as exc:
+            # Rule-based rejection: return 409 instead of 500.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": getattr(exc, "code", "CAP_VIOLATION"),
+                    "message": getattr(exc, "message", str(exc)),
+                    "details": getattr(exc, "details", None),
+                },
             )
 
     # Close the session (idempotent-ish; no side effects on DB).
