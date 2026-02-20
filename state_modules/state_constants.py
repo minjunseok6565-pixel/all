@@ -29,7 +29,7 @@ DEFAULT_TRADE_RULES: Dict[str, Any] = {
     "match_buffer": 250_000,
     "match_small_out_max": 8_277_000,
     "match_mid_out_max": 33_108_000,
-    "first_apron_mult": 1.10,
+    "first_apron_mult": 1.00,
     "second_apron_mult": 1.00,
     "new_fa_sign_ban_days": 90,
     "aggregation_ban_days": 60,
