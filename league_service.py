@@ -1177,6 +1177,19 @@ class LeagueService:
                 ).fetchone()
                 if not pick_row:
                     raise TradeError(PICK_NOT_OWNED, "Pick not found", {"pick_id": pick_id, "team_id": from_team_u})
+
+                # Safety: never allow moving a pick that has already been applied in the draft.
+                used = cur.execute(
+                    "SELECT 1 FROM draft_results WHERE pick_id=? LIMIT 1;",
+                    (str(pick_id),),
+                ).fetchone()
+                if used:
+                    raise TradeError(
+                        PICK_NOT_OWNED,
+                        "Pick already used in draft",
+                        {"pick_id": pick_id, "team_id": from_team_u, "reason": "pick_already_used"},
+                    )
+                    
                 current_owner = str(pick_row["owner_team"]).upper()
                 if current_owner != from_team_u:
                     raise TradeError(
