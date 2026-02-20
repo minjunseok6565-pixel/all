@@ -17,6 +17,7 @@ Design
 - Uses existing SSOT logic:
   - locks: same semantics as AssetLockRule (expires_at + allow_locked_by_deal_id)
   - player bans: same policy helpers used by rules/team_situation
+  - contract terms: contracts/terms.py SSOT (remaining years / salary schedule)
   - fit: FitEngine SSOT
   - market: MarketPricer SSOT
   - Stepien: stepien_policy SSOT (shared with PickRulesRule)
@@ -31,6 +32,12 @@ try:
     from league_repo import LeagueRepo  # type: ignore
 except Exception:  # pragma: no cover
     from trade.league_repo import LeagueRepo  # type: ignore
+
+# SSOT: contract schedule interpretation (remaining years, salary for a season).
+try:
+    from contracts.terms import player_contract_terms as _player_contract_terms  # type: ignore
+except Exception:  # pragma: no cover
+    _player_contract_terms = None  # type: ignore
 
 # Config (team list)
 try:
@@ -47,6 +54,7 @@ from ..rules.policies.stepien_policy import check_stepien_violation
 
 from ..valuation.fit_engine import FitEngine, FitEngineConfig
 from ..valuation.market_pricing import MarketPricer, MarketPricingConfig
+from ..valuation.env import ValuationEnv
 from ..valuation.data_context import contract_snapshot_from_dict
 from ..valuation.types import (
     PlayerSnapshot,
@@ -124,31 +132,21 @@ def _parse_iso_date(value: Any) -> Optional[date]:
         return None
 
 
-def _remaining_years_from_contract(contract: Optional[ContractSnapshot], season_year: int) -> float:
-    """Compute remaining years (inclusive) from contract snapshot.
+def _remaining_years_for_player_snapshot(snap: PlayerSnapshot, season_year: int) -> float:
+    """SSOT: remaining seasons >= current season with salary>0.
 
-    Mirrors TeamSituationEvaluator._remaining_years_for_player semantics.
+    Uses `contracts.terms.player_contract_terms` so behavior matches valuation:
+    - if `snap.contract` exists: schedule length from contract salary_by_year
+    - else: salary_amount fallback (1-year if salary known)
     """
-    if contract is None:
+    if _player_contract_terms is None:
         return 0.0
-
-    start = _safe_int(getattr(contract, "start_season_year", None), 0)
-    years = _safe_int(getattr(contract, "years", None), 0)
-    end_year: Optional[int] = None
-    if start > 0 and years > 0:
-        end_year = start + years - 1
-    else:
-        try:
-            keys = [int(k) for k in (getattr(contract, "salary_by_year", {}) or {}).keys()]
-            end_year = max(keys) if keys else None
-        except Exception:
-            end_year = None
-
-    if end_year is None:
+    try:
+        terms = _player_contract_terms(snap, current_season_year=int(season_year))
+        ry = int(getattr(terms, "remaining_years", 0) or 0)
+        return float(max(0, ry))
+    except Exception:
         return 0.0
-    if season_year > end_year:
-        return 0.0
-    return float(end_year - season_year + 1)
 
 
 # =============================================================================
@@ -385,9 +383,11 @@ def _lock_info_for_asset_key(
 def _market_summary_for_player(
     pricer: MarketPricer,
     snap: PlayerSnapshot,
+    *,
+    env: Optional[ValuationEnv] = None,
 ) -> MarketValueSummary:
     a = PlayerAsset(kind="player", player_id=snap.player_id, to_team=None)
-    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a))
+    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), env=env)
     return MarketValueSummary.from_components(mv.value)
 
 
@@ -395,10 +395,11 @@ def _market_summary_for_pick(
     pricer: MarketPricer,
     snap: PickSnapshot,
     *,
+    env: Optional[ValuationEnv] = None,
     pick_expectation: Optional[Any],
 ) -> MarketValueSummary:
     a = PickAsset(kind="pick", pick_id=snap.pick_id, to_team=None, protection=snap.protection)
-    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), pick_expectation=pick_expectation)
+    mv = pricer.price_snapshot(snap, asset_key=_asset_key(a), env=env, pick_expectation=pick_expectation)
     return MarketValueSummary.from_components(mv.value)
 
 
@@ -548,7 +549,17 @@ def build_trade_asset_catalog(
         raise RuntimeError("build_trade_asset_catalog: tick_ctx.repo missing")
 
     # --- Pricing + fit engines (pure + cached)
+    # SSOT: build valuation runtime env once per tick so catalog pricing matches deal evaluation.
+    env = ValuationEnv.from_trade_rules(trade_rules, current_season_year=int(season_year))
+
+    # Cap-normalized market config: keep salary_cap populated for legacy code paths.
     salary_cap = _safe_float(trade_rules.get("salary_cap"), 0.0) or 0.0
+    if salary_cap <= 0.0:
+        try:
+            salary_cap = float(env.salary_cap())
+        except Exception:
+            salary_cap = 0.0
+          
     pricer = MarketPricer(
         config=MarketPricingConfig(salary_cap=float(salary_cap)) if salary_cap > 0.0 else MarketPricingConfig()
     )
@@ -678,12 +689,12 @@ def build_trade_asset_catalog(
                 meta={},
             )
 
-            market = _market_summary_for_player(pricer, snap)
+            market = _market_summary_for_player(pricer, snap, env=env)
             supply = fit_engine.compute_player_supply_vector(snap)
             fit_score, _, _ = fit_engine.score_fit(dc.need_map or {}, supply)
             top_tags = _compute_top_tags(supply)
 
-            remaining_years = _remaining_years_from_contract(contract, int(season_year))
+            remaining_years = _remaining_years_for_player_snapshot(snap, int(season_year))
             is_expiring = bool(remaining_years <= 1.0 + 1e-9)
             salary_m = float((snap.salary_amount or 0.0) / 1_000_000.0)
 
@@ -906,7 +917,12 @@ def build_trade_asset_catalog(
             if not within_max:
                 continue
 
-            market = _market_summary_for_pick(pricer, snap_pick, pick_expectation=getattr(provider, "pick_expectations", {}).get(pid))
+            market = _market_summary_for_pick(
+                pricer,
+                snap_pick,
+                env=env,
+                pick_expectation=getattr(provider, "pick_expectations", {}).get(pid),
+            )
 
             if int(snap_pick.round) != 1:
                 cand = PickTradeCandidate(

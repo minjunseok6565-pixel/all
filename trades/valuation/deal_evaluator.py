@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from decision_context import DecisionContext
 
+from .env import ValuationEnv
+
 from .types import (
     AssetKind,
     AssetSnapshot,
@@ -147,6 +149,7 @@ class DealEvaluator:
         team_id: str,
         ctx: DecisionContext,
         provider: ValuationDataProvider,
+        env: ValuationEnv,
         include_package_effects: bool = True,
         attach_leg_metadata: bool = True,
     ) -> Tuple[TeamSideValuation, TeamDealEvaluation]:
@@ -186,6 +189,7 @@ class DealEvaluator:
                 asset=asset,
                 ctx=ctx,
                 provider=provider,
+                env=env,
             )
             if attach_leg_metadata:
                 tv = _attach_leg_meta(tv, direction="incoming", from_team=sender, to_team=recv)
@@ -199,6 +203,7 @@ class DealEvaluator:
                 asset=asset,
                 ctx=ctx,
                 provider=provider,
+                env=env
             )
             if attach_leg_metadata:
                 tv = _attach_leg_meta(tv, direction="outgoing", from_team=team_id, to_team=recv)
@@ -222,7 +227,7 @@ class DealEvaluator:
                 incoming=incoming_pairs,
                 outgoing=outgoing_pairs,
                 ctx=ctx,
-                current_season_year=getattr(provider, "current_season_year", None),
+                env=env,
                 config=self.package_config,  # can be None -> default inside module
             )
 
@@ -281,6 +286,7 @@ class DealEvaluator:
         asset: Asset,
         ctx: DecisionContext,
         provider: ValuationDataProvider,
+        env: ValuationEnv,
     ) -> Tuple[TeamValuation, AssetSnapshot]:
         """
         Resolve snapshot -> market valuation -> team valuation.
@@ -311,6 +317,7 @@ class DealEvaluator:
         market = self._market.price_snapshot(
             snap,
             asset_key=str(akey),
+            env=env,
             pick_expectation=pick_exp,
             resolved_pick_a=resolved_a,
             resolved_pick_b=resolved_b,
@@ -318,7 +325,7 @@ class DealEvaluator:
             resolved_pick_b_expectation=resolved_b_exp,
         )
 
-        team_val = self._team.value_asset(market, snap, ctx)
+        team_val = self._team.value_asset(market, snap, ctx, env=env)
         return team_val, snap
 
     def _resolve_snapshot(self, *, asset: Asset, provider: ValuationDataProvider) -> AssetSnapshot:
@@ -353,6 +360,7 @@ def evaluate_deal_for_team(
     team_id: str,
     ctx: DecisionContext,
     provider: ValuationDataProvider,
+    env: ValuationEnv,
     include_package_effects: bool = True,
     attach_leg_metadata: bool = True,
     market_config: Optional[MarketPricingConfig] = None,
@@ -372,6 +380,7 @@ def evaluate_deal_for_team(
         team_id=team_id,
         ctx=ctx,
         provider=provider,
+        env=env,
         include_package_effects=include_package_effects,
         attach_leg_metadata=attach_leg_metadata,
     )

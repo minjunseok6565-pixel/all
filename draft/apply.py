@@ -9,7 +9,15 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Protocol
 
-from config import CAP_ANNUAL_GROWTH_RATE, CAP_BASE_SALARY_CAP, CAP_BASE_SEASON_YEAR, CAP_ROUND_UNIT
+from config import CAP_BASE_SALARY_CAP, CAP_ROUND_UNIT
+
+# SSOT: season-based salary cap computation (avoid duplicated cap math in draft).
+try:
+    from cap_model import CapModel
+    _CAP_MODEL = CapModel.defaults()
+except Exception:  # pragma: no cover
+    CapModel = None  # type: ignore
+    _CAP_MODEL = None  # type: ignore
 from league_repo import LeagueRepo
 from contracts.models import new_contract_id, make_contract_record
 from ratings_2k import REQUIRED_KEYS, validate_attrs
@@ -94,10 +102,21 @@ def _round_to_unit(value: float, unit: int) -> int:
 
 
 def _cap_for_season_year(season_year: int) -> int:
+    """Return salary cap for season_year using CapModel SSOT.
+
+    NOTE:
+    - draft/apply.py currently does not receive league.trade_rules.
+      So we use CapModel.defaults() (config defaults) as the single official
+      implementation, rather than duplicating formulas here.
+    """
     y = int(season_year)
-    years_passed = y - int(CAP_BASE_SEASON_YEAR)
-    mult = (1.0 + float(CAP_ANNUAL_GROWTH_RATE)) ** years_passed
-    return _round_to_unit(int(CAP_BASE_SALARY_CAP) * mult, int(CAP_ROUND_UNIT))
+    if _CAP_MODEL is not None:
+        try:
+            return int(_CAP_MODEL.salary_cap_for_season(y))
+        except Exception:
+            pass
+    # Conservative fallback: base cap (keeps SRPE non-zero), no formula duplication.
+    return _round_to_unit(float(CAP_BASE_SALARY_CAP), int(CAP_ROUND_UNIT))
 
 
 def _min0_salary_for_season_year(season_year: int) -> int:

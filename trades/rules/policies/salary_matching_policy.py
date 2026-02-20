@@ -22,6 +22,8 @@ from dataclasses import dataclass
 import math
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from salary_matching_brackets import derive_salary_matching_brackets
+
 
 def _to_int_dollars(x: Any) -> int:
     """Convert float/int/str into a dollar integer defensively."""
@@ -70,11 +72,11 @@ class SalaryMatchingParams:
         )
         match_buffer_d = _to_int_dollars(tr.get("match_buffer") or 250_000)
 
-        # Derive thresholds for continuity:
-        #   2*out + buffer == out + mid_add  at out = mid_add - buffer
-        #   out + mid_add  == 1.25*out + buffer at out = 4*(mid_add - buffer)
-        match_small_out_max_d = max(0, int(match_mid_add_d) - int(match_buffer_d))
-        match_mid_out_max_d = int(match_small_out_max_d * 4)
+        # Derive thresholds for continuity (SSOT: salary_matching_brackets.py).
+        match_small_out_max_d, match_mid_out_max_d = derive_salary_matching_brackets(
+            match_mid_add_d=int(match_mid_add_d),
+            match_buffer_d=int(match_buffer_d),
+        )
         
         return cls(
             salary_cap_d=_to_int_dollars(tr.get("salary_cap") or 0.0),

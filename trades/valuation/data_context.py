@@ -114,23 +114,23 @@ def _coerce_options(obj: Any) -> List[ContractOptionSnapshot]:
 
 
 def contract_snapshot_from_dict(d: Mapping[str, Any], *, current_season_year: Optional[int] = None) -> ContractSnapshot:
-    """Convert a LeagueRepo contract dict -> ContractSnapshot."""
+    """Convert a LeagueRepo contract dict -> ContractSnapshot.
+
+    NOTE (SSOT)
+    ----------
+    `current_season_year` is a *runtime* valuation context and must NOT be stored
+    inside the snapshot meta. Contract schedule interpretation (remaining years,
+    current-year salary) is SSOT-owned by `contracts/terms.py` and should be
+    computed by callers with an explicit season context.
+
+    The parameter remains for backward compatibility but is intentionally ignored.
+    """
     salary_by_year = _coerce_salary_by_year(d.get("salary_by_year") or d.get("salary_by_season") or {})
     opts = _coerce_options(d.get("options") or [])
     start_season_year = _safe_int(d.get("start_season_year"), 0)
     years = _safe_int(d.get("years"), 0)
 
     meta: Dict[str, Any] = dict(d.get("meta") or {})
-    if current_season_year is not None:
-        meta.setdefault("current_season_year", int(current_season_year))
-    # Optional derived helper: remaining_years
-    if current_season_year is not None and salary_by_year:
-        remaining = sum(
-            1
-            for y, v in salary_by_year.items()
-            if int(y) >= int(current_season_year) and float(_safe_float(v, 0.0) or 0.0) > 0
-        )
-        meta.setdefault("remaining_years", float(remaining))
 
     return ContractSnapshot(
         contract_id=str(d.get("contract_id") or ""),
@@ -274,10 +274,7 @@ class RepoValuationDataContext(ValuationDataProvider):
         cid = self.active_contract_id_by_player.get(pid)
         if cid and cid in self.contracts_map:
             try:
-                contract = contract_snapshot_from_dict(
-                    self.contracts_map[cid],
-                    current_season_year=self.current_season_year,
-                )
+                contract = contract_snapshot_from_dict(self.contracts_map[cid])
             except Exception:
                 contract = None
 
@@ -292,7 +289,7 @@ class RepoValuationDataContext(ValuationDataProvider):
             salary_amount=_safe_float(salary_amount, None),
             attrs=attrs,
             contract=contract,
-            meta={"current_season_year": int(self.current_season_year)},
+            meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
         )
         self._player_cache[pid] = snap
         return snap
@@ -400,10 +397,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                     cid = self.active_contract_id_by_player.get(pid)
                     if cid and cid in self.contracts_map:
                         try:
-                            contract = contract_snapshot_from_dict(
-                                self.contracts_map[cid],
-                                current_season_year=self.current_season_year,
-                            )
+                            contract = contract_snapshot_from_dict(self.contracts_map[cid])
                         except Exception:
                             contract = None
 
@@ -418,7 +412,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                         salary_amount=_safe_float(salary_amount, None),
                         attrs=attrs,
                         contract=contract,
-                        meta={"current_season_year": int(self.current_season_year)},
+                        meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
                     )
                 except Exception:
                     continue
@@ -444,10 +438,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                         cid = self.active_contract_id_by_player.get(pid)
                         if cid and cid in self.contracts_map:
                             try:
-                                contract = contract_snapshot_from_dict(
-                                    self.contracts_map[cid],
-                                    current_season_year=self.current_season_year,
-                                )
+                                contract = contract_snapshot_from_dict(self.contracts_map[cid])
                             except Exception:
                                 contract = None
 
@@ -462,7 +453,7 @@ class RepoValuationDataContext(ValuationDataProvider):
                             salary_amount=_safe_float(salary_amount, None),
                             attrs=attrs,
                             contract=contract,
-                            meta={"current_season_year": int(self.current_season_year)},
+                            meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
                         )
                     except Exception:
                         continue
