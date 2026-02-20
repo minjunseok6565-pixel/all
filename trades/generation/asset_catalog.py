@@ -917,6 +917,11 @@ def build_trade_asset_catalog(
             if not within_max:
                 continue
 
+            # Never offer already-past picks as trade candidates.
+            # (Used picks should be filtered out at the snapshot layer, but keep generation fail-closed.)
+            if int(snap_pick.year) < int(draft_year):
+                continue
+
             market = _market_summary_for_pick(
                 pricer,
                 snap_pick,
