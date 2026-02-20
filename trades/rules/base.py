@@ -113,6 +113,22 @@ def _sum_player_salaries(ctx: TradeContext, player_ids: list[str]) -> float:
     return total
 
 
+def _sum_and_max_player_salaries(ctx: TradeContext, player_ids: list[str]) -> tuple[float, float]:
+    """Return (sum_salary, max_single_salary) for the given player_ids."""
+    if not player_ids:
+        return 0.0, 0.0
+    total = 0.0
+    max_salary = 0.0
+    for player_id in player_ids:
+        pid = _normalize_player_id(player_id)
+        salary = ctx.get_salary_amount(pid)
+        s = float(salary or 0)
+        total += s
+        if s > max_salary:
+            max_salary = s
+    return total, max_salary
+
+
 def build_team_trade_totals(
     deal: Any,
     ctx: TradeContext,
@@ -123,11 +139,16 @@ def build_team_trade_totals(
     for team_id in deal.teams:
         outgoing_players = players_out.get(team_id, [])
         incoming_players = players_in.get(team_id, [])
+        outgoing_salary, max_outgoing_salary = _sum_and_max_player_salaries(ctx, outgoing_players)
+        incoming_salary, _ = _sum_and_max_player_salaries(ctx, incoming_players)
+        
         totals[team_id] = {
-            "outgoing_salary": _sum_player_salaries(ctx, outgoing_players),
-            "incoming_salary": _sum_player_salaries(ctx, incoming_players),
+            "outgoing_salary": outgoing_salary,
+            "incoming_salary": incoming_salary,
             "outgoing_players_count": len(outgoing_players),
             "incoming_players_count": len(incoming_players),
+            # SSOT for SECOND_APRON (post-2024): outgoing aggregation ban requires max single outgoing.
+            "max_outgoing_salary": max_outgoing_salary,
         }
 
     return totals
