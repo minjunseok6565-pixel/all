@@ -338,6 +338,14 @@ class AgencyEventRespondRequest(BaseModel):
     now_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
 
 
+class AgencyUserActionRequest(BaseModel):
+    user_team_id: str
+    player_id: str
+    action_type: str
+    action_payload: Optional[Dict[str, Any]] = None
+    now_date: Optional[str] = None  # YYYY-MM-DD (default: in-game date)
+
+
 # -------------------------------------------------------------------------
 # 유틸: Gemini 응답 텍스트 추출
 # -------------------------------------------------------------------------
@@ -1677,6 +1685,54 @@ async def api_agency_events_respond(req: AgencyEventRespondRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+@app.post("/api/agency/actions/apply")
+async def api_agency_actions_apply(req: AgencyUserActionRequest):
+    """User-initiated agency actions (proactive management).
+
+    Examples: meet player, praise, warn, set expectations, start extension talks.
+    This records an agency event, updates player agency state, and may create a promise.
+    """
+    db_path = state.get_db_path()
+    in_game_date = state.get_current_date_as_date().isoformat()
+    now_date = req.now_date or in_game_date
+
+    league_ctx = state.get_league_context_snapshot() or {}
+    try:
+        sy = int(league_ctx.get("season_year") or 0)
+    except Exception:
+        sy = 0
+
+    try:
+        from agency.interaction_service import AgencyInteractionError, apply_user_agency_action
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Agency interaction module import failed: {exc}")
+
+    try:
+        out = apply_user_agency_action(
+            db_path=str(db_path),
+            user_team_id=req.user_team_id,
+            player_id=req.player_id,
+            season_year=int(sy),
+            action_type=req.action_type,
+            action_payload=req.action_payload,
+            now_date_iso=str(now_date),
+            strict_promises=True,
+        )
+        pid = out.get("player_id")
+        if pid:
+            _try_ui_cache_refresh_players([str(pid)], context="agency.actions.apply")
+        return out
+    except AgencyInteractionError as e:
+        code = str(e.code or "")
+        if code in {"AGENCY_PLAYER_NOT_ON_TEAM"}:
+            raise HTTPException(status_code=409, detail={"code": code, "message": e.message, "details": e.details})
+        if code in {"AGENCY_PROMISE_SCHEMA_MISSING"}:
+            raise HTTPException(status_code=500, detail={"code": code, "message": e.message, "details": e.details})
+        raise HTTPException(status_code=400, detail={"code": code, "message": e.message, "details": e.details})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/offseason/options/team/pending")
 async def api_offseason_team_options_pending(req: TeamOptionPendingRequest):

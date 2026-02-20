@@ -27,6 +27,7 @@ from league_repo import LeagueRepo
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .repo import get_player_agency_states, insert_agency_events, upsert_player_agency_states
 from .responses import DEFAULT_RESPONSE_CONFIG, ResponseConfig, apply_user_response
+from .user_actions import apply_user_action
 from .utils import (
     clamp01,
     extract_mental_from_attrs,
@@ -553,6 +554,334 @@ def respond_to_agency_event(
                     "trust": new_state.get("trust"),
                     "minutes_frustration": new_state.get("minutes_frustration"),
                     "team_frustration": new_state.get("team_frustration"),
+                    "role_frustration": new_state.get("role_frustration"),
+                    "contract_frustration": new_state.get("contract_frustration"),
+                    "health_frustration": new_state.get("health_frustration"),
+                    "chemistry_frustration": new_state.get("chemistry_frustration"),
+                    "usage_frustration": new_state.get("usage_frustration"),
+                    "starts_rate": new_state.get("starts_rate"),
+                    "closes_rate": new_state.get("closes_rate"),
+                    "usage_share": new_state.get("usage_share"),
                     "trade_request_level": new_state.get("trade_request_level"),
+                    "cooldown_minutes_until": new_state.get("cooldown_minutes_until"),
+                    "cooldown_trade_until": new_state.get("cooldown_trade_until"),
+                    "cooldown_help_until": new_state.get("cooldown_help_until"),
+                    "cooldown_contract_until": new_state.get("cooldown_contract_until"),
+                    "cooldown_role_until": new_state.get("cooldown_role_until"),
+                    "cooldown_health_until": new_state.get("cooldown_health_until"),
+                    "cooldown_chemistry_until": new_state.get("cooldown_chemistry_until"),
+                    "escalation_role": new_state.get("escalation_role"),
+                    "escalation_contract": new_state.get("escalation_contract"),
+                    "escalation_team": new_state.get("escalation_team"),
+                    "escalation_health": new_state.get("escalation_health"),
+                    "escalation_chemistry": new_state.get("escalation_chemistry"),
+                    "context": new_state.get("context"),
+                },
+            }
+
+
+# ---------------------------------------------------------------------------
+# User-initiated actions (proactive)
+# ---------------------------------------------------------------------------
+
+
+def apply_user_agency_action(
+    *,
+    db_path: str,
+    user_team_id: str,
+    player_id: str,
+    season_year: int,
+    action_type: str,
+    action_payload: Optional[Mapping[str, Any]] = None,
+    now_date_iso: Optional[str] = None,
+    cfg: AgencyConfig = DEFAULT_CONFIG,
+    strict_promises: bool = True,
+) -> Dict[str, Any]:
+    """Apply a user-initiated agency action.
+
+    This creates an append-only agency_event and (optionally) a promise,
+    and updates player_agency_state.
+
+    Idempotency:
+      event_id = make_event_id('agency', 'user_action', player_id, date, action_type)
+    """
+
+    if not str(player_id or '').strip():
+        raise AgencyInteractionError(BAD_RESPONSE, 'player_id is required', {'player_id': player_id})
+    if not str(user_team_id or '').strip():
+        raise AgencyInteractionError(BAD_RESPONSE, 'user_team_id is required', {'user_team_id': user_team_id})
+
+    pid = str(player_id)
+    user_tid = str(user_team_id).upper()
+    sy = int(season_year)
+
+    # Determine now date
+    if now_date_iso is None:
+        try:
+            import game_time
+
+            now_date_iso = game_time.game_date_iso()
+        except Exception:
+            now_date_iso = '2000-01-01'
+
+    now_date = norm_date_iso(now_date_iso) or '2000-01-01'
+    now_iso = _now_utc_like_iso_from_date(now_date)
+
+    # Deterministic event id (idempotent)
+    action_key = str(action_type or '').upper()
+    action_event_id = make_event_id('agency', 'user_action', pid, now_date, action_key)
+
+    with LeagueRepo(str(db_path)) as repo:
+        repo.init_db()
+        with repo.transaction() as cur:
+            # Idempotency check
+            exists = cur.execute(
+                "SELECT 1 FROM agency_events WHERE event_id=? LIMIT 1;",
+                (str(action_event_id),),
+            ).fetchone()
+            if exists:
+                return {
+                    'ok': True,
+                    'skipped': True,
+                    'event_id': str(action_event_id),
+                    'player_id': pid,
+                    'team_id': user_tid,
+                    'season_year': int(sy),
+                    'reason': 'already_applied',
+                }
+
+            # Ownership validation: player must be on the user's team.
+            row = cur.execute(
+                "SELECT team_id FROM roster WHERE player_id=? AND status='active' LIMIT 1;",
+                (str(pid),),
+            ).fetchone()
+            if not row:
+                raise AgencyInteractionError(PLAYER_NOT_ON_TEAM, 'Player not on an active roster', {'player_id': pid})
+            roster_tid = str(row[0]).upper() if not isinstance(row, dict) else str(row.get('team_id')).upper()
+            if roster_tid != user_tid:
+                raise AgencyInteractionError(
+                    PLAYER_NOT_ON_TEAM,
+                    'Player is not on user team',
+                    {'player_id': pid, 'user_team_id': user_tid, 'roster_team_id': roster_tid},
+                )
+
+            # Load current state (or create a safe default).
+            st_map = get_player_agency_states(cur, [pid])
+            st = st_map.get(pid)
+            if not st:
+                st = {
+                    'player_id': pid,
+                    'team_id': user_tid,
+                    'season_year': int(sy),
+                    'role_bucket': 'UNKNOWN',
+                    'leverage': 0.0,
+                    'minutes_expected_mpg': 0.0,
+                    'minutes_actual_mpg': 0.0,
+                    'minutes_frustration': 0.0,
+                    'team_frustration': 0.0,
+                    'trust': 0.5,
+                    'role_frustration': 0.0,
+                    'contract_frustration': 0.0,
+                    'health_frustration': 0.0,
+                    'chemistry_frustration': 0.0,
+                    'usage_frustration': 0.0,
+                    'starts_rate': 0.0,
+                    'closes_rate': 0.0,
+                    'usage_share': 0.0,
+                    'trade_request_level': 0,
+                    'cooldown_minutes_until': None,
+                    'cooldown_trade_until': None,
+                    'cooldown_help_until': None,
+                    'cooldown_contract_until': None,
+                    'cooldown_role_until': None,
+                    'cooldown_health_until': None,
+                    'cooldown_chemistry_until': None,
+                    'escalation_role': 0,
+                    'escalation_contract': 0,
+                    'escalation_team': 0,
+                    'escalation_health': 0,
+                    'escalation_chemistry': 0,
+                    'last_processed_month': None,
+                    'context': {},
+                }
+
+            # Load mental profile
+            prof = _load_player_profile(cur, pid, cfg=cfg)
+            mental = prof.get('mental') if isinstance(prof, dict) else {}
+            if not isinstance(mental, Mapping):
+                mental = {}
+
+            outcome = apply_user_action(
+                action_type=action_key,
+                state=st,
+                mental=mental,
+                action_payload=action_payload,
+                now_date_iso=str(now_date),
+                cfg=cfg,
+            )
+
+            if not outcome.ok:
+                raise AgencyInteractionError(
+                    BAD_RESPONSE,
+                    'Invalid agency user action',
+                    {'action_type': action_key, 'reasons': outcome.reasons},
+                )
+
+            new_state = dict(st)
+            new_state.update(outcome.state_updates or {})
+
+            # Clamp key fields
+            for k, default in [
+                ('trust', 0.5),
+                ('minutes_frustration', 0.0),
+                ('team_frustration', 0.0),
+                ('role_frustration', 0.0),
+                ('contract_frustration', 0.0),
+                ('health_frustration', 0.0),
+                ('chemistry_frustration', 0.0),
+                ('usage_frustration', 0.0),
+            ]:
+                if k in new_state:
+                    new_state[k] = float(clamp01(safe_float(new_state.get(k), default)))
+
+            try:
+                new_state['trade_request_level'] = int(max(0, min(2, int(new_state.get('trade_request_level') or 0))))
+            except Exception:
+                new_state['trade_request_level'] = 0
+
+            # Force team/season invariants
+            new_state['player_id'] = pid
+            new_state['team_id'] = user_tid
+            new_state['season_year'] = int(sy)
+
+            upsert_player_agency_states(cur, [new_state], now=str(now_iso))
+
+            # Persist action event
+            action_event = {
+                'event_id': str(action_event_id),
+                'player_id': pid,
+                'team_id': user_tid,
+                'season_year': int(sy),
+                'date': str(now_date)[:10],
+                'event_type': str(outcome.event_type or 'USER_ACTION').upper(),
+                'severity': float(clamp01(safe_float(outcome.severity, 0.10))),
+                'payload': {
+                    'action_type': action_key,
+                    'action_payload': dict(action_payload or {}),
+                    'reasons': list(outcome.reasons or []),
+                    'state_updates': dict(outcome.state_updates or {}),
+                    'meta': dict(outcome.meta or {}),
+                },
+            }
+
+            events_to_insert = [action_event]
+
+            # Promise persistence (optional)
+            promise_id: Optional[str] = None
+            if outcome.promise is not None:
+                promise_spec = outcome.promise
+
+                promise_table_exists = _table_exists(cur, 'player_agency_promises')
+                if strict_promises and not promise_table_exists:
+                    raise AgencyInteractionError(
+                        PROMISE_SCHEMA_MISSING,
+                        'player_agency_promises table is missing (required for promise actions)',
+                        {'required_table': 'player_agency_promises'},
+                    )
+
+                promise_id = make_event_id('agency_promise', action_event_id, promise_spec.promise_type)
+
+                if promise_table_exists:
+                    cur.execute(
+                        """
+                        INSERT OR IGNORE INTO player_agency_promises(
+                            promise_id,
+                            player_id,
+                            team_id,
+                            season_year,
+                            source_event_id,
+                            response_id,
+                            promise_type,
+                            status,
+                            created_date,
+                            due_month,
+                            target_value,
+                            target_json,
+                            evidence_json,
+                            resolved_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, NULL);
+                        """,
+                        (
+                            str(promise_id),
+                            str(pid),
+                            str(user_tid),
+                            int(sy),
+                            str(action_event_id),
+                            str(action_event_id),
+                            str(promise_spec.promise_type),
+                            str(now_date)[:10],
+                            str(promise_spec.due_month),
+                            promise_spec.target_value,
+                            json_dumps(dict(promise_spec.target or {})),
+                            json_dumps({}),
+                        ),
+                    )
+
+                # Log promise creation event
+                promise_event_id = make_event_id('agency', 'promise', promise_id)
+                events_to_insert.append(
+                    {
+                        'event_id': promise_event_id,
+                        'player_id': pid,
+                        'team_id': user_tid,
+                        'season_year': int(sy),
+                        'date': str(now_date)[:10],
+                        'event_type': 'PROMISE_CREATED',
+                        'severity': float(clamp01(0.15 + 0.60 * safe_float(outcome.severity, 0.10))),
+                        'payload': {
+                            'promise_id': promise_id,
+                            'promise_type': str(promise_spec.promise_type),
+                            'due_month': str(promise_spec.due_month),
+                            'target_value': promise_spec.target_value,
+                            'target': dict(promise_spec.target or {}),
+                            'source_event_id': str(action_event_id),
+                        },
+                    }
+                )
+
+            insert_agency_events(cur, events_to_insert, now=str(now_iso))
+
+            return {
+                'ok': True,
+                'skipped': False,
+                'event_id': str(action_event_id),
+                'player_id': pid,
+                'team_id': user_tid,
+                'season_year': int(sy),
+                'outcome': {
+                    'action_type': action_key,
+                    'event_type': str(outcome.event_type or 'USER_ACTION').upper(),
+                    'reasons': list(outcome.reasons or []),
+                    'meta': dict(outcome.meta or {}),
+                },
+                'promise': {
+                    'promise_id': promise_id,
+                    'promise_type': outcome.promise.promise_type if outcome.promise else None,
+                    'due_month': outcome.promise.due_month if outcome.promise else None,
+                }
+                if outcome.promise is not None
+                else None,
+                'state': {
+                    'trust': new_state.get('trust'),
+                    'minutes_frustration': new_state.get('minutes_frustration'),
+                    'team_frustration': new_state.get('team_frustration'),
+                    'role_frustration': new_state.get('role_frustration'),
+                    'contract_frustration': new_state.get('contract_frustration'),
+                    'health_frustration': new_state.get('health_frustration'),
+                    'chemistry_frustration': new_state.get('chemistry_frustration'),
+                    'usage_frustration': new_state.get('usage_frustration'),
+                    'trade_request_level': new_state.get('trade_request_level'),
+                    'context': new_state.get('context'),
                 },
             }

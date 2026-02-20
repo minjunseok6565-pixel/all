@@ -63,6 +63,11 @@ ResponseType = Literal[
     # Minutes complaint
     "PROMISE_MINUTES",
 
+    # v2 axis promises
+    "PROMISE_ROLE",
+    "PROMISE_LOAD",
+    "PROMISE_EXTENSION_TALKS",
+
     # Help demand
     "PROMISE_HELP",
     "REFUSE_HELP",
@@ -106,12 +111,21 @@ class ResponseConfig:
 
     # v2: generic deltas for non-v1 axis events (role/contract/health/chemistry)
     axis_relief_acknowledge: float = 0.03
+    axis_relief_promise: float = 0.05
     axis_bump_dismiss: float = 0.03
 
     # Promise due months
     promise_minutes_due_months: int = 1
+    promise_role_due_months: int = 1
+    promise_load_due_months: int = 1
+    promise_extension_due_months: int = 1
     promise_help_due_months: int = 2
     promise_trade_due_months: int = 2
+
+    # v2 promise defaults
+    promise_role_min_starts_rate: float = 0.60
+    promise_role_min_closes_rate: float = 0.35
+    promise_load_default_max_mpg: float = 30.0
 
     # Minutes promise target bounds (safety)
     promise_minutes_min_mpg: float = 8.0
@@ -332,18 +346,118 @@ def apply_user_response(
 
 
     else:
-        # v2 generic issue families (ACKNOWLEDGE/DISMISS only)
+        # v2 issue families (axis-based). Some axes allow promises.
         axis = _axis_for_v2_event(et)
 
         if rt == "ACKNOWLEDGE":
             trust1 = trust0 + rcfg.trust_acknowledge * impact * pos_mult * sev_mult
-            delta = -rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult
+            if axis == "TEAM":
+                delta = -rcfg.team_relief_acknowledge * impact * pos_mult * sev_mult
+            else:
+                delta = -rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult
             reasons = [{"code": "V2_ACKNOWLEDGE", "evidence": {"axis": axis}}]
-        else:  # DISMISS
+
+        elif rt == "DISMISS":
             trust1 = trust0 - rcfg.trust_dismiss_penalty * impact * neg_mult * sev_mult
-            delta = rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult
+            if axis == "TEAM":
+                delta = rcfg.team_bump_refuse_trade * 0.35 * impact * neg_mult * sev_mult
+            else:
+                delta = rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult
             reasons = [{"code": "V2_DISMISS", "evidence": {"axis": axis}}]
 
+        elif rt == "PROMISE_ROLE" and axis == "ROLE":
+            dt = float(rcfg.trust_promise) * impact * pos_mult * sev_mult
+            trust1 = trust0 + dt
+            delta = -rcfg.axis_relief_promise * impact * pos_mult * sev_mult
+
+            # Target role can be provided by UI; default to STARTER.
+            target_role = str(payload.get("target_role") or payload.get("role") or "STARTER").upper()
+            if target_role not in {"STARTER", "CLOSER", "SIXTH_MAN", "SIXTH", "SIXTHMAN"}:
+                target_role = "STARTER"
+            if target_role in {"SIXTH", "SIXTHMAN"}:
+                target_role = "SIXTH_MAN"
+
+            due = due_month_from_now(now_d, int(rcfg.promise_role_due_months))
+            promise = PromiseSpec(
+                promise_type="ROLE",
+                due_month=due,
+                target={
+                    "role": target_role,
+                    "min_starts_rate": float(rcfg.promise_role_min_starts_rate),
+                    "min_closes_rate": float(rcfg.promise_role_min_closes_rate),
+                    "source": "role_issue",
+                },
+            )
+            reasons = [{"code": "V2_PROMISE_ROLE_CREATED", "evidence": {"due_month": due, "target_role": target_role, "trust_delta": dt}}]
+
+        elif rt == "PROMISE_LOAD" and axis == "HEALTH":
+            dt = float(rcfg.trust_promise) * impact * pos_mult * sev_mult * 0.85
+            trust1 = trust0 + dt
+            delta = -rcfg.axis_relief_promise * impact * pos_mult * sev_mult
+
+            max_mpg = safe_float(payload.get("max_mpg"), None)
+            if max_mpg is None:
+                max_mpg = safe_float(payload.get("target_mpg"), None)
+            if max_mpg is None:
+                max_mpg = float(rcfg.promise_load_default_max_mpg)
+
+            max_mpg = float(clamp(max_mpg, 8.0, 40.0))
+
+            due = due_month_from_now(now_d, int(rcfg.promise_load_due_months))
+            promise = PromiseSpec(
+                promise_type="LOAD",
+                due_month=due,
+                target_value=float(max_mpg),
+                target={"mode": "MAX_MPG", "source": "health_issue"},
+            )
+            reasons = [{"code": "V2_PROMISE_LOAD_CREATED", "evidence": {"due_month": due, "max_mpg": float(max_mpg), "trust_delta": dt}}]
+
+        elif rt == "PROMISE_EXTENSION_TALKS" and axis == "CONTRACT":
+            dt = float(rcfg.trust_promise) * impact * pos_mult * sev_mult * 0.80
+            trust1 = trust0 + dt
+            delta = -rcfg.axis_relief_promise * impact * pos_mult * sev_mult
+
+            base_cid = None
+            base_end = None
+            ev_payload = event.get("payload")
+            if isinstance(ev_payload, Mapping):
+                base_cid = ev_payload.get("active_contract_id")
+                base_end = ev_payload.get("contract_end_season_id")
+
+            due = due_month_from_now(now_d, int(rcfg.promise_extension_due_months))
+            promise = PromiseSpec(
+                promise_type="EXTENSION_TALKS",
+                due_month=due,
+                target={
+                    "baseline_active_contract_id": str(base_cid) if base_cid else None,
+                    "baseline_end_season_id": str(base_end) if base_end else None,
+                    "source": "contract_issue",
+                },
+            )
+            reasons = [{"code": "V2_PROMISE_EXTENSION_TALKS_CREATED", "evidence": {"due_month": due, "trust_delta": dt}}]
+
+        elif rt == "PROMISE_HELP" and axis == "TEAM":
+            dt = float(rcfg.trust_promise) * impact * pos_mult * sev_mult * 0.85
+            trust1 = trust0 + dt
+            delta = -rcfg.team_relief_promise * impact * sev_mult
+
+            due = due_month_from_now(now_d, int(rcfg.promise_help_due_months))
+            tgt: Dict[str, Any] = {"source": "team_issue"}
+            need_tags = payload.get("need_tags")
+            if isinstance(need_tags, list) and need_tags:
+                tgt["need_tags"] = [str(x).upper() for x in need_tags if str(x).strip()]
+            promise = PromiseSpec(promise_type="HELP", due_month=due, target=tgt)
+            reasons = [{"code": "V2_PROMISE_HELP_CREATED", "evidence": {"due_month": due, "trust_delta": dt, "need_tags": tgt.get("need_tags")}}]
+
+        else:
+            return ResponseOutcome(
+                ok=False,
+                event_type=et,
+                response_type=rt,
+                reasons=[{"code": "RESPONSE_INVALID_TYPE", "evidence": {"event_type": et, "response_type": rt}}],
+            )
+
+        # Apply axis deltas
         if axis == "ROLE":
             rfr1 = rfr0 + delta
         elif axis == "CONTRACT":
@@ -353,13 +467,7 @@ def apply_user_response(
         elif axis == "CHEMISTRY":
             chfr1 = chfr0 + delta
         elif axis == "TEAM":
-            # Team axis uses slightly gentler acknowledge relief.
-            if rt == "ACKNOWLEDGE":
-                delta_t = -rcfg.team_relief_acknowledge * impact * pos_mult * sev_mult
-            else:
-                delta_t = rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult
-            tfr1 = tfr0 + delta_t
-
+            tfr1 = tfr0 + delta
     trust1 = clamp01(trust1)
     mfr1 = clamp01(mfr1)
     tfr1 = clamp01(tfr1)
@@ -432,6 +540,11 @@ def apply_user_response(
         "trust": float(trust1),
         "minutes_frustration": float(mfr1),
         "team_frustration": float(tfr1),
+        "role_frustration": float(rfr1),
+        "contract_frustration": float(cfr1),
+        "health_frustration": float(hfr1),
+        "chemistry_frustration": float(chfr1),
+        "usage_frustration": float(ufr1),
         "trade_request_level": int(tr_level1),
     }
 
@@ -463,13 +576,15 @@ def _allowed_responses_for_event(event_type: str) -> set[str]:
         return {"ACKNOWLEDGE", "SHOP_TRADE", "REFUSE_TRADE", "PROMISE_COMPETE"}
 
     # v2 issue families
-    if et in {
-        "ROLE_PRIVATE", "ROLE_AGENT", "ROLE_PUBLIC",
-        "CONTRACT_PRIVATE", "CONTRACT_AGENT", "CONTRACT_PUBLIC",
-        "HEALTH_PRIVATE", "HEALTH_AGENT", "HEALTH_PUBLIC",
-        "TEAM_PRIVATE", "TEAM_PUBLIC",
-        "CHEMISTRY_PRIVATE", "CHEMISTRY_AGENT", "CHEMISTRY_PUBLIC",
-    }: 
+    if et.startswith("ROLE_"):
+        return {"ACKNOWLEDGE", "PROMISE_ROLE", "DISMISS"}
+    if et.startswith("CONTRACT_"):
+        return {"ACKNOWLEDGE", "PROMISE_EXTENSION_TALKS", "DISMISS"}
+    if et.startswith("HEALTH_"):
+        return {"ACKNOWLEDGE", "PROMISE_LOAD", "DISMISS"}
+    if et.startswith("TEAM_"):
+        return {"ACKNOWLEDGE", "PROMISE_HELP", "DISMISS"}
+    if et.startswith("CHEMISTRY_"):
         return {"ACKNOWLEDGE", "DISMISS"}
 
     return {"ACKNOWLEDGE"}
@@ -504,7 +619,7 @@ def _extract_leverage(*, state: Mapping[str, Any], event: Mapping[str, Any]) -> 
 
 def _tone_for_response(event_type: str, response_type: str, *, ego: float, sev: float) -> Literal["CALM", "FIRM", "ANGRY"]:
     rt = str(response_type).upper()
-    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE"}:
+    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE", "PROMISE_ROLE", "PROMISE_LOAD", "PROMISE_EXTENSION_TALKS"}:
         return "CALM"
     if rt in {"ACKNOWLEDGE"}:
         return "FIRM" if sev > 0.65 else "CALM"
@@ -519,7 +634,7 @@ def _player_reply(event_type: str, response_type: str, *, tone: str) -> str:
     rt = str(response_type).upper()
     if rt == "ACKNOWLEDGE":
         return "Alright. I hear you." if tone != "ANGRY" else "You better mean that."
-    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE"}:
+    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE", "PROMISE_ROLE", "PROMISE_LOAD", "PROMISE_EXTENSION_TALKS"}:
         return "Okay. I'll hold you to that." if tone != "ANGRY" else "Don't waste my time."
     if rt in {"DISMISS", "REFUSE_HELP", "REFUSE_TRADE"}:
         return "So that's how it is." if tone != "ANGRY" else "This is disrespectful."
