@@ -2324,7 +2324,25 @@ async def api_offseason_draft_apply(req: EmptyRequest):
             raise HTTPException(status_code=500, detail="Invalid in-game date object in state.")
         tx_date_iso = in_game_date.isoformat()
 
-        applied_count = int(apply_selections(db_path=db_path, draft_year=int(draft_year), tx_date_iso=tx_date_iso))
+        # Inject CapModel built from SSOT (state.trade_rules) to avoid duplicated cap math.
+        try:
+            from cap_model import CapModel
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"CapModel import failed: {exc}")
+
+        trade_rules = league_ctx.get("trade_rules") if isinstance(league_ctx, dict) else None
+        if not isinstance(trade_rules, dict):
+            trade_rules = {}
+        cap_model = CapModel.from_trade_rules(trade_rules, current_season_year=int(from_year))
+
+        applied_count = int(
+            apply_selections(
+                db_path=db_path,
+                draft_year=int(draft_year),
+                tx_date_iso=tx_date_iso,
+                cap_model=cap_model,
+            )
+        )
 
         # 2) Resolve undrafted declared players into pro routes (FA / retirement)
         from draft.undrafted import resolve_undrafted_to_pro
