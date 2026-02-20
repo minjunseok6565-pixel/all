@@ -149,7 +149,7 @@ class DealEvaluator:
         team_id: str,
         ctx: DecisionContext,
         provider: ValuationDataProvider,
-        env: Optional[ValuationEnv] = None,
+        env: ValuationEnv,
         include_package_effects: bool = True,
         attach_leg_metadata: bool = True,
     ) -> Tuple[TeamSideValuation, TeamDealEvaluation]:
@@ -227,8 +227,7 @@ class DealEvaluator:
                 incoming=incoming_pairs,
                 outgoing=outgoing_pairs,
                 ctx=ctx,
-                env=env,
-                current_season_year=(env.current_season_year if env is not None else getattr(provider, "current_season_year", None)),
+                env=env,,
                 config=self.package_config,  # can be None -> default inside module
             )
 
@@ -287,7 +286,7 @@ class DealEvaluator:
         asset: Asset,
         ctx: DecisionContext,
         provider: ValuationDataProvider,
-        env: Optional[ValuationEnv] = None,
+        env: ValuationEnv,
     ) -> Tuple[TeamValuation, AssetSnapshot]:
         """
         Resolve snapshot -> market valuation -> team valuation.
@@ -361,7 +360,7 @@ def evaluate_deal_for_team(
     team_id: str,
     ctx: DecisionContext,
     provider: ValuationDataProvider,
-    env: Optional[ValuationEnv] = None,
+    env: ValuationEnv,
     include_package_effects: bool = True,
     attach_leg_metadata: bool = True,
     market_config: Optional[MarketPricingConfig] = None,
