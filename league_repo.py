@@ -535,6 +535,53 @@ class LeagueRepo:
             out[pick["pick_id"]] = pick
         return out
 
+    def _read_tradable_draft_picks_map(self, cur: sqlite3.Cursor) -> Dict[str, Dict[str, Any]]:
+        """Read only *tradable* (unused) draft picks.
+
+        SSOT:
+        - `draft_results` is the SSOT for applied picks (idempotent/resumable draft execution).
+        - A pick is tradable iff it exists in `draft_picks` AND has no row in `draft_results`.
+
+        This keeps historical picks in `draft_picks` for auditing, while ensuring the trade
+        system never treats already-used picks as assets.
+        """
+        # SSOT: ensure protection is canonical on reads.
+        try:
+            from trades.protection import normalize_protection_optional
+            from trades.errors import TradeError as _TradeError
+        except Exception as exc:  # pragma: no cover
+            raise ImportError("trades.protection is required") from exc
+
+        rows = cur.execute(
+            """
+            SELECT
+                p.pick_id, p.year, p.round, p.original_team, p.owner_team, p.protection_json
+            FROM draft_picks p
+            LEFT JOIN draft_results r ON r.pick_id = p.pick_id
+            WHERE r.pick_id IS NULL;
+            """
+        ).fetchall()
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            protection_raw = _json_loads(r["protection_json"], None)
+            try:
+                protection = normalize_protection_optional(protection_raw, pick_id=str(r["pick_id"]))
+            except _TradeError as exc:
+                raise ValueError(
+                    f"draft_picks.protection_json invalid schema (pick_id={r['pick_id']}): {exc}"
+                ) from exc
+            pick = {
+                "pick_id": str(r["pick_id"]),
+                "year": int(r["year"]),
+                "round": int(r["round"]),
+                "original_team": str(r["original_team"]).upper(),
+                "owner_team": str(r["owner_team"]).upper(),
+                "protection": protection,
+            }
+            out[pick["pick_id"]] = pick
+        return out
+
     def _read_swap_rights_map(self, cur: sqlite3.Cursor) -> Dict[str, Dict[str, Any]]:
         rows = cur.execute(
             """
@@ -605,7 +652,7 @@ class LeagueRepo:
         """
         with self.transaction() as cur:
             return {
-                "draft_picks": self._read_draft_picks_map(cur),
+                "draft_picks": self._read_tradable_draft_picks_map(cur),
                 "swap_rights": self._read_swap_rights_map(cur),
                 "fixed_assets": self._read_fixed_assets_map(cur),
             }
