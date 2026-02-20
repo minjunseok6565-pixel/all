@@ -10,7 +10,7 @@ Policy mirrors the behavior currently implemented in
 
 - apron status is based on *payroll_after* (after applying the trade)
 - cap-room exception is evaluated before any matching requirement
-- SECOND_APRON enforces one-for-one aggregation restriction
+- SECOND_APRON enforces the post-2024 CBA aggregation ban (incoming must be matchable by a single outgoing salary)
 - allowed incoming salary is computed per the same thresholds/multipliers
 
 The policy operates primarily on *dollar integer* inputs ("*_d" suffix) to
@@ -86,7 +86,7 @@ class SalaryMatchingParams:
             match_mid_out_max_d=match_mid_out_max_d,
             match_mid_add_d=match_mid_add_d,
             match_buffer_d=match_buffer_d,
-            first_apron_mult=float(tr.get("first_apron_mult") or 1.10),
+            first_apron_mult=float(tr.get("first_apron_mult") or 1.00),
             second_apron_mult=float(tr.get("second_apron_mult") or 1.00),
         )
 
@@ -101,6 +101,7 @@ class SalaryMatchingResult:
     allowed_in_d: int
     payroll_after_d: int
     max_incoming_cap_room_d: Optional[int] = None
+    max_single_outgoing_salary_d: Optional[int] = None,
     reason: Optional[str] = None
 
 
@@ -130,6 +131,9 @@ def check_salary_matching(
         incoming_salary_d: Incoming salary in the trade (dollars).
         outgoing_players: Outgoing player count.
         incoming_players: Incoming player count.
+        max_single_outgoing_salary_d: Largest single outgoing player salary (dollars).
+            Required for SECOND_APRON (post-2024 aggregation ban); callers should compute this
+            from the outgoing player list rather than relying on outgoing_salary_d (which is a sum).
         params: SalaryMatchingParams.
         eps: Small epsilon added before floor() to counteract float drift.
 
@@ -180,19 +184,26 @@ def check_salary_matching(
             reason="outgoing_required",
         )
 
-    # SECOND_APRON aggregation restriction (one-for-one)
+    # SECOND_APRON (post-2024 CBA): no outgoing salary aggregation for matching.
+    #
+    # Practical rule:
+    #   - A 2nd-apron team may not use multiple outgoing salaries to determine its allowed incoming.
+    #   - Therefore, allowed incoming is based on the *single largest* outgoing player salary.
+    #
+    # Callers must pass `max_single_outgoing_salary_d` computed from the outgoing player list.
     if status == "SECOND_APRON":
-        if int(outgoing_players) > 1 or int(incoming_players) > 1:
-            return SalaryMatchingResult(
-                ok=False,
-                status=status,
-                method="second_apron_one_for_one",
-                allowed_in_d=0,
-                payroll_after_d=payroll_after_d,
-                reason="second_apron_one_for_one",
-            )
+        max_single_d = int(max_single_outgoing_salary_d or 0)
 
-        allowed_in_d = int(math.floor(outgoing_salary_d * params.second_apron_mult + eps))
+        # Backwards-compatible fallback: if not supplied, approximate only when the deal has
+        # exactly one outgoing player; otherwise fail closed (allowed_in=0).
+        if max_single_d <= 0 and int(outgoing_players) == 1:
+            max_single_d = int(outgoing_salary_d)
+
+        # Defensive: never exceed total outgoing salary (max_single <= sum by definition).
+        if max_single_d > int(outgoing_salary_d):
+            max_single_d = int(outgoing_salary_d)
+
+        allowed_in_d = int(math.floor(max_single_d * params.second_apron_mult + eps))
         method = "outgoing_second_apron"
 
     elif status == "FIRST_APRON":
@@ -236,6 +247,7 @@ def check_salary_matching_with_evidence(
     incoming_salary_d: int,
     outgoing_players: int,
     incoming_players: int,
+    max_single_outgoing_salary_d: Optional[int] = None,
     trade_rules: Mapping[str, Any],
     eps: float = 1e-6,
 ) -> Tuple[SalaryMatchingResult, Dict[str, Any]]:
@@ -248,6 +260,7 @@ def check_salary_matching_with_evidence(
         incoming_salary_d=incoming_salary_d,
         outgoing_players=outgoing_players,
         incoming_players=incoming_players,
+        max_single_outgoing_salary_d=max_single_outgoing_salary_d,
         params=params,
         eps=eps,
     )
@@ -258,6 +271,7 @@ def check_salary_matching_with_evidence(
         "incoming_salary_d": incoming_salary_d,
         "outgoing_players": outgoing_players,
         "incoming_players": incoming_players,
+        "max_single_outgoing_salary_d": int(max_single_outgoing_salary_d or 0),
         "payroll_after_d": result.payroll_after_d,
         "status": result.status,
         "method": result.method,
