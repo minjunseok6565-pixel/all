@@ -347,6 +347,62 @@ def contract_from_row(row: Any) -> Dict[str, Any]:
     return out
 
 
+def derive_contract_end_season_id(contract: Mapping[str, Any]) -> Optional[str]:
+    """Best-effort derive contract end season_id (e.g. '2025-26').
+
+    The canonical contract dict intentionally avoids duplicating DB-only derived
+    columns (like ``end_season_id``) into the persisted ``contract_json`` field.
+    Consumers that need an end season id should derive it from canonical SSOT
+    fields, not from JSON.
+
+    Precedence:
+      1) If contract already contains a non-empty ``end_season_id`` key, use it.
+         (Some callers may attach DB columns to the dict for convenience.)
+      2) Derive from (start_season_year, years) using :func:`schema.season_id_from_year`.
+      3) Fallback: infer from the max year key in salary_by_year.
+
+    Returns:
+        season_id string like '2025-26', or None if unavailable.
+    """
+    if not isinstance(contract, Mapping):
+        return None
+
+    # 1) Prefer explicit DB-derived field if present.
+    end_sid = contract.get("end_season_id")
+    if end_sid:
+        s = str(end_sid).strip()
+        if s:
+            return s
+
+    # 2) Derive from canonical SSOT columns.
+    start_year_i = _safe_int(contract.get("start_season_year"), None)
+    years_i = _safe_int(contract.get("years"), None)
+    if start_year_i:
+        y = years_i if (years_i and years_i > 0) else 1
+        end_year = int(start_year_i) + int(y) - 1
+        try:
+            return str(season_id_from_year(int(end_year)))
+        except Exception:
+            return None
+
+    # 3) Fallback: infer from salary_by_year keys.
+    sal = contract.get("salary_by_year")
+    if isinstance(sal, Mapping) and sal:
+        ys: list[int] = []
+        for k in sal.keys():
+            try:
+                ys.append(int(k))
+            except Exception:
+                continue
+        if ys:
+            try:
+                return str(season_id_from_year(int(max(ys))))
+            except Exception:
+                return None
+
+    return None
+
+
 def contract_to_upsert_row(
     contract: Mapping[str, Any],
     *,
