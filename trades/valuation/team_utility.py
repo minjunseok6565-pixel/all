@@ -192,7 +192,7 @@ class TeamUtilityAdjuster:
         market: MarketValuation,
         snap: AssetSnapshot,
         ctx: DecisionContext,
-        env: Optional[ValuationEnv] = None,
+        env: ValuationEnv,
     ) -> TeamValuation:
         """
         단일 진입점.
@@ -205,7 +205,9 @@ class TeamUtilityAdjuster:
         팀 성향/리스크/재정/핏은 농구가치에만 적용하고,
         계약가치는 (가중치 적용 후) 그대로 더한다.
         """
-        env_key = int(getattr(env, "current_season_year", 0) or 0)
+        env_key = int(env.current_season_year)
+        if env_key <= 0:
+            raise ValueError("ValuationEnv.current_season_year must be a positive integer")
         key = (str(ctx.team_id), str(market.asset_key), env_key)
         cached = self._cache.get(key)
         if cached is not None:
@@ -533,7 +535,7 @@ class TeamUtilityAdjuster:
         ctx: DecisionContext,
         steps: List[ValuationStep],
         *,
-        env: Optional[ValuationEnv] = None,
+        env: ValuationEnv,
     ) -> ValueComponents:
         cfg = self.config
         scale = _safe_float(ctx.knobs.finance_penalty_scale, 0.0)
@@ -554,22 +556,14 @@ class TeamUtilityAdjuster:
         lo_pct = None
         hi_pct = None
 
-        cap = 0.0
-        cap_source = "none"
-        if env is not None:
-            try:
-                cap = float(env.salary_cap())
-                cap_source = "env"
-            except Exception:
-                cap = 0.0
-                cap_source = "env_error"
+        cap = float(env.salary_cap())
         if cap <= cfg.fit.eps:
-            cap = _safe_float(getattr(cfg, "salary_cap", None), 0.0)
-            if cap > cfg.fit.eps:
-                cap_source = "config"
-        if cap > cfg.fit.eps:
-            lo_pct = _safe_float(getattr(cfg, "finance_salary_lo_cap_pct", None), 0.0)
-            hi_pct = _safe_float(getattr(cfg, "finance_salary_hi_cap_pct", None), 0.0)
+            raise ValueError("env.salary_cap() must be > 0 for finance penalty scaling")
+        cap_source = "env"
+
+        lo_pct = _safe_float(getattr(cfg, "finance_salary_lo_cap_pct", None), 0.0)
+        hi_pct = _safe_float(getattr(cfg, "finance_salary_hi_cap_pct", None), 0.0)
+        if lo_pct > cfg.fit.eps and hi_pct > cfg.fit.eps:
             salary_lo = float(cap * lo_pct)
             salary_hi = float(cap * hi_pct)
             salary_scale_source = "cap_pct"
@@ -601,7 +595,7 @@ class TeamUtilityAdjuster:
                     "salary": salary,
                     "salary_cap": (cap if cap > cfg.fit.eps else None),
                     "salary_cap_source": cap_source,
-                    "env_current_season_year": (int(getattr(env, "current_season_year", 0) or 0) if env is not None else None),
+                    "env_current_season_year": int(env.current_season_year),
                     "salary_cap_pct": salary_cap_pct,
                     "salary_lo": salary_lo,
                     "salary_hi": salary_hi,
