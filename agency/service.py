@@ -987,18 +987,33 @@ def apply_monthly_agency_tick(
             if due_promises:
                 promise_stats["due"] = int(len(due_promises))
 
-                # Preload team transactions evidence for HELP promises (best-effort).
+                # Preload evidence for promise evaluation (best-effort).
+
+                # (A) HELP promises: cache team transactions since the earliest creation date.
                 help_since_by_team: Dict[str, str] = {}
+
+                # (B) EXTENSION_TALKS promises: cache player talk-start events since earliest creation date.
+                ext_since_by_pid: Dict[str, str] = {}
+
                 for p in due_promises:
-                    if str(p.get("promise_type") or "").upper() != "HELP":
-                        continue
-                    tid0 = str(p.get("team_id") or "").upper()
-                    cd = norm_date_iso(p.get("created_date")) or str(now_iso)[:10]
-                    if not tid0:
-                        continue
-                    prev = help_since_by_team.get(tid0)
-                    if prev is None or str(cd) < str(prev):
-                        help_since_by_team[tid0] = str(cd)
+                    ptype0 = str(p.get("promise_type") or "").upper()
+                    cd0 = norm_date_iso(p.get("created_date")) or str(now_iso)[:10]
+
+                    if ptype0 == "HELP":
+                        tid0 = str(p.get("team_id") or "").upper()
+                        if not tid0:
+                            continue
+                        prev = help_since_by_team.get(tid0)
+                        if prev is None or str(cd0) < str(prev):
+                            help_since_by_team[tid0] = str(cd0)
+
+                    if ptype0 == "EXTENSION_TALKS":
+                        pid0 = str(p.get("player_id") or "")
+                        if not pid0:
+                            continue
+                        prev = ext_since_by_pid.get(pid0)
+                        if prev is None or str(cd0) < str(prev):
+                            ext_since_by_pid[pid0] = str(cd0)
 
                 team_tx_cache: Dict[str, list[Dict[str, Any]]] = {}
                 if help_since_by_team:
@@ -1025,6 +1040,130 @@ def apply_monthly_agency_tick(
                         except Exception:
                             team_tx_cache[tid0] = []
 
+                # Compute HELP tag evidence using acquired players and fit tags.
+                # This stays SSOT-safe because it derives only from:
+                #   - transactions_log (SSOT)
+                #   - players.attrs_json (SSOT)
+                help_evidence_by_team: Dict[str, Dict[str, Any]] = {}
+                if team_tx_cache:
+                    try:
+                        from trades.valuation.fit_engine import FitEngine
+                        from trades.valuation.types import PlayerSnapshot
+                    except Exception:
+                        FitEngine = None  # type: ignore
+                        PlayerSnapshot = None  # type: ignore
+
+                    acquired_by_team: Dict[str, set[str]] = {}
+
+                    def _collect_acquired_player_ids(tid: str, tx_list: list[Dict[str, Any]]) -> set[str]:
+                        out: set[str] = set()
+                        tid_u = str(tid).upper()
+                        for tx in tx_list:
+                            if not isinstance(tx, dict):
+                                continue
+
+                            # Trade payloads: player_moves list
+                            pm = tx.get("player_moves")
+                            if isinstance(pm, list):
+                                for m in pm:
+                                    if not isinstance(m, dict):
+                                        continue
+                                    to_team = str(m.get("to_team") or "").upper()
+                                    pid = str(m.get("player_id") or "")
+                                    if pid and to_team == tid_u:
+                                        out.add(pid)
+
+                            # Contract actions: player_id + to_team
+                            pid2 = tx.get("player_id")
+                            if pid2 is not None:
+                                pid_s = str(pid2)
+                                to_team2 = str(tx.get("to_team") or "").upper()
+                                from_team2 = str(tx.get("from_team") or "").upper()
+                                if pid_s and to_team2 == tid_u and from_team2 != tid_u:
+                                    out.add(pid_s)
+
+                        return out
+
+                    for tid0, tx_list in team_tx_cache.items():
+                        acquired_by_team[tid0] = _collect_acquired_player_ids(tid0, tx_list)
+
+                    all_acquired = sorted({pid for s in acquired_by_team.values() for pid in s})
+                    attrs_by_pid: Dict[str, Dict[str, Any]] = {}
+                    if all_acquired:
+                        try:
+                            ph = ",".join(["?"] * len(all_acquired))
+                            rows_p = cur.execute(
+                                f"SELECT player_id, attrs_json FROM players WHERE player_id IN ({ph});",
+                                [*all_acquired],
+                            ).fetchall()
+                            for pid_r, attrs_json in rows_p:
+                                pid_s = str(pid_r)
+                                attrs = json_loads(attrs_json, default={})
+                                attrs_by_pid[pid_s] = attrs if isinstance(attrs, dict) else {}
+                        except Exception:
+                            attrs_by_pid = {}
+
+                    supply_cache: Dict[str, Dict[str, float]] = {}
+                    fe = FitEngine() if (FitEngine is not None) else None
+
+                    for pid_acq in all_acquired:
+                        if pid_acq in supply_cache:
+                            continue
+                        attrs = attrs_by_pid.get(pid_acq) or {}
+                        if fe is None or PlayerSnapshot is None or not isinstance(attrs, dict):
+                            supply_cache[pid_acq] = {}
+                            continue
+                        try:
+                            snap = PlayerSnapshot(kind="player", player_id=str(pid_acq), attrs=dict(attrs), meta={})
+                            sv = fe.compute_player_supply_vector(snap)
+                            supply_cache[pid_acq] = {str(k): float(v) for k, v in dict(sv or {}).items()}
+                        except Exception:
+                            supply_cache[pid_acq] = {}
+
+                    for tid0, pset in acquired_by_team.items():
+                        best: Dict[str, float] = {}
+                        for pid_acq in pset:
+                            sv = supply_cache.get(pid_acq) or {}
+                            for tag, val in sv.items():
+                                try:
+                                    fv = float(val)
+                                except Exception:
+                                    continue
+                                if fv > best.get(str(tag), 0.0):
+                                    best[str(tag)] = float(fv)
+                        help_evidence_by_team[tid0] = {
+                            "acquired_player_ids": sorted(pset),
+                            "supply_by_tag": best,
+                        }
+
+                # Preload CONTRACT_TALKS_STARTED events for EXTENSION_TALKS promises.
+                talks_dates_by_pid: Dict[str, list[str]] = {}
+                if ext_since_by_pid:
+                    pids = sorted(ext_since_by_pid.keys())
+                    if pids:
+                        min_d = min(str(v) for v in ext_since_by_pid.values() if v)
+                        try:
+                            ph = ",".join(["?"] * len(pids))
+                            rows_ev = cur.execute(
+                                f"""
+                                SELECT player_id, date
+                                FROM agency_events
+                                WHERE event_type='CONTRACT_TALKS_STARTED'
+                                  AND date >= ?
+                                  AND player_id IN ({ph});
+                                """,
+                                [str(min_d), *pids],
+                            ).fetchall()
+                            for pid_r, d_r in rows_ev:
+                                pid_s = str(pid_r)
+                                d_s = str(d_r)[:10]
+                                if not pid_s or not d_s:
+                                    continue
+                                talks_dates_by_pid.setdefault(pid_s, []).append(d_s)
+                            for pid_s in list(talks_dates_by_pid.keys()):
+                                talks_dates_by_pid[pid_s] = sorted(set(talks_dates_by_pid[pid_s]))
+                        except Exception:
+                            talks_dates_by_pid = {}
                 for p in due_promises:
                     try:
                         promise_id = str(p.get("promise_id") or "")
@@ -1050,7 +1189,7 @@ def apply_monthly_agency_tick(
                                 team_eom = promised_team
 
                         # Cancellation: for non-trade promises, leaving the promised team makes the promise moot.
-                        if ptype in {"MINUTES", "HELP", "ROLE"} and team_eom and promised_team and team_eom != promised_team:
+                        if ptype in {"MINUTES", "HELP", "ROLE", "LOAD", "EXTENSION_TALKS"} and team_eom and promised_team and team_eom != promised_team:
                             promise_updates.append(
                                 {
                                     "promise_id": promise_id,
@@ -1088,11 +1227,27 @@ def apply_monthly_agency_tick(
                         mental = mental_by_pid.get(pid) or {}
 
                         # Build context for evaluation.
-                        actual_mpg = None
-                        if ptype == "MINUTES":
-                            # Evaluate against the promised team slice (not necessarily the month evaluation team).
-                            mins_p, gp_p = _slice_minutes_games(split, promised_team) if split else (0.0, 0)
-                            actual_mpg = float(mins_p / float(gp_p) if gp_p > 0 else 0.0)
+                        mins_p, gp_p = _slice_minutes_games(split, promised_team) if split else (0.0, 0)
+                        actual_mpg = float(mins_p / float(gp_p) if gp_p > 0 else 0.0)
+
+                        # Role evidence for ROLE promises (promised team slice).
+                        starts_p, closes_p, _usage_p = _slice_role_usage(split, promised_team) if split else (0, 0, 0.0)
+                        starts_rate_p = float(starts_p / float(gp_p) if gp_p > 0 else 0.0)
+                        closes_rate_p = float(closes_p / float(gp_p) if gp_p > 0 else 0.0)
+
+                        # Contract evidence for EXTENSION_TALKS promises.
+                        active_cid_p = active_contract_id_by_pid.get(pid)
+                        c_row_p = contracts_by_id.get(str(active_cid_p)) if active_cid_p else None
+                        contract_end_p = str(c_row_p.get("end_season_id")) if isinstance(c_row_p, Mapping) and c_row_p.get("end_season_id") else None
+
+                        # Talks started evidence (derived from agency_events, SSOT).
+                        created_d = norm_date_iso(p.get("created_date")) or str(now_iso)[:10]
+                        talk_dates = talks_dates_by_pid.get(pid) or []
+                        talks_started = any(str(d) >= str(created_d) for d in talk_dates)
+
+                        help_ev = help_evidence_by_team.get(promised_team) if ptype == "HELP" else None
+                        help_supply = (help_ev.get("supply_by_tag") if isinstance(help_ev, Mapping) else None)
+                        help_acq = (help_ev.get("acquired_player_ids") if isinstance(help_ev, Mapping) else None)
 
                         ctx = PromiseEvaluationContext(
                             now_date_iso=str(now_iso)[:10],
@@ -1100,12 +1255,21 @@ def apply_monthly_agency_tick(
                             player_id=pid,
                             # IMPORTANT: this is the team at end of *processed month*, not current roster at evaluation time.
                             team_id_current=team_eom or promised_team,
-                            actual_mpg=actual_mpg,
+                            actual_mpg=actual_mpg if ptype in {"MINUTES", "LOAD"} else None,
                             injury_status=injury_status_by_pid.get(pid),
                             leverage=float(safe_float(st.get("leverage"), 0.0)),
                             mental=mental,
                             team_win_pct=float(safe_float(team_win_map.get(promised_team, 0.5), 0.5)),
                             team_transactions=team_tx_cache.get(promised_team) if ptype == "HELP" else None,
+
+                            # v2 promise evidence
+                            starts_rate=starts_rate_p,
+                            closes_rate=closes_rate_p,
+                            active_contract_id=str(active_cid_p) if active_cid_p else None,
+                            contract_end_season_id=contract_end_p,
+                            contract_talks_started=bool(talks_started) if ptype == "EXTENSION_TALKS" else None,
+                            help_supply_by_tag=help_supply if ptype == "HELP" else None,
+                            help_acquired_player_ids=help_acq if ptype == "HELP" else None,
                         )
 
                         res = evaluate_promise(p, ctx=ctx, cfg=DEFAULT_PROMISE_CONFIG)
@@ -1114,22 +1278,20 @@ def apply_monthly_agency_tick(
 
                         deltas = res.state_deltas or {}
                         if deltas:
-                            if "trust" in deltas:
-                                st["trust"] = float(clamp01(safe_float(st.get("trust"), 0.5) + safe_float(deltas.get("trust"), 0.0)))
-                            if "minutes_frustration" in deltas:
-                                st["minutes_frustration"] = float(
-                                    clamp01(
-                                        safe_float(st.get("minutes_frustration"), 0.0)
-                                        + safe_float(deltas.get("minutes_frustration"), 0.0)
-                                    )
-                                )
-                            if "team_frustration" in deltas:
-                                st["team_frustration"] = float(
-                                    clamp01(
-                                        safe_float(st.get("team_frustration"), 0.0)
-                                        + safe_float(deltas.get("team_frustration"), 0.0)
-                                    )
-                                )
+                            # Common numeric deltas (clamped at write time).
+                            for k in (
+                                "trust",
+                                "minutes_frustration",
+                                "team_frustration",
+                                "role_frustration",
+                                "contract_frustration",
+                                "health_frustration",
+                                "chemistry_frustration",
+                                "usage_frustration",
+                            ):
+                                if k in deltas:
+                                    st[k] = float(clamp01(safe_float(st.get(k), 0.0 if k != "trust" else 0.5) + safe_float(deltas.get(k), 0.0)))
+
                             if "trade_request_level_min" in deltas:
                                 try:
                                     floor_v = int(safe_float(deltas.get("trade_request_level_min"), 0.0))
@@ -1140,6 +1302,19 @@ def apply_monthly_agency_tick(
                                 except Exception:
                                     cur_tr = 0
                                 st["trade_request_level"] = int(max(cur_tr, floor_v))
+
+                        # Promise memory: count broken promises by type.
+                        if res.resolved and str(res.new_status).upper() == "BROKEN":
+                            ctx0 = st.get("context") if isinstance(st.get("context"), dict) else {}
+                            mem = ctx0.get("mem") if isinstance(ctx0.get("mem"), dict) else {}
+                            mem["broken_promises_total"] = int(mem.get("broken_promises_total") or 0) + 1
+                            bpt = mem.get("broken_promises_by_type")
+                            if not isinstance(bpt, dict):
+                                bpt = {}
+                            bpt[ptype] = int(bpt.get(ptype) or 0) + 1
+                            mem["broken_promises_by_type"] = bpt
+                            ctx0["mem"] = mem
+                            st["context"] = ctx0
 
                         upd: Dict[str, Any] = {"promise_id": promise_id}
                         pu = res.promise_updates or {}
