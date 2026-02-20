@@ -40,6 +40,7 @@ class SalaryMatchingRule:
             totals = trade_totals[team_id]
             outgoing_salary = float(totals.get("outgoing_salary") or 0.0)
             incoming_salary = float(totals.get("incoming_salary") or 0.0)
+            max_outgoing_salary = float(totals.get("max_outgoing_salary") or 0.0)
             outgoing_players = int(totals.get("outgoing_players_count") or 0)
             incoming_players = int(totals.get("incoming_players_count") or 0)
 
@@ -52,6 +53,7 @@ class SalaryMatchingRule:
             payroll_before_d = _to_int_dollars(payroll_before)
             outgoing_salary_d = _to_int_dollars(outgoing_salary)
             incoming_salary_d = _to_int_dollars(incoming_salary)
+            max_outgoing_salary_d = _to_int_dollars(max_outgoing_salary)
 
             result = check_salary_matching(
                 payroll_before_d=payroll_before_d,
@@ -59,6 +61,7 @@ class SalaryMatchingRule:
                 incoming_salary_d=incoming_salary_d,
                 outgoing_players=outgoing_players,
                 incoming_players=incoming_players,
+                max_single_outgoing_salary_d=max_outgoing_salary_d,
                 params=params,
             )
 
@@ -84,7 +87,7 @@ class SalaryMatchingRule:
             # allowed_in 타입도 기존과 최대한 일치시킨다.
             if result.method in ("outgoing_second_apron", "outgoing_first_apron"):
                 details["allowed_in"] = int(result.allowed_in_d)
-            elif result.method in ("outgoing_required", "second_apron_one_for_one"):
+            elif result.method in ("outgoing_required",):
                 details["allowed_in"] = 0.0
             else:
                 details["allowed_in"] = float(result.allowed_in_d)

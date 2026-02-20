@@ -300,7 +300,6 @@ class DealCandidate:
 class RuleFailureKind(str, Enum):
     DEADLINE = "deadline"
     SALARY_MATCHING = "salary_matching"
-    SECOND_APRON_ONE_FOR_ONE = "second_apron_one_for_one"
     ROSTER_LIMIT = "roster_limit"
     ASSET_LOCK = "asset_lock"
     PLAYER_ELIGIBILITY = "player_eligibility"
@@ -407,9 +406,8 @@ def parse_trade_error(err: TradeError) -> RuleFailure:
     rule_id = details.get("rule") if isinstance(details.get("rule"), str) else None
     if err.code == DEAL_INVALIDATED and rule_id == "salary_matching":
         method = str(details.get("method") or "")
-        kind = RuleFailureKind.SECOND_APRON_ONE_FOR_ONE if method == "second_apron_one_for_one" else RuleFailureKind.SALARY_MATCHING
         return RuleFailure(
-            kind=kind,
+            kind=RuleFailureKind.SALARY_MATCHING,
             code=err.code,
             message=err.message,
             rule_id=rule_id,

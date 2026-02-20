@@ -155,12 +155,10 @@ def repair_once(
             return False
         return _repair_roster_limit(cand, team_id, catalog, config)
 
-    if failure.kind in (RuleFailureKind.SALARY_MATCHING, RuleFailureKind.SECOND_APRON_ONE_FOR_ONE):
+    if failure.kind == RuleFailureKind.SALARY_MATCHING:
         team_id = str(failure.team_id or "").upper()
         if not team_id:
             return False
-        if failure.kind == RuleFailureKind.SECOND_APRON_ONE_FOR_ONE:
-            return _repair_second_apron_one_for_one(cand, team_id, catalog)
         return _repair_salary_matching(cand, team_id, catalog, config, failure)
 
     if failure.kind == RuleFailureKind.PICK_RULES:
@@ -219,14 +217,14 @@ def _repair_salary_matching(
     가장 안전한 수리:
     - failing_team outgoing에 filler 1명을 추가(FILLER_CHEAP -> EXPIRING -> FILLER_BAD_CONTRACT)
 
-    단, failure.details.status == SECOND_APRON이면 multi-player가 2nd apron one-for-one을
-    촉발할 가능성이 매우 높으므로 여기서 추가 수리를 시도하지 않는다.
+    단, SECOND_APRON 팀은 post-2024 CBA 기준으로 outgoing salary aggregation이 금지되므로
+    (incoming이 단일 outgoing 계약으로 매칭 가능해야 함) 여기서는 보수적으로 제한된 수리만 시도한다.
     """
 
     status = str(failure.status or "")
     method = str(failure.method or "")
     if status == "SECOND_APRON":
-        # second_apron_one_for_one은 RuleFailureKind.SECOND_APRON_ONE_FOR_ONE로 별도 수리된다.
+        # SECOND_APRON salary matching: incoming must be matchable by a single outgoing salary (no aggregation).
         if method == "outgoing_second_apron":
             return _repair_second_apron_salary_mismatch(cand, failing_team, catalog, config, failure)
         return False
@@ -346,69 +344,105 @@ def _repair_second_apron_salary_mismatch(
 ) -> bool:
     """SECOND_APRON + method=outgoing_second_apron salary mismatch 수리.
 
-    원칙:
-    - one-for-one 형태는 유지(양쪽 leg에서 PlayerAsset 1명씩인 케이스만)
-    - focal_player_id(타깃)는 가능하면 바꾸지 않는다.
-      * failing_team outgoing이 focal이 아니면: failing_team outgoing을 더 비싼 선수로 교체(outgoing↑)
-      * failing_team outgoing이 focal이면: 상대팀 outgoing(=failing_team incoming)을 더 싼 선수로 교체(incoming↓)
+    2026+ (post-2024 CBA) 가정:
+    - SECOND_APRON의 핵심 제약은 one-for-one이 아니라 *outgoing salary aggregation 금지*.
+      즉, incoming_total이 '단일 outgoing 계약 1명'으로 매칭 가능해야 한다.
+
+    SSOT 정렬:
+    - failure.details["allowed_in"] 은 SalaryMatchingPolicy(SSOT)가 계산한 allowed_in(달러)이며,
+      SECOND_APRON에서는 'max_single_outgoing_salary'와 동일해야 한다.
+    - 따라서 수리 목표는: incoming_total_d <= allowed_in_d
+
+    수리 전략(1-step, 다음 validate 루프에서 SSOT로 재검증)
+    1) max_single_outgoing을 올린다(allowed_in ↑)
+       - focal_player_id를 건드리지 않기 위해, 우선 failing_team outgoing 쪽을 swap/add로 보강한다.
+    2) incoming_total을 내린다(incoming ↓)
+       - 가능하면 focal이 아닌 incoming filler를 swap-down 또는 제거한다.
+
+    NOTE:
+    - player-specific aggregation_solo_only(별도 룰) 충돌을 줄이기 위해,
+      solo-only 플레이어를 multi-player leg에 끼워 넣는 선택은 기본적으로 피한다.
     """
 
     team = str(failing_team).upper()
-    others = [t for t in cand.deal.teams if str(t).upper() != team]
+    others = [t for t in (cand.deal.teams or []) if str(t).upper() != team]
     if not others:
         return False
     other = str(others[0]).upper()
 
-    # --- one-for-one 형태만 다룬다(안전/비용 제한)
-    out_players = [a for a in cand.deal.legs.get(team, []) if isinstance(a, PlayerAsset)]
-    if len(out_players) != 1:
+    # SSOT numbers (dollars)
+    try:
+        incoming_total_d = int(round(float(failure.details.get("incoming_salary") or 0.0)))
+    except Exception:
+        incoming_total_d = 0
+    try:
+        allowed_in_d = int(round(float(failure.details.get("allowed_in") or 0.0)))
+    except Exception:
+        allowed_in_d = 0
+
+    if incoming_total_d <= 0 or allowed_in_d <= 0:
         return False
+    if incoming_total_d <= allowed_in_d:
+        return False
+
+    # dollars 기반 비교: validate(SSOT)와 정렬해 float/rounding으로 인한 재실패를 줄인다.
+    EPS_D = 1_000  # $1k
+    required_out_d = incoming_total_d + EPS_D          # want a single outgoing >= this
+    max_in_total_d = max(0, allowed_in_d - EPS_D)      # want incoming_total <= this
+
+    focal_pid = str(cand.focal_player_id or "")
+    all_pids: Set[str] = {
+        str(a.player_id)
+        for leg in (cand.deal.legs or {}).values()
+        for a in (leg or [])
+        if isinstance(a, PlayerAsset)
+    }
+
+    allow_solo_only = bool(getattr(config, "allow_solo_only_fillers", False))
+
+    # Collect outgoing/incoming PlayerAssets (multi-player allowed)
+    out_assets = list(cand.deal.legs.get(team, []) or [])
+    out_players: List[PlayerAsset] = [a for a in out_assets if isinstance(a, PlayerAsset)]
 
     incoming_players: List[PlayerAsset] = []
     for a in cand.deal.legs.get(other, []) or []:
         if not isinstance(a, PlayerAsset):
             continue
-        recv = str(resolve_asset_receiver(cand.deal, other, a)).upper()
+        try:
+            recv = str(resolve_asset_receiver(cand.deal, other, a)).upper()
+        except Exception:
+            recv = team  # 2-team deal fallback
         if recv == team:
             incoming_players.append(a)
-    if len(incoming_players) != 1:
+
+    if not incoming_players:
         return False
-
-    incoming_salary = float(failure.details.get("incoming_salary") or 0.0)
-    outgoing_salary = float(failure.details.get("outgoing_salary") or 0.0)
-    if incoming_salary <= 0.0 or outgoing_salary <= 0.0:
-        return False
-    if incoming_salary <= outgoing_salary:
-        return False
-
-    # dollars 기반 비교: validate(SSOT)와 정렬해 float/rounding으로 인한 재실패를 줄인다.
-    # 상업용 기본값: 0.001M(=1,000달러) 수준의 최소 여유
-    EPS_M = 0.001
-    eps_d = int(round(EPS_M * 1_000_000.0))
-
-    incoming_d = int(round(incoming_salary))
-    outgoing_d = int(round(outgoing_salary))
-
-    all_pids = {
-        a.player_id
-        for leg in cand.deal.legs.values()
-        for a in (leg or [])
-        if isinstance(a, PlayerAsset)
-    }
-
-    out_pid = str(out_players[0].player_id)
-    focal_pid = str(cand.focal_player_id or "")
 
     # =========================================================
-    # Case A: failing_team outgoing이 focal이 아니면 -> outgoing을 올리는 교체
+    # Strategy 1) Raise max single outgoing (swap or add)
     # =========================================================
-    if out_pid != focal_pid:
-        out_cat = catalog.outgoing_by_team.get(team)
-        if out_cat is None:
-            return False
+    out_cat = catalog.outgoing_by_team.get(team)
+    if out_cat is not None:
 
         receiver_team = other
-        required_out_d = incoming_d + eps_d  # SECOND_APRON: incoming <= outgoing(달러) 목표
+        # choose an existing outgoing to replace (prefer non-focal, lowest market)
+        replace_pid: Optional[str] = None
+        replace_key: Optional[Tuple[float, int]] = None  # (market, salary_d)
+        for a in out_players:
+            pid = str(a.player_id)
+            if pid == focal_pid:
+                continue
+            c = out_cat.players.get(pid)
+            if c is None:
+                continue
+            try:
+                sal_d = int(round(float(c.salary_m) * 1_000_000.0))
+            except Exception:
+                sal_d = 0
+            key = (float(getattr(getattr(c, "market", None), "total", 0.0) or 0.0), sal_d)
+            if replace_key is None or key < replace_key:
+                replace_key = key
+                replace_pid = pid
 
         best_pid: Optional[str] = None
         best_key: Optional[Tuple[int, float, int]] = None  # (overshoot_d, market, salary_d)
@@ -423,158 +457,185 @@ def _repair_second_apron_salary_mismatch(
             "VETERAN_SALE",
         )
 
+        # Resulting outgoing player-count if we swap vs add (solo-only filter uses this)
+        out_player_count_now = len(out_players)
+        
         for b in scan_buckets:
             for pid in out_cat.player_ids_by_bucket.get(b, tuple()):
-                if pid in all_pids:
+                pid_s = str(pid)
+                if pid_s in all_pids:
                     continue
-                c = out_cat.players.get(pid)
+                c = out_cat.players.get(pid_s)
                 if c is None:
                     continue
                 if receiver_team in set(getattr(c, "return_ban_teams", None) or ()):
                     continue
+
+                # Avoid selecting solo-only players into a multi-player leg (separate rule).
+                if bool(getattr(c, "aggregation_solo_only", False)) and not allow_solo_only:
+                    # swap keeps count, add increases count
+                    resulting_count = out_player_count_now if replace_pid else (out_player_count_now + 1)
+                    if resulting_count > 1:
+                        continue
 
                 sal_d = int(round(float(c.salary_m) * 1_000_000.0))
                 if sal_d < required_out_d:
                     continue
 
                 overshoot_d = sal_d - required_out_d
-                mkt = float(c.market.total)
+                mkt = float(getattr(getattr(c, "market", None), "total", 0.0) or 0.0)
                 key = (overshoot_d, mkt, sal_d)
                 if best_key is None or key < best_key:
                     best_key = key
                     best_pid = str(pid)
 
-        if not best_pid:
-            return False
+                    best_pid = pid_s
 
-        # failing_team leg에서 out_pid를 best_pid로 치환
-        new_leg = []
-        for a in cand.deal.legs.get(team, []) or []:
-            if isinstance(a, PlayerAsset) and str(a.player_id) == out_pid:
-                new_leg.append(PlayerAsset(kind="player", player_id=best_pid))
-            else:
-                new_leg.append(a)
-        cand.deal.legs[team] = new_leg
-        cand.tags.append("repair:second_apron_swap_out_up")
-        return True
+        if best_pid:
+            if replace_pid:
+                # Replace an existing outgoing PlayerAsset
+                new_leg: List[Asset] = []
+                for a in out_assets:
+                    if isinstance(a, PlayerAsset) and str(a.player_id) == replace_pid:
+                        new_leg.append(PlayerAsset(kind="player", player_id=best_pid))
+                    else:
+                        new_leg.append(a)
+                cand.deal.legs[team] = new_leg
+                cand.tags.append("repair:second_apron_raise_max_out_swap")
+                return True
+
+            # Otherwise, add a new outgoing PlayerAsset (to raise max_single_outgoing)
+            cand.deal.legs[team] = list(out_assets) + [PlayerAsset(kind="player", player_id=best_pid)]
+            cand.tags.append("repair:second_apron_raise_max_out_add")
+            return True
 
     # =========================================================
-    # Case B: failing_team outgoing이 focal이면 -> incoming을 내리는 교체(상대팀 leg 교체)
+    # Strategy 2) Reduce incoming total (swap-down or remove a non-focal incoming)
     # =========================================================
     other_cat = catalog.outgoing_by_team.get(other)
     if other_cat is None:
         return False
+    if max_in_total_d <= 0:
+        return False
 
     receiver_team = team
-    max_in_d = outgoing_d - eps_d  # incoming <= outgoing(달러) 목표
-    if max_in_d < 0:
+    # Build incoming meta (only incoming to failing_team)
+    incoming_meta: List[Tuple[PlayerAsset, str, int, float]] = []
+    for a in incoming_players:
+        pid = str(a.player_id)
+        c = other_cat.players.get(pid)
+        if c is None:
+            continue
+        sal_d = int(round(float(c.salary_m) * 1_000_000.0))
+        mkt = float(getattr(getattr(c, "market", None), "total", 0.0) or 0.0)
+        incoming_meta.append((a, pid, sal_d, mkt))
+
+    # Prefer modifying non-focal incoming (filler)
+    non_focal = [x for x in incoming_meta if x[1] != focal_pid]
+    if not non_focal:
         return False
 
-    best_pid: Optional[str] = None
-    best_key: Optional[Tuple[int, float]] = None  # (slack_d, market)
+    # pick the largest-salary non-focal incoming to maximize chance of fixing in 1 step
+    non_focal.sort(key=lambda x: (-x[2], x[3]))
+    target_asset, target_pid, target_sal_d, _target_mkt = non_focal[0]
 
-    scan_buckets2: Tuple[BucketId, ...] = (
-        "FILLER_CHEAP",
-        "EXPIRING",
-        "FILLER_BAD_CONTRACT",
-        "SURPLUS_REDUNDANT",
-        "SURPLUS_LOW_FIT",
-        "CONSOLIDATE",
-        "VETERAN_SALE",
+    # If we keep other incoming unchanged, replacement must be <= limit
+    limit_d = max_in_total_d - (incoming_total_d - target_sal_d)
+
+    # Count player assets in other leg (for solo-only filter)
+    other_leg_player_count = sum(
+        1 for a in (cand.deal.legs.get(other, []) or []) if isinstance(a, PlayerAsset)
     )
 
-    for b in scan_buckets2:
-        for pid in other_cat.player_ids_by_bucket.get(b, tuple()):
-            if pid in all_pids:
-                continue
-            c = other_cat.players.get(pid)
-            if c is None:
-                continue
-            if receiver_team in set(getattr(c, "return_ban_teams", None) or ()):
-                continue
-                
-            sal_d = int(round(float(c.salary_m) * 1_000_000.0))
-            if sal_d > max_in_d:
-                continue
+    # -------------------------
+    # 2A) swap-down (replace with cheaper incoming)
+    # -------------------------
+    if limit_d >= 0:
+        best_pid2: Optional[str] = None
+        best_key2: Optional[Tuple[int, float]] = None  # (slack_d, market)
 
-            slack_d = max_in_d - sal_d  # 0에 가까울수록(outgoing에 가까울수록) 좋음
-            mkt = float(c.market.total)
-            key = (slack_d, mkt)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_pid = str(pid)
+        scan_buckets2: Tuple[BucketId, ...] = (
+            "FILLER_CHEAP",
+            "EXPIRING",
+            "FILLER_BAD_CONTRACT",
+            "SURPLUS_REDUNDANT",
+            "SURPLUS_LOW_FIT",
+            "CONSOLIDATE",
+            "VETERAN_SALE",
+        )
 
-    if not best_pid:
-        return False
+        for b in scan_buckets2:
+            for pid in other_cat.player_ids_by_bucket.get(b, tuple()):
+                pid_s = str(pid)
+                if pid_s in all_pids:
+                    continue
+                c = other_cat.players.get(pid_s)
+                if c is None:
+                    continue
+                if receiver_team in set(getattr(c, "return_ban_teams", None) or ()):
+                    continue
 
-    old_in_pid = str(incoming_players[0].player_id)
+                if bool(getattr(c, "aggregation_solo_only", False)) and not allow_solo_only:
+                    # other leg already has multiple outgoing players -> solo-only would fail separate rule
+                    if other_leg_player_count > 1:
+                        continue
 
-    # other leg에서 old_in_pid(=failing_team으로 가는 incoming player)를 best_pid로 치환
-    new_leg = []
-    for a in cand.deal.legs.get(other, []) or []:
-        if isinstance(a, PlayerAsset) and str(a.player_id) == old_in_pid:
-            recv = str(resolve_asset_receiver(cand.deal, other, a)).upper()
-            if recv == team:
-                new_leg.append(PlayerAsset(kind="player", player_id=best_pid))
-            else:
-                new_leg.append(a)
-        else:
-            new_leg.append(a)
+                sal_d = int(round(float(c.salary_m) * 1_000_000.0))
+                if sal_d > limit_d:
+                    continue
 
-    cand.deal.legs[other] = new_leg
-    cand.tags.append("repair:second_apron_swap_in_down")
-    return True
+                slack_d = limit_d - sal_d  # 0에 가까울수록(= limit에 가까울수록) 좋음
+                mkt = float(getattr(getattr(c, "market", None), "total", 0.0) or 0.0)
+                key = (slack_d, mkt)
+                if best_key2 is None or key < best_key2:
+                    best_key2 = key
+                    best_pid2 = pid_s
 
+        if best_pid2:
+            # Replace in other leg only for the asset that is incoming to failing_team
+            new_leg2: List[Asset] = []
+            for a in cand.deal.legs.get(other, []) or []:
+                if isinstance(a, PlayerAsset) and str(a.player_id) == target_pid:
+                    try:
+                        recv = str(resolve_asset_receiver(cand.deal, other, a)).upper()
+                    except Exception:
+                        recv = team
+                    if recv == team:
+                        new_leg2.append(PlayerAsset(kind="player", player_id=best_pid2))
+                    else:
+                        new_leg2.append(a)
+                else:
+                    new_leg2.append(a)
 
-def _repair_second_apron_one_for_one(cand: DealCandidate, failing_team: str, catalog: TradeAssetCatalog) -> bool:
-    """2nd apron one-for-one 위반: failing_team의 in/out player count를 1로 낮춘다.
+            cand.deal.legs[other] = new_leg2
+            cand.tags.append("repair:second_apron_reduce_in_swap")
+            return True
 
-    - market 기반으로 "가치가 낮아 보이는"(대개 filler) 플레이어를 우선 제거
-    - 단, deal shape가 더 망가지면 prune(상위에서 재시도하게)
-    """
+    # -------------------------
+    # 2B) remove a non-focal incoming (only if multiple incoming exist)
+    # -------------------------
+    if len(incoming_players) > 1 and (incoming_total_d - target_sal_d) <= max_in_total_d:
+        removed = False
+        new_leg3: List[Asset] = []
+        for a in cand.deal.legs.get(other, []) or []:
+            if (
+                not removed
+                and isinstance(a, PlayerAsset)
+                and str(a.player_id) == target_pid
+            ):
+                try:
+                    recv = str(resolve_asset_receiver(cand.deal, other, a)).upper()
+                except Exception:
+                    recv = team
+                if recv == team:
+                    removed = True
+                    continue
+            new_leg3.append(a)
 
-    team = str(failing_team).upper()
-
-    # outgoing trim (failing_team leg)
-    out_assets = list(cand.deal.legs.get(team, []))
-    out_players = [a for a in out_assets if isinstance(a, PlayerAsset)]
-    if len(out_players) > 1:
-        out_cat = catalog.outgoing_by_team.get(team)
-        if out_cat is not None:
-            def market(pid: str) -> float:
-                c = out_cat.players.get(pid)
-                return float(c.market.total) if c is not None else 0.0
-            # keep the highest market (core-like), drop the rest
-            keep = sorted(out_players, key=lambda a: market(a.player_id), reverse=True)[0]
-        else:
-            keep = out_players[0]
-
-        cand.deal.legs[team] = [a for a in out_assets if not (isinstance(a, PlayerAsset) and a.player_id != keep.player_id)]
-        cand.tags.append("repair:second_apron_trim_out")
-        return True
-
-    # incoming trim (other leg players are incoming to failing_team)
-    other = [t for t in cand.deal.teams if str(t).upper() != team]
-    if not other:
-        return False
-    other_team = str(other[0]).upper()
-
-    other_assets = list(cand.deal.legs.get(other_team, []))
-    other_players = [a for a in other_assets if isinstance(a, PlayerAsset)]
-    if len(other_players) > 1:
-        other_out = catalog.outgoing_by_team.get(other_team)
-        if other_out is not None:
-            def market(pid: str) -> float:
-                c = other_out.players.get(pid)
-                return float(c.market.total) if c is not None else 0.0
-            # remove the lowest market (filler-like)
-            pid_remove = sorted([p.player_id for p in other_players], key=market)[0]
-        else:
-            pid_remove = other_players[-1].player_id
-
-        cand.deal.legs[other_team] = [a for a in other_assets if not (isinstance(a, PlayerAsset) and a.player_id == pid_remove)]
-        cand.tags.append("repair:second_apron_trim_in")
-        return True
+        if removed:
+            cand.deal.legs[other] = new_leg3
+            cand.tags.append("repair:second_apron_reduce_in_remove")
+            return True
 
     return False
 
