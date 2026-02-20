@@ -108,7 +108,7 @@ def run_settlement(db_path: str, draft_year: int) -> Tuple[List[Dict[str, Any]],
     return settlement_events, turns
 
 
-def apply_selections(db_path: str, draft_year: int, tx_date_iso: Optional[str] = None) -> int:
+def apply_selections(db_path: str, draft_year: int, tx_date_iso: Optional[str] = None, *, cap_model: Optional["CapModel"] = None) -> int:
     """Apply pre-recorded selections (draft_selections) into the NBA DB.
 
     This performs the *apply* side effects:
@@ -390,6 +390,7 @@ def apply_selections(db_path: str, draft_year: int, tx_date_iso: Optional[str] =
             turn=turn,
             prospect=prospect,
             draft_year=dy,
+            cap_model=cap_model,
             tx_date_iso=tx_date_iso,
             source=source,
         )
