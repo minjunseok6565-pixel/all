@@ -125,6 +125,24 @@ def _normalize_protection(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+def normalize_pick_protection(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize/validate a pick protection payload.
+
+    This is a public wrapper over the internal _normalize_protection() helper.
+
+    Rationale
+    ---------
+    Multiple subsystems (deal parsing/canonicalization, AI generation decorators,
+    valuation overrides) need to create protection dicts that are guaranteed to
+    satisfy SSOT rules (PickProtectionSchemaRule) and settlement logic.
+
+    Keeping this wrapper in trades.models makes the normalization rules a single
+    source of truth.
+    """
+    return _normalize_protection(raw)
+
+
 def _normalize_team_id(value: Any, *, context: str) -> str:
     try:
         return str(normalize_team_id(value, strict=True))
