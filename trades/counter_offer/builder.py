@@ -29,15 +29,16 @@ Design principles
 
 NOTE ABOUT JSON SERIALIZATION
 ----------------------------
-The project's valuation.types.to_jsonable currently serializes PickAsset.protection as null
-when protection is None. That breaks trades.models.parse_deal (expects dict when key exists).
+Deal/Asset payloads must follow trades.models.serialize_deal rules so that
+trades.models.parse_deal can round-trip safely (e.g. PickAsset.protection is
+omitted when None rather than {"protection": null}).
 
-This builder therefore:
+valuation.types.to_jsonable already special-cases Deal/PickAsset to enforce this.
+This builder still:
 - keeps CounterProposal.deal as a proper Deal object (SSOT)
-- ALSO returns a safe serialized payload in CounterProposal.meta['deal_serialized']
-  so the server can return it without to_jsonable pitfalls.
-
-(Alternatively, fix to_jsonable() or Deal.to_jsonable in the main codebase.)
+- includes a JSON-ready payload in CounterProposal.meta['deal_serialized']
+  (serialize_deal output) for callers that need to persist/return a deal payload
+  without relying on a particular serializer.
 """
 
 from dataclasses import dataclass, replace
