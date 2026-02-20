@@ -17,7 +17,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import game_time
 
 from league_repo import LeagueRepo
-from league_service import LeagueService
+from league_service import LeagueService, CapViolationError
 from schema import normalize_player_id, normalize_team_id
 
 from .config import ContractNegotiationConfig, DEFAULT_CONTRACT_NEGOTIATION_CONFIG
@@ -642,6 +642,17 @@ def commit_contract_negotiation(
             "contract_offer": offer.to_payload(),
             "service_event": getattr(ev, "payload", ev),
         }
+    except CapViolationError as exc:
+        # v1 cap enforcement: translate into a negotiation commit failure with structured details
+        raise ContractNegotiationError(
+            NEGOTIATION_COMMIT_FAILED,
+            getattr(exc, "message", "Cap violation"),
+            {
+                "code": getattr(exc, "code", "CAP_VIOLATION"),
+                "message": getattr(exc, "message", str(exc)),
+                "details": getattr(exc, "details", None),
+            },
+        ) from exc
     except ContractNegotiationError:
         raise
     except Exception as exc:
