@@ -4,6 +4,7 @@ import contextlib
 from typing import Any, Dict, List
 
 from .errors import PROTECTION_INVALID, SWAP_INVALID, TradeError
+from .protection import normalize_protection
 
 
 def _get_db_path_from_game_state(game_state: dict) -> str:
@@ -51,60 +52,8 @@ def _validate_pick_order(pick_order: Dict[str, int], pick_id: str) -> int:
 
 
 def _validate_protection(pick_id: str, protection: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(protection, dict):
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection must be an object",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    protection_type = protection.get("type")
-    if not isinstance(protection_type, str):
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection type is required",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    protection_type = protection_type.strip().upper()
-    if protection_type != "TOP_N":
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Unsupported protection type",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    raw_n = protection.get("n")
-    try:
-        n_value = int(raw_n)
-    except (TypeError, ValueError):
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection n must be an integer",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    if n_value < 1 or n_value > 30:
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection n out of range",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    compensation = protection.get("compensation")
-    if not isinstance(compensation, dict):
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection compensation must be an object",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    value = compensation.get("value")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TradeError(
-            PROTECTION_INVALID,
-            "Protection compensation value must be numeric",
-            {"pick_id": pick_id, "protection": protection},
-        )
-    label = compensation.get("label")
-    if not isinstance(label, str) or not label.strip():
-        label = "Protected pick compensation"
-
-    return {"type": protection_type, "n": n_value, "compensation": {"label": label, "value": value}}
+    # SSOT normalization/validation.
+    return normalize_protection(protection, pick_id=pick_id)
 
 
 def settle_draft_year(
