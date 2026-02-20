@@ -9,7 +9,7 @@ Policy mirrors the behavior currently implemented in `PickRulesRule`:
 
 - Stepien is evaluated over consecutive (year, year+1) pairs.
 - The evaluation window is:
-    start = current_draft_year + 1
+    start = current_draft_year
     end   = current_draft_year + lookahead
   and `end` is clamped so that (year+1) remains within the range of years
   actually represented by the first-round pick data (to avoid false
