@@ -40,6 +40,8 @@ This file intentionally does NOT import LeagueRepo / state modules to avoid circ
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
+from salary_matching_brackets import derive_salary_matching_brackets
+
 # -----------------------------------------------------------------------------
 # Defaults (fallbacks) - keep import flexible so this module survives refactors.
 # -----------------------------------------------------------------------------
@@ -242,8 +244,10 @@ class CapModelParams:
                 if mm < match_buffer:
                     mm = int(match_buffer)
                 frozen_mid_add = int(mm)
-                frozen_small_max = int(max(0, int(frozen_mid_add) - int(match_buffer)))
-                frozen_mid_max = int(int(frozen_small_max) * 4)
+                frozen_small_max, frozen_mid_max = derive_salary_matching_brackets(
+                    match_mid_add_d=int(frozen_mid_add),
+                    match_buffer_d=int(match_buffer),
+                )
 
             return cls(
                 cap_auto_update=False,
@@ -412,8 +416,10 @@ class CapModel:
             if match_mid_add_d < match_buffer_d:
                 match_mid_add_d = int(match_buffer_d)
 
-            match_small_out_max_d = max(0, int(match_mid_add_d) - int(match_buffer_d))
-            match_mid_out_max_d = int(match_small_out_max_d * 4)
+            match_small_out_max_d, match_mid_out_max_d = derive_salary_matching_brackets(
+                match_mid_add_d=int(match_mid_add_d),
+                match_buffer_d=int(match_buffer_d),
+            )
 
             match_mid_add = int(match_mid_add_d)
             match_small_out_max = int(match_small_out_max_d)
