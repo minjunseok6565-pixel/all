@@ -16,6 +16,7 @@ from ...errors import (
     TradeError,
 )
 from ...models import FixedAsset, PickAsset, PlayerAsset, SwapAsset
+from ...protection import normalize_protection_optional
 from ...swap_integrity import validate_swap_asset_snapshot
 from ..base import TradeContext
 
@@ -112,14 +113,17 @@ class OwnershipRule:
                         )
                     if asset.protection is not None:
                         existing_protection = pick.get("protection")
-                        if existing_protection is not None and existing_protection != asset.protection:
+                        existing_norm = normalize_protection_optional(existing_protection, pick_id=asset.pick_id)
+                        attempted_norm = normalize_protection_optional(asset.protection, pick_id=asset.pick_id)
+                        if existing_norm is not None and attempted_norm is not None and existing_norm != attempted_norm:
                             raise TradeError(
                                 PROTECTION_CONFLICT,
                                 "Pick protection conflicts with existing record",
                                 {
                                     "pick_id": asset.pick_id,
-                                    "existing_protection": existing_protection,
-                                    "attempted_protection": asset.protection,
+                                    "existing_protection": existing_norm,
+                                    "attempted_protection": attempted_norm,
+                                    "existing_protection_raw": existing_protection,
                                 },
                             )
                 if isinstance(asset, FixedAsset):

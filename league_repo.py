@@ -324,6 +324,12 @@ class LeagueRepo:
         if not picks_by_id:
             return
         now = _utc_now_iso()
+        # SSOT: ensure protection schema is canonical on writes.
+        try:
+            from trades.protection import normalize_protection_optional
+            from trades.errors import TradeError as _TradeError
+        except Exception as exc:  # pragma: no cover
+            raise ImportError("trades.protection is required") from exc
         rows = []
         for pick_id, pick in picks_by_id.items():
             if not isinstance(pick, dict):
@@ -342,7 +348,35 @@ class LeagueRepo:
             original = str(pick.get("original_team") or "").upper()
             owner = str(pick.get("owner_team") or "").upper()
             protection = pick.get("protection")
-            rows.append((pid, year, rnd, original, owner, _json_dumps(protection) if protection is not None else None, now, now))
+            # Allow protection to be passed as a JSON string in tooling paths.
+            if isinstance(protection, str):
+                s = protection.strip()
+                if not s or s.lower() == "null":
+                    protection = None
+                else:
+                    try:
+                        protection = json.loads(s)
+                    except Exception as exc:
+                        raise ValueError(
+                            f"draft_picks.protection invalid JSON string (pick_id={pid}): {exc}"
+                        ) from exc
+            try:
+                protection = normalize_protection_optional(protection, pick_id=pid)
+            except _TradeError as exc:
+                raise ValueError(f"draft_picks.protection invalid schema (pick_id={pid}): {exc}") from exc
+
+            rows.append(
+                (
+                    pid,
+                    year,
+                    rnd,
+                    original,
+                    owner,
+                    _json_dumps(protection) if protection is not None else None,
+                    now,
+                    now,
+                )
+            )
         with self.transaction() as cur:
             cur.executemany(
                 """
@@ -463,6 +497,12 @@ class LeagueRepo:
             )
 
     def _read_draft_picks_map(self, cur: sqlite3.Cursor) -> Dict[str, Dict[str, Any]]:
+        # SSOT: ensure protection is canonical on reads.
+        try:
+            from trades.protection import normalize_protection_optional
+            from trades.errors import TradeError as _TradeError
+        except Exception as exc:  # pragma: no cover
+            raise ImportError("trades.protection is required") from exc
         rows = cur.execute(
             """
             SELECT pick_id, year, round, original_team, owner_team, protection_json
@@ -471,7 +511,13 @@ class LeagueRepo:
         ).fetchall()
         out: Dict[str, Dict[str, Any]] = {}
         for r in rows:
-            protection = _json_loads(r["protection_json"], None)
+            protection_raw = _json_loads(r["protection_json"], None)
+            try:
+                protection = normalize_protection_optional(protection_raw, pick_id=str(r["pick_id"]))
+            except _TradeError as exc:
+                raise ValueError(
+                    f"draft_picks.protection_json invalid schema (pick_id={r['pick_id']}): {exc}"
+                ) from exc
             pick = {
                 "pick_id": str(r["pick_id"]),
                 "year": int(r["year"]),
@@ -1674,6 +1720,49 @@ class LeagueRepo:
                     "contracts.contract_json contains SSOT keys (extras-only violation): "
                     f"contract_id={cid} keys={bad_keys}"
                 )
+
+        # draft_picks.protection_json must be canonical (SSOT)
+        rows = self._conn.execute(
+            """
+            SELECT pick_id, protection_json
+            FROM draft_picks
+            WHERE protection_json IS NOT NULL
+              AND TRIM(protection_json) != '';
+            """
+        ).fetchall()
+        if rows:
+            try:
+                from trades.protection import normalize_protection
+                from trades.errors import TradeError as _TradeError
+            except Exception as exc:  # pragma: no cover
+                raise ImportError("trades.protection is required") from exc
+            for r in rows:
+                pid = str(r["pick_id"])
+                raw = r["protection_json"]
+                if raw is None:
+                    continue
+                if isinstance(raw, str) and raw.strip().lower() == "null":
+                    continue
+                try:
+                    obj = json.loads(raw) if not isinstance(raw, (dict, list)) else raw
+                except Exception as exc:
+                    raise ValueError(f"draft_picks.protection_json invalid JSON (pick_id={pid}): {exc}") from exc
+                if obj is None:
+                    continue
+                if not isinstance(obj, dict):
+                    raise ValueError(
+                        "draft_picks.protection_json must be a JSON object. "
+                        f"Found {type(obj).__name__} (pick_id={pid})"
+                    )
+                try:
+                    norm = normalize_protection(obj, pick_id=pid)
+                except _TradeError as exc:
+                    raise ValueError(f"draft_picks.protection_json invalid schema (pick_id={pid}): {exc}") from exc
+                if obj != norm:
+                    raise ValueError(
+                        "draft_picks.protection_json not canonical (SSOT violation): "
+                        f"pick_id={pid} got={obj} expected={norm}"
+                    )
 
         # No duplicate active roster entries (PK ensures), but check status sanity
         rows = self._conn.execute("SELECT COUNT(*) AS c FROM roster WHERE status='active';").fetchone()
