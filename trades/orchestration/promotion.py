@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Set
 
@@ -9,6 +8,7 @@ import state
 from league_service import LeagueService
 from team_utils import ui_cache_refresh_players
 
+from ..identity import deal_execution_id, deal_identity_hash
 from ..models import canonicalize_deal, serialize_deal
 from ..agreements import create_committed_deal
 from ..negotiation_store import (
@@ -33,10 +33,13 @@ from .market_state import (
 
 
 def compute_deal_key(prop: Any) -> str:
-    deal = canonicalize_deal(prop.deal)
-    payload = serialize_deal(deal)
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()
+    """Compute a stable deal identity key (SSOT).
+
+    This key represents the transactional identity (teams + legs) of a deal and
+    MUST ignore deal.meta so meta-only differences don't create duplicates.
+    """
+    deal_obj = getattr(prop, "deal", prop)
+    return deal_identity_hash(deal_obj)
 
 
 def _stable_deal_key(prop: Any) -> str:
@@ -867,8 +870,10 @@ def promote_and_commit(
                     result.skipped += 1
                     continue
         if allow_state_mutation and not dry_run:
+            exec_deal_id = deal_key
             try:
-                ev = league_service.execute_trade(canonicalize_deal(prop.deal), source="AI_GM_ORCHESTRATION", trade_date=today, deal_id=deal_key)
+                exec_deal_id = deal_execution_id(prop.deal, trade_date=today)
+                ev = league_service.execute_trade(canonicalize_deal(prop.deal), source="AI_GM_ORCHESTRATION", trade_date=today, deal_id=exec_deal_id)
                 result.executed_trade_events.append(ev)
                 ai_ai_committed += 1
                 team_trade_counts_today[t1] = int(team_trade_counts_today.get(t1, 0) or 0) + 1
@@ -881,7 +886,7 @@ def promote_and_commit(
                             result.ui_cache_refreshed_players += len(moved_ids)
                         except Exception as exc:
                             result.ui_cache_refresh_failures += 1
-                            result.errors.append({"type": "UI_CACHE_REFRESH_FAILED", "deal_id": deal_key, "num_players": len(moved_ids), "exc": type(exc).__name__})
+                            result.errors.append({"type": "UI_CACHE_REFRESH_FAILED", "deal_id": deal_key, "exec_deal_id": exec_deal_id, "num_players": len(moved_ids), "exc": type(exc).__name__})
                 p1 = _effective_pressure(t1)
                 p2 = _effective_pressure(t2)
                 try:
@@ -898,7 +903,7 @@ def promote_and_commit(
                     today=today,
                     days=int(d1),
                     reason="TRADE_EXECUTED",
-                    meta={"deal_id": deal_key, "other": t2, "effective_pressure": float(p1 or 0.0), "rush_scalar": float(rush_s or 0.0)},
+                    meta={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "other": t2, "effective_pressure": float(p1 or 0.0), "rush_scalar": float(rush_s or 0.0)},
                 )
                 add_team_cooldown(
                     trade_market,
@@ -906,12 +911,12 @@ def promote_and_commit(
                     today=today,
                     days=int(d2),
                     reason="TRADE_EXECUTED",
-                    meta={"deal_id": deal_key, "other": t1, "effective_pressure": float(p2 or 0.0), "rush_scalar": float(rush_s or 0.0)},
+                    meta={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "other": t1, "effective_pressure": float(p2 or 0.0), "rush_scalar": float(rush_s or 0.0)},
                 )
-                record_market_event(trade_market, today=today, event_type="TRADE_EXECUTED", payload={"deal_id": deal_key, "buyer_id": t1, "seller_id": t2, "score": float(score or 0.0)})
-                bump_relationship(trade_memory, team_a=t1, team_b=t2, today=today, patch={"counts": {"trade_executed": 1}, "meta": {"last_deal_id": deal_key}})
+                record_market_event(trade_market, today=today, event_type="TRADE_EXECUTED", payload={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "buyer_id": t1, "seller_id": t2, "score": float(score or 0.0)})
+                bump_relationship(trade_memory, team_a=t1, team_b=t2, today=today, patch={"counts": {"trade_executed": 1}, "meta": {"last_deal_id": deal_key, "last_exec_deal_id": exec_deal_id}})
             except Exception as exc:
-                result.errors.append({"type": "AI_AI_EXECUTE_FAILED", "deal_id": deal_key, "exc": type(exc).__name__})
+                result.errors.append({"type": "AI_AI_EXECUTE_FAILED", "deal_id": deal_key, "exec_deal_id": exec_deal_id, "exc": type(exc).__name__})
         else:
             ai_ai_committed += 1
             team_trade_counts_today[t1] = int(team_trade_counts_today.get(t1, 0) or 0) + 1
