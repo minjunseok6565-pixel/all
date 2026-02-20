@@ -35,14 +35,6 @@ from contracts.terms import player_contract_terms
 
 from .env import ValuationEnv
 
-try:  # project root
-    from cap_model import CapModel
-
-    _DEFAULT_CAP_MODEL = CapModel.defaults()
-except Exception:  # pragma: no cover
-    CapModel = None  # type: ignore
-    _DEFAULT_CAP_MODEL = None  # type: ignore
-
 try:  # path safety (project integration will likely use relative import)
     from role_need_tags import role_to_need_tag_only
 except Exception:  # pragma: no cover
@@ -232,15 +224,13 @@ def _defense_signal(player: PlayerSnapshot) -> float:
     return best
 
 
-def _commitment_metric(player: PlayerSnapshot, *, current_season_year: Optional[int]) -> float:
+def _commitment_metric(player: PlayerSnapshot, *, current_season_year: int) -> float:
     """Contract commitment proxy (salary * remaining_years).
 
     This is intentionally a *soft* approximation:
     - Options/partial guarantees are ignored in v1.
     - If remaining years cannot be derived, fallback to contract.years.
     """
-    if current_season_year is None:
-        return 0.0
 
     cur = int(current_season_year)
     terms = player_contract_terms(player, current_season_year=cur)
@@ -319,8 +309,7 @@ class PackageEffects:
         incoming: Sequence[Tuple[TeamValuation, AssetSnapshot]],
         outgoing: Sequence[Tuple[TeamValuation, AssetSnapshot]],
         ctx: DecisionContext,
-        env: Optional[ValuationEnv] = None,
-        current_season_year: Optional[int] = None,
+        env: ValuationEnv,
     ) -> Tuple[ValueComponents, Tuple[ValuationStep, ...], Dict[str, Any]]:
         """Return (package_delta, steps, meta).
 
@@ -359,7 +348,7 @@ class PackageEffects:
         delta5 = self._outgoing_hole_penalty(incoming, outgoing, base_out_mass, steps)
 
         # CAP_FLEX adjustment (contract commitment delta)
-        delta6 = self._cap_flex_adjustment(incoming, outgoing, ctx, env, current_season_year, steps)
+        delta6 = self._cap_flex_adjustment(incoming, outgoing, ctx, env, steps)
 
         # OFF/DEF upgrade adjustments
         delta7 = self._upgrade_adjustment(incoming, outgoing, ctx, steps)
@@ -767,8 +756,7 @@ class PackageEffects:
         incoming: Sequence[Tuple[TeamValuation, AssetSnapshot]],
         outgoing: Sequence[Tuple[TeamValuation, AssetSnapshot]],
         ctx: DecisionContext,
-        env: Optional[ValuationEnv],
-        current_season_year: Optional[int],
+        env: ValuationEnv,
         steps: List[ValuationStep],
     ) -> ValueComponents:
         cfg = self.config
@@ -789,32 +777,14 @@ class PackageEffects:
             cap_space_before = _safe_float(ctx.debug.get("cap_space"), 0.0)
         cap_space_before = max(0.0, float(cap_space_before))
 
-        cur_sy: Optional[int] = None
-        if env is not None and int(getattr(env, "current_season_year", 0) or 0) > 0:
-            cur_sy = int(env.current_season_year)
-        elif current_season_year is not None:
-            cur_sy = int(current_season_year)
+        cur_sy = int(env.current_season_year)
+        if cur_sy <= 0:
+            raise ValueError("ValuationEnv.current_season_year must be a positive integer")
 
-        cap_now: Optional[float] = None
-        cap_source = "none"
-        if env is not None and cur_sy is not None:
-            try:
-                cap_now = float(env.cap_model.salary_cap_for_season(int(cur_sy)))
-                cap_source = "env"
-            except Exception:
-                cap_now = None
-                cap_source = "env_error"
-        elif cur_sy is not None and _DEFAULT_CAP_MODEL is not None:
-            try:
-                cap_now = float(_DEFAULT_CAP_MODEL.salary_cap_for_season(int(cur_sy)))
-                cap_source = "default_model"
-            except Exception:
-                cap_now = None
-                cap_source = "default_model_error"
+        cap_now = float(env.cap_model.salary_cap_for_season(int(cur_sy)))
+        cap_source = "env"
 
         def salary_now(p: PlayerSnapshot) -> float:
-            if cur_sy is None:
-                return 0.0
             s = _safe_float(getattr(p, "salary_amount", None), 0.0)
             if s > cfg.eps:
                 return float(s)
@@ -835,13 +805,13 @@ class PackageEffects:
 
         cap_room_used = min(max(net_added, 0.0), cap_space_before)
         used_frac = 0.0
-        if cap_now is not None and float(cap_now) > cfg.eps:
+        if float(cap_now) > cfg.eps:
             used_frac = cap_room_used / float(cap_now)
 
         # even if CAP_FLEX need is low, cap room isn't free
         w_room = _clamp(cfg.cap_room_weight_base + (1.0 - cfg.cap_room_weight_base) * w_need, 0.0, 1.0)
         raw_now = 0.0
-        if cap_now is not None and float(cap_now) > cfg.eps and cur_sy is not None:
+        if float(cap_now) > cfg.eps:
             raw_now = -w_room * cfg.cap_room_value_per_cap_fraction * (used_frac ** cfg.cap_room_cost_exponent)
         raw_now = _clamp(raw_now, -cfg.cap_room_abs_cap, 0.0)
 
@@ -881,7 +851,7 @@ class PackageEffects:
             for tv, snap in items:
                 if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
                     continue
-                acc += _commitment_metric(snap, current_season_year=cur_sy)
+                acc += _commitment_metric(snap, current_season_year=int(cur_sy))
             return float(acc)
 
         in_c = sum_commit(incoming)
@@ -990,8 +960,7 @@ def apply_package_effects(
     incoming: Sequence[Tuple[TeamValuation, AssetSnapshot]],
     outgoing: Sequence[Tuple[TeamValuation, AssetSnapshot]],
     ctx: DecisionContext,
-    env: Optional[ValuationEnv] = None,
-    current_season_year: Optional[int] = None,
+    env: ValuationEnv,
     config: Optional[PackageEffectsConfig] = None,
 ) -> Tuple[ValueComponents, Tuple[ValuationStep, ...], Dict[str, Any]]:
     """Stateless wrapper."""
@@ -1002,6 +971,5 @@ def apply_package_effects(
         outgoing=outgoing,
         ctx=ctx,
         env=env,
-        current_season_year=current_season_year,
     )
 
