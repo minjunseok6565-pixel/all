@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .promises import PromiseSpec, PromiseType, due_month_from_now
-from .utils import clamp, clamp01, mental_norm, norm_date_iso, safe_float
+from .utils import clamp, clamp01, mental_norm, norm_date_iso, safe_float, safe_float_opt
 
 
 AgencyEventType = Literal[
@@ -469,9 +469,9 @@ def apply_user_response(
             trust1 = trust0 + dt
             delta = -rcfg.axis_relief_promise * impact * pos_mult * sev_mult
 
-            max_mpg = safe_float(payload.get("max_mpg"), None)
+            max_mpg = safe_float_opt(payload.get("max_mpg"))
             if max_mpg is None:
-                max_mpg = safe_float(payload.get("target_mpg"), None)
+                max_mpg = safe_float_opt(payload.get("target_mpg"))
             if max_mpg is None:
                 max_mpg = float(rcfg.promise_load_default_max_mpg)
 
@@ -688,7 +688,7 @@ def _axis_for_v2_event(event_type: str) -> str:
 
 def _extract_leverage(*, state: Mapping[str, Any], event: Mapping[str, Any]) -> float:
     # Prefer state leverage (current roster), then event payload leverage.
-    lev = safe_float(state.get("leverage"), None)
+    lev = safe_float_opt(state.get("leverage"))
     if lev is None:
         payload = event.get("payload")
         if isinstance(payload, Mapping):
@@ -803,13 +803,13 @@ def _apply_minutes_complaint(
         mfr1 -= float(rcfg.minutes_relief_promise) * impact * sev_mult
 
         # Target MPG
-        target = safe_float(payload.get("target_mpg"), None)
+        target = safe_float_opt(payload.get("target_mpg"))
         if target is None:
             # Try event/state expected mpg
             evp = event.get("payload")
             target = None
             if isinstance(evp, Mapping):
-                target = safe_float(evp.get("expected_mpg"), None)
+                target = safe_float_opt(evp.get("expected_mpg"))
             if target is None:
                 target = safe_float(state.get("minutes_expected_mpg"), 24.0)
 

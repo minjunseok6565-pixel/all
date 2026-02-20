@@ -475,6 +475,37 @@ def respond_to_agency_event(
                 except Exception:
                     new_state["trade_request_level"] = int(prev_state.get("trade_request_level") or 0)
 
+                # ------------------------------------------------------------------
+                # Memory hooks (v2 narrative)
+                # ------------------------------------------------------------------
+                try:
+                    ctx0 = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
+                    mem = ctx0.get("mem") if isinstance(ctx0.get("mem"), dict) else {}
+
+                    # If the team is shopping the player, they remember it.
+                    if str(outcome.response_type).upper() == "SHOP_TRADE":
+                        mem["was_shopped"] = True
+                        mem.setdefault("was_shopped_at", str(now_date)[:10])
+
+                    # Response-level escalation to "public" (e.g., refusing a trade request can blow up).
+                    try:
+                        prev_tr = int(prev_state.get("trade_request_level") or 0)
+                    except Exception:
+                        prev_tr = 0
+                    try:
+                        new_tr = int(new_state.get("trade_request_level") or 0)
+                    except Exception:
+                        new_tr = prev_tr
+
+                    if prev_tr < 2 and new_tr >= 2:
+                        mem["public_blowups"] = int(mem.get("public_blowups") or 0) + 1
+
+                    ctx0["mem"] = mem
+                    new_state["context"] = ctx0
+                except Exception:
+                    # Never break the response pipeline for narrative bookkeeping.
+                    pass
+
                 upsert_player_agency_states(cur, {ev["player_id"]: new_state}, now=str(now_iso))
 
             # Insert response event into agency_events (UI + analytics)
