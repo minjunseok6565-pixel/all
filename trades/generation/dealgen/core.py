@@ -27,6 +27,7 @@ from .targets import select_targets_buy, select_targets_sell, select_buyers_for_
 from .skeletons import build_offer_skeletons_buy, build_offer_skeletons_sell, expand_variants
 from .repair import repair_until_valid
 from .scoring import evaluate_and_score, _proposal_from_cached_eval, _should_discard_prop
+from .pick_protection_decorator import maybe_apply_pick_protection_variants
 from .sweetener import maybe_apply_sweeteners
 
 # =============================================================================
@@ -428,13 +429,27 @@ def _generate_buy_mode(
                     opponent_repeat_count=int(partner_counts.get(seller_id, 0)),
                 )
 
+            # --- pick protection decorator (post-pick, deal-local)
+            base_prop, pv_used, pe_used = maybe_apply_pick_protection_variants(
+                base_prop,
+                tick_ctx=tick_ctx,
+                catalog=catalog,
+                config=config,
+                budget=budget,
+                allow_locked_by_deal_id=allow_locked_by_deal_id,
+                opponent_repeat_count=int(partner_counts.get(seller_id, 0)),
+                stats=stats,
+            )
+            stats.validations += pv_used
+            stats.evaluations += pe_used
+
             # filter: 너무 말도 안 되는 손해
             if _should_discard_prop(base_prop, config):
                 continue
 
             # --- FIT_FAILS -> fit swap counter (v2 absorption)
             pre_sweet_prop = base_prop
-            pre_sweet_hash = h_valid
+            pre_sweet_hash = dedupe_hash(pre_sweet_prop.deal)
 
             fit_enabled = bool(getattr(config, "fit_swap_enabled", True))
             if fit_enabled and int(max_fit_swap_trials_per_base) > 0:
@@ -798,12 +813,26 @@ def _generate_sell_mode(
                         opponent_repeat_count=int(partner_counts.get(buyer_id, 0)),
                     )
 
+                # --- pick protection decorator (post-pick, deal-local)
+                base_prop, pv_used, pe_used = maybe_apply_pick_protection_variants(
+                    base_prop,
+                    tick_ctx=tick_ctx,
+                    catalog=catalog,
+                    config=config,
+                    budget=budget,
+                    allow_locked_by_deal_id=allow_locked_by_deal_id,
+                    opponent_repeat_count=int(partner_counts.get(buyer_id, 0)),
+                    stats=stats,
+                )
+                stats.validations += pv_used
+                stats.evaluations += pe_used
+
                 if _should_discard_prop(base_prop, config):
                     continue
 
                 # --- FIT_FAILS -> fit swap counter (v2 absorption)
                 pre_sweet_prop = base_prop
-                pre_sweet_hash = h_valid
+                pre_sweet_hash = dedupe_hash(pre_sweet_prop.deal)
 
                 fit_enabled = bool(getattr(config, "fit_swap_enabled", True))
                 if fit_enabled and int(max_fit_swap_trials_per_base) > 0:

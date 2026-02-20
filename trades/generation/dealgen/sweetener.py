@@ -14,6 +14,7 @@ from .types import DealGeneratorConfig, DealGeneratorBudget, DealGeneratorStats,
 from .utils import _clone_deal, _count_swaps, _count_picks, _count_seconds, _team_pick_flow, _is_locked_candidate
 from .dedupe import deal_signature_payload
 from .scoring import evaluate_and_score, _should_discard_prop
+from .pick_protection_decorator import default_sweetener_protection
 
 # =============================================================================
 # Sweetener loop
@@ -595,6 +596,39 @@ def _collect_sweetener_candidates(
             continue
 
         out.append(a)
+        if len(out) >= int(limit):
+            break
+
+        # Mix in ONE protected-pick variant as an alternative candidate.
+        # This does not change the deal yet; it just expands the candidate pool.
+        if (
+            pick_bucket in ('FIRST_SAFE', 'FIRST_SENSITIVE')
+            and bool(getattr(config, 'sweetener_include_pick_protection_variant', True))
+            and getattr(a, 'protection', None) is None
+            and len(out) < int(limit)
+        ):
+            try:
+                mv = float(getattr(p.market, 'total', 0.0) or 0.0)
+            except Exception:
+                mv = 0.0
+            try:
+                prot = default_sweetener_protection(
+                    pick_bucket=pick_bucket,
+                    pick_market_total=mv,
+                    config=config,
+                )
+                out.append(
+                    PickAsset(
+                        kind=a.kind,
+                        pick_id=a.pick_id,
+                        to_team=getattr(a, 'to_team', None),
+                        protection=dict(prot),
+                    )
+                )
+            except Exception:
+                # If anything goes wrong, silently keep the unprotected candidate.
+                pass
+
         if len(out) >= int(limit):
             break
 
