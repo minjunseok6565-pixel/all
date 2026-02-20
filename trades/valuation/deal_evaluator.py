@@ -339,7 +339,41 @@ class DealEvaluator:
             return snap
 
         if isinstance(asset, SwapAsset):
-            snap = provider.get_swap_snapshot(asset.swap_id)
+            try:
+                snap = provider.get_swap_snapshot(asset.swap_id)
+            except KeyError:
+                # Deal-local swap rights can be proposed before they exist in SSOT.
+                # Synthesize a minimal SwapSnapshot so valuation can proceed.
+                #
+                # NOTE: if underlying picks are missing, let that error surface; the
+                # deal is invalid and should not be evaluated.
+                pick_a = provider.get_pick_snapshot(asset.pick_id_a)
+                pick_b = provider.get_pick_snapshot(asset.pick_id_b)
+
+                year = pick_a.year if pick_a.year == pick_b.year else None
+                rnd = pick_a.round if pick_a.round == pick_b.round else None
+
+                meta: Dict[str, Any] = {
+                    "synthetic": True,
+                    "synthetic_reason": "swap_not_in_snapshot",
+                    "deal_swap_asset": {
+                        "swap_id": str(asset.swap_id),
+                        "pick_id_a": str(asset.pick_id_a),
+                        "pick_id_b": str(asset.pick_id_b),
+                    },
+                }
+                snap = SwapSnapshot(
+                    kind="swap",
+                    swap_id=str(asset.swap_id),
+                    pick_id_a=str(asset.pick_id_a),
+                    pick_id_b=str(asset.pick_id_b),
+                    year=year,
+                    round=rnd,
+                    owner_team=str(getattr(asset, "to_team", None) or ""),
+                    active=True,
+                    meta=meta,
+                )
+
             snap = _override_swap_fields_if_needed(snap, asset)
             return snap
 
@@ -384,4 +418,3 @@ def evaluate_deal_for_team(
         include_package_effects=include_package_effects,
         attach_leg_metadata=attach_leg_metadata,
     )
-

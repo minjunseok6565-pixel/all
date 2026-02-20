@@ -13,8 +13,8 @@ class TradeError(Exception):
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"
 
-
 TRADE_DEADLINE_PASSED = "TRADE_DEADLINE_PASSED"
+TRADE_DEADLINE_INVALID = "TRADE_DEADLINE_INVALID"
 INVALID_TEAM = "INVALID_TEAM"
 PLAYER_NOT_OWNED = "PLAYER_NOT_OWNED"
 PICK_NOT_OWNED = "PICK_NOT_OWNED"

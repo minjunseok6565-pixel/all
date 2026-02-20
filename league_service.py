@@ -536,6 +536,11 @@ class LeagueService:
         """Upsert draft_picks within an existing cursor/transaction."""
         if not picks_by_id:
             return
+        # SSOT: ensure protection schema is canonical on writes.
+        try:
+            from trades.protection import normalize_protection_optional
+        except Exception as exc:  # pragma: no cover
+            raise ImportError("trades.protection is required") from exc
         now = _utc_now_iso()
         rows = []
         for pick_id, pick in picks_by_id.items():
@@ -554,7 +559,7 @@ class LeagueService:
                 rnd = 0
             original = str(pick.get("original_team") or "").upper()
             owner = str(pick.get("owner_team") or "").upper()
-            protection = pick.get("protection")
+            protection = normalize_protection_optional(pick.get("protection"), pick_id=pid)
             rows.append(
                 (
                     pid,
@@ -899,6 +904,8 @@ class LeagueService:
                 serialize_deal,
                 asset_key,
             )
+            from trades.identity import deal_identity_hash, deal_execution_id
+            from trades.protection import normalize_protection_optional
             from trades.swap_integrity import validate_swap_asset_in_cur
             from trades.errors import (
                 TradeError,
@@ -932,10 +939,14 @@ class LeagueService:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid trade_date_iso: {trade_date_iso!r}") from exc
 
-        # If deal_id not provided, derive a deterministic id from canonical payload.
+        # SSOT: transactional identity ignores deal.meta.
+        deal_identity = deal_identity_hash(deal_obj)
+
+        # If deal_id not provided, derive an execution id (identity + trade_date).
         if not deal_id:
-            payload = serialize_deal(deal_obj)
-            deal_id = hashlib.sha1(_json_dumps(payload).encode("utf-8")).hexdigest()
+            deal_id = deal_execution_id(deal_obj, trade_date=trade_date_as_date)
+
+        deal_id = str(deal_id)
 
         # Idempotency: if already executed, return the stored transaction payload (or a stable error).
         conn = getattr(self.repo, "_conn", None)
@@ -949,6 +960,7 @@ class LeagueService:
                 if not isinstance(existing, dict):
                     existing = {"type": "trade", "deal_id": str(deal_id)}
                 existing.setdefault("deal_id", str(deal_id))
+                existing.setdefault("deal_identity", str(deal_identity))
                 existing["already_executed"] = True
                 return existing
 
@@ -1057,6 +1069,7 @@ class LeagueService:
             "player_moves": [],  # filled at commit time (resolved from SSOT)
             "source": str(source),
             "deal_id": str(deal_id),
+            "deal_identity": str(deal_identity),
         }
 
         now = _utc_now_iso()
@@ -1172,16 +1185,24 @@ class LeagueService:
                         {"pick_id": pick_id, "team_id": from_team_u, "owner_team": current_owner},
                     )
 
-                existing_prot = _json_loads(pick_row["protection_json"], None)
-                new_prot = existing_prot
-                if protection is not None:
-                    if existing_prot is None:
-                        new_prot = protection
-                    elif existing_prot != protection:
+                existing_raw = _json_loads(pick_row["protection_json"], None)
+                existing_norm = normalize_protection_optional(existing_raw, pick_id=str(pick_id))
+                attempted_norm = normalize_protection_optional(protection, pick_id=str(pick_id))
+
+                new_prot = existing_norm
+                if attempted_norm is not None:
+                    if existing_norm is None:
+                        new_prot = attempted_norm
+                    elif existing_norm != attempted_norm:
                         raise TradeError(
                             PROTECTION_CONFLICT,
                             "Pick protection conflicts with existing record",
-                            {"pick_id": pick_id, "existing_protection": existing_prot, "attempted_protection": protection},
+                            {
+                                "pick_id": pick_id,
+                                "existing_protection": existing_norm,
+                                "attempted_protection": attempted_norm,
+                                "existing_protection_raw": existing_raw,
+                            },
                         )
 
                 cur.execute(

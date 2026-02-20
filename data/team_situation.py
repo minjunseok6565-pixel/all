@@ -1722,8 +1722,14 @@ def _deadline_pressure(today: date, trade_deadline: Any) -> float:
     if not trade_deadline:
         return 0.0
     try:
-        d = date.fromisoformat(str(trade_deadline))
+        from trades.trade_rules import parse_trade_deadline
+        d = parse_trade_deadline(trade_deadline)
+    except ValueError:
+        _warn_limited("TRADE_DEADLINE_PARSE_FAILED", f"trade_deadline={trade_deadline!r}", limit=3)
+        return 0.0
     except Exception:
+        return 0.0
+    if d is None:
         return 0.0
     days = (d - today).days
     if days <= 0:

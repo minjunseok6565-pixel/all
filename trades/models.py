@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from .errors import TradeError, DEAL_INVALIDATED, INVALID_TEAM, MISSING_TO_TEAM, PROTECTION_INVALID
+from .errors import TradeError, DEAL_INVALIDATED, INVALID_TEAM, MISSING_TO_TEAM
+from .protection import normalize_protection, normalize_protection_optional
 from schema import normalize_player_id, normalize_team_id
 
 
@@ -93,36 +94,30 @@ def resolve_asset_receiver(deal: Deal, sender_team: str, asset: Asset) -> str:
 
 
 def _normalize_protection(raw: Dict[str, Any]) -> Dict[str, Any]:
-    protection_type = raw.get("type", raw.get("rule"))
-    if not isinstance(protection_type, str):
-        raise TradeError(PROTECTION_INVALID, "Protection type is required", raw)
-    protection_type = protection_type.strip().upper()
-    if protection_type != "TOP_N":
-        raise TradeError(PROTECTION_INVALID, "Unsupported protection type", raw)
+    """Legacy wrapper kept for internal callers.
 
-    raw_n = raw.get("n")
-    try:
-        n_value = int(raw_n)
-    except (TypeError, ValueError):
-        raise TradeError(PROTECTION_INVALID, "Protection n must be an integer", raw)
-    if n_value < 1 or n_value > 30:
-        raise TradeError(PROTECTION_INVALID, "Protection n out of range", raw)
+    SSOT lives in trades.protection.normalize_protection.
+    """
 
-    compensation = raw.get("compensation")
-    if not isinstance(compensation, dict):
-        raise TradeError(PROTECTION_INVALID, "Protection compensation must be an object", raw)
-    compensation_value = compensation.get("value")
-    if isinstance(compensation_value, bool) or not isinstance(compensation_value, (int, float)):
-        raise TradeError(PROTECTION_INVALID, "Protection compensation value must be numeric", raw)
-    compensation_label = compensation.get("label")
-    if not isinstance(compensation_label, str) or not compensation_label.strip():
-        compensation_label = "Protected pick compensation"
+    return normalize_protection(raw)
 
-    return {
-        "type": protection_type,
-        "n": n_value,
-        "compensation": {"label": str(compensation_label), "value": compensation_value},
-    }
+
+
+def normalize_pick_protection(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize/validate a pick protection payload.
+
+    This is a public wrapper over the internal _normalize_protection() helper.
+
+    Rationale
+    ---------
+    Multiple subsystems (deal parsing/canonicalization, AI generation decorators,
+    valuation overrides) need to create protection dicts that are guaranteed to
+    satisfy SSOT rules (PickProtectionSchemaRule) and settlement logic.
+
+    Keeping this wrapper in trades.models makes the normalization rules a single
+    source of truth.
+    """
+    return _normalize_protection(raw)
 
 
 def _normalize_team_id(value: Any, *, context: str) -> str:
@@ -181,10 +176,9 @@ def _parse_asset(raw: Dict[str, Any]) -> Asset:
             raise TradeError(DEAL_INVALIDATED, "Missing pick_id in asset", raw)
         protection = None
         if "protection" in raw:
+            # Allow explicit null to behave like "no protection".
             protection_raw = raw.get("protection")
-            if not isinstance(protection_raw, dict):
-                raise TradeError(PROTECTION_INVALID, "Protection must be an object", raw)
-            protection = _normalize_protection(protection_raw)
+            protection = normalize_protection_optional(protection_raw, pick_id=str(pick_id))
         return PickAsset(
             kind="pick",
             pick_id=str(pick_id),
@@ -280,7 +274,7 @@ def canonicalize_deal(deal: Deal) -> Deal:
                 )
                 protection = None
                 if asset.protection is not None:
-                    protection = _normalize_protection(asset.protection)
+                    protection = normalize_protection(asset.protection, pick_id=asset.pick_id)
                 normalized_assets.append(
                     PickAsset(
                         kind=asset.kind,
