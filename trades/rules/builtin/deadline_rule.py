@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 
-from ...errors import TRADE_DEADLINE_PASSED, TradeError
+from ...errors import TRADE_DEADLINE_INVALID, TRADE_DEADLINE_PASSED, TradeError
+from ...trade_rules import parse_trade_deadline
 from ..base import TradeContext
 
 
@@ -21,8 +21,16 @@ class DeadlineRule:
             return
 
         try:
-            deadline_date = date.fromisoformat(str(trade_deadline))
+            deadline_date = parse_trade_deadline(trade_deadline)
         except ValueError:
+            # Fail-closed: invalid league config should block trades.
+            raise TradeError(
+                TRADE_DEADLINE_INVALID,
+                "Invalid trade deadline config",
+                {"trade_deadline": str(trade_deadline)},
+            )
+
+        if deadline_date is None:
             return
 
         if ctx.current_date > deadline_date:
@@ -31,6 +39,7 @@ class DeadlineRule:
                 "Trade deadline has passed",
                 {
                     "current_date": ctx.current_date.isoformat(),
-                    "deadline": str(trade_deadline),
+                    "deadline": deadline_date.isoformat(),
+                    "trade_deadline_raw": str(trade_deadline),
                 },
             )
