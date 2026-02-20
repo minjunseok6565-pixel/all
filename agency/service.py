@@ -18,6 +18,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from league_repo import LeagueRepo
 
+from contract_codec import derive_contract_end_season_id
+
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .expectations import compute_expectations_for_league
 from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
@@ -860,7 +862,7 @@ def apply_monthly_agency_tick(
 
             active_cid = active_contract_id_by_pid.get(pid)
             c_row = contracts_by_id.get(str(active_cid)) if active_cid else None
-            contract_end_season_id = str(c_row.get("end_season_id")) if isinstance(c_row, Mapping) and c_row.get("end_season_id") else None
+            contract_end_season_id = derive_contract_end_season_id(c_row) if isinstance(c_row, Mapping) else None
 
             team_strategy = str(team_strategy_by_team.get(str(eval_tid).upper(), "BALANCED") or "BALANCED").upper()
 
@@ -1239,7 +1241,7 @@ def apply_monthly_agency_tick(
                         # Contract evidence for EXTENSION_TALKS promises.
                         active_cid_p = active_contract_id_by_pid.get(pid)
                         c_row_p = contracts_by_id.get(str(active_cid_p)) if active_cid_p else None
-                        contract_end_p = str(c_row_p.get("end_season_id")) if isinstance(c_row_p, Mapping) and c_row_p.get("end_season_id") else None
+                        contract_end_p = derive_contract_end_season_id(c_row_p) if isinstance(c_row_p, Mapping) else None
 
                         # Talks started evidence (derived from agency_events, SSOT).
                         created_d = norm_date_iso(p.get("created_date")) or str(now_iso)[:10]
