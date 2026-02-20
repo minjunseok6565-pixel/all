@@ -1284,6 +1284,11 @@ class TeamSituationEvaluator:
         return out
 
     def _remaining_years_for_player(self, player_id: str, season_year: int) -> Optional[int]:
+        """SSOT-backed remaining years for a player's active contract.
+
+        - Uses `contracts.terms.remaining_years(contract_like, current_season_year=...)`.
+        - Returns None if active contract is missing or SSOT helper is unavailable.
+        """
         ledger = self.ctx.contract_ledger or {}
         active_by_player = ledger.get("active_contract_id_by_player", {}) or {}
         contracts = ledger.get("contracts", {}) or {}
@@ -1295,26 +1300,15 @@ class TeamSituationEvaluator:
         if not isinstance(c, dict):
             return None
 
-        start = _safe_int(c.get("start_season_year") or c.get("start_year"), None)
-        years = _safe_int(c.get("years"), None)
-        salary_by_year = c.get("salary_by_year") or {}
-
-        end_year = None
-        if start is not None and years is not None:
-            end_year = start + years - 1
-        else:
-            try:
-                keys = [int(k) for k in salary_by_year.keys()]
-                end_year = max(keys) if keys else None
-            except Exception:
-                end_year = None
-
-        if end_year is None:
+        if _contract_remaining_years is None:
             return None
 
-        if season_year > end_year:
-            return 0
-        return int(end_year - season_year + 1)
+        try:
+            # SSOT definition: number of seasons >= current season with salary > 0.
+            return int(_contract_remaining_years(c, current_season_year=int(season_year)))
+        except Exception:
+            _warn_limited("CONTRACT_REMAINING_YEARS_FAILED", f"player_id={player_id!r} contract_id={cid!r}")
+            return None
 
     def _compute_contract_pressure(self, team_id: str, roster: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Compute "re-sign pressure" from expiring key rotation players.
