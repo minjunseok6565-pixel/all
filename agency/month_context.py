@@ -78,7 +78,13 @@ DEFAULT_MONTH_CONTEXT_CONFIG = MonthContextConfig()
 
 @dataclass(slots=True)
 class TeamSlice:
-    """Per-team slice of a player's participation in a month."""
+    """Per-team slice of a player's participation in a month.
+
+    In addition to minutes/games, we store simple role evidence:
+    - games_started: appeared in Q1 PERIOD_START on-court five
+    - games_closed: appeared in last PERIOD_END on-court five
+    - usage_est: FGA + 0.44*FTA + TOV (approx; derived from boxscore row)
+    """
 
     team_id: str
 
@@ -86,10 +92,22 @@ class TeamSlice:
     games_present: int = 0  # row exists in boxscore (may include MIN=0)
     games_played: int = 0  # MIN > 0
 
+    games_started: int = 0
+    games_closed: int = 0
+    usage_est: float = 0.0
+
     first_date: Optional[str] = None  # YYYY-MM-DD
     last_date: Optional[str] = None  # YYYY-MM-DD
 
-    def add_game(self, *, game_date_iso: str, minutes: float) -> None:
+    def add_game(
+        self,
+        *,
+        game_date_iso: str,
+        minutes: float,
+        started: bool = False,
+        closed: bool = False,
+        usage_est: float = 0.0,
+    ) -> None:
         d = norm_date_iso(game_date_iso)
         if not d:
             return
@@ -99,6 +117,14 @@ class TeamSlice:
         if m > 0.0:
             self.games_played = int(self.games_played + 1)
             self.minutes = float(self.minutes + m)
+
+        if started:
+            self.games_started = int(self.games_started + 1)
+        if closed:
+            self.games_closed = int(self.games_closed + 1)
+
+        # usage_est is derived; safe to accumulate even if m==0.
+        self.usage_est = float(self.usage_est + max(0.0, float(usage_est)))
 
         if self.first_date is None or str(d) < str(self.first_date):
             self.first_date = d
@@ -110,6 +136,9 @@ class TeamSlice:
             "minutes": float(self.minutes),
             "games_present": int(self.games_present),
             "games_played": int(self.games_played),
+            "games_started": int(self.games_started),
+            "games_closed": int(self.games_closed),
+            "usage_est": float(self.usage_est),
             "first_date": self.first_date,
             "last_date": self.last_date,
         }
@@ -212,6 +241,62 @@ def _iter_month_final_games(
     return out
 
 
+def _extract_starters_closers_from_replay(
+    game_result: Mapping[str, Any],
+) -> Tuple[Dict[str, set[str]], Dict[str, set[str]]]:
+    """Return (starters_by_team_id, closers_by_team_id) for one game_result.
+
+    Source of truth: matchengine_v3 replay_events, PERIOD_START/PERIOD_END with include_lineups=True.
+
+    - Starters: Q1 PERIOD_START on_court_by_team_id
+    - Closers: last PERIOD_END on_court_by_team_id (regulation or OT)
+
+    Best-effort: if replay_events are missing or don't include lineup snapshots,
+    returns empty dicts and the rest of month attribution still works.
+    """
+    starters: Dict[str, set[str]] = {}
+    closers: Dict[str, set[str]] = {}
+
+    re = game_result.get("replay_events") if isinstance(game_result, Mapping) else None
+    if not isinstance(re, list) or not re:
+        return starters, closers
+
+    # Starters: first PERIOD_START in Q1
+    for evt in re:
+        if not isinstance(evt, Mapping):
+            continue
+        if str(evt.get("event_type") or "") != "PERIOD_START":
+            continue
+        q = safe_int(evt.get("quarter"), 0)
+        if q != 1:
+            continue
+        oc = evt.get("on_court_by_team_id")
+        if isinstance(oc, Mapping):
+            for tid, pids in oc.items():
+                tid_u = str(tid or "").upper()
+                if not tid_u or not isinstance(pids, list):
+                    continue
+                starters[tid_u] = {str(pid) for pid in pids if str(pid)}
+        break
+
+    # Closers: last PERIOD_END (includes OT)
+    for evt in reversed(re):
+        if not isinstance(evt, Mapping):
+            continue
+        if str(evt.get("event_type") or "") != "PERIOD_END":
+            continue
+        oc = evt.get("on_court_by_team_id")
+        if isinstance(oc, Mapping):
+            for tid, pids in oc.items():
+                tid_u = str(tid or "").upper()
+                if not tid_u or not isinstance(pids, list):
+                    continue
+                closers[tid_u] = {str(pid) for pid in pids if str(pid)}
+        break
+
+    return starters, closers
+
+
 def collect_month_splits(
     state_snapshot: Mapping[str, Any],
     *,
@@ -249,6 +334,8 @@ def collect_month_splits(
         if not isinstance(teams, Mapping):
             continue
 
+        starters_by_team, closers_by_team = _extract_starters_closers_from_replay(gr)
+
         for tid_raw, team_obj in teams.items():
             if not isinstance(team_obj, Mapping):
                 continue
@@ -280,7 +367,23 @@ def collect_month_splits(
                 if sl is None:
                     sl = TeamSlice(team_id=tid)
                     by_team[tid] = sl
-                sl.add_game(game_date_iso=date_iso, minutes=float(mins))
+                # Approx usage: FGA + 0.44*FTA + TOV (derived from boxscore row)
+                usage_est = (
+                    safe_float(row.get("FGA"), 0.0)
+                    + 0.44 * safe_float(row.get("FTA"), 0.0)
+                    + safe_float(row.get("TOV"), 0.0)
+                )
+
+                started = bool(pid in (starters_by_team.get(tid) or set()))
+                closed = bool(pid in (closers_by_team.get(tid) or set()))
+
+                sl.add_game(
+                    game_date_iso=date_iso,
+                    minutes=float(mins),
+                    started=started,
+                    closed=closed,
+                    usage_est=float(usage_est),
+                )
 
     # Finalize PlayerMonthSplit objects.
     out: Dict[str, PlayerMonthSplit] = {}

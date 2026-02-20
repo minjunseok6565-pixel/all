@@ -99,6 +99,23 @@ def _slice_minutes_games(split: Optional[PlayerMonthSplit], team_id: str) -> Tup
     return (float(sl.minutes), int(sl.games_played))
 
 
+def _slice_role_usage(split: Optional[PlayerMonthSplit], team_id: str) -> Tuple[int, int, float]:
+    """Return (starts, closes, usage_est) for player on a specific team in the month."""
+    if split is None:
+        return (0, 0, 0.0)
+    tid = str(team_id or "").upper()
+    if not tid:
+        return (0, 0, 0.0)
+    sl = (split.teams or {}).get(tid)
+    if sl is None:
+        return (0, 0, 0.0)
+    # TeamSlice in month_context carries these fields in v2; default defensively.
+    starts = int(getattr(sl, "games_started", 0) or 0)
+    closes = int(getattr(sl, "games_closed", 0) or 0)
+    usage_est = float(getattr(sl, "usage_est", 0.0) or 0.0)
+    return (starts, closes, usage_est)
+
+
 def _month_start_end_dates(month_key: str) -> Tuple[str, str]:
     """Return (month_start_date_iso, month_end_date_iso) for a YYYY-MM key."""
     mk = str(month_key or "")
@@ -366,6 +383,44 @@ def apply_monthly_agency_tick(
         with repo.transaction() as cur:
             prev_states = get_player_agency_states(cur, player_ids)
 
+        # ------------------------------------------------------------------
+        # v2 SSOT context (inputs only; tick v1 ignores, but we persist for v2+)
+        # ------------------------------------------------------------------
+
+        # Fatigue state (best-effort; missing table => empty).
+        fatigue_by_pid: Dict[str, Dict[str, Any]] = {}
+        try:
+            placeholders = ",".join(["?"] * len(player_ids))
+            rows_f = repo._conn.execute(
+                f"""
+                SELECT player_id, st, lt, last_date
+                FROM player_fatigue_state
+                WHERE player_id IN ({placeholders});
+                """,
+                [*player_ids],
+            ).fetchall()
+            for pid_f, st_f, lt_f, last_date_f in rows_f:
+                pid_s = str(pid_f)
+                if not pid_s:
+                    continue
+                fatigue_by_pid[pid_s] = {
+                    "st": safe_float(st_f, 0.0),
+                    "lt": safe_float(lt_f, 0.0),
+                    "last_date": norm_date_iso(last_date_f),
+                }
+        except Exception:
+            fatigue_by_pid = {}
+
+        # Contract state (SSOT).
+        active_contract_id_by_pid: Dict[str, str] = repo.get_active_contract_id_by_player()
+        contracts_by_id: Dict[str, Dict[str, Any]] = repo.get_contracts_map(active_only=False)
+
+        # Team strategy (SSOT). Missing rows fall back to BALANCED.
+        try:
+            team_strategy_by_team: Dict[str, str] = repo.get_team_strategy_map(season_year=int(sy))
+        except Exception:
+            team_strategy_by_team = {}
+
         # Expectations for role/leverage/expected minutes.
         expectations_current = compute_expectations_for_league(roster_rows, config=cfg.expectations)
 
@@ -610,6 +665,24 @@ def apply_monthly_agency_tick(
                 config=cfg.expectations,
             )
 
+        # Team usage totals (derived from month_splits). Used to compute usage_share in inputs.
+        usage_total_by_team: Dict[str, float] = {}
+        if splits_by_pid:
+            for sp in splits_by_pid.values():
+                if not sp:
+                    continue
+                for tid, sl in (sp.teams or {}).items():
+                    try:
+                        tid_u = str(tid or "").upper()
+                        if not tid_u:
+                            continue
+                        ue = float(getattr(sl, "usage_est", 0.0) or 0.0)
+                        if ue <= 0.0:
+                            continue
+                        usage_total_by_team[tid_u] = float(usage_total_by_team.get(tid_u, 0.0) + ue)
+                    except Exception:
+                        continue
+
 
         # Injury status for the processed month (end-of-month).
         # Preferred SSOT source: injury_events windows.
@@ -769,7 +842,29 @@ def apply_monthly_agency_tick(
                     injury_mult = ((float(gpos_adj - rg) * 1.0) + (float(rg) * rm)) / float(gpos_adj)
                     injury_mult = float(clamp01(injury_mult))
 
+            # v2 derived evidence for evaluated team (starts/closes/usage)
+            starts_eval, closes_eval, usage_est_eval = _slice_role_usage(split, eval_tid) if split is not None else (0, 0, 0.0)
+            starts_rate = (float(starts_eval) / float(gp_eval)) if int(gp_eval) > 0 else 0.0
+            closes_rate = (float(closes_eval) / float(gp_eval)) if int(gp_eval) > 0 else 0.0
+            starts_rate = float(clamp01(starts_rate))
+            closes_rate = float(clamp01(closes_rate))
+
+            team_usage_total = float(usage_total_by_team.get(str(eval_tid).upper(), 0.0) or 0.0)
+            usage_share = (float(usage_est_eval) / float(team_usage_total)) if team_usage_total > 0.0 else 0.0
+            usage_share = float(clamp01(usage_share))
+
+            fat = fatigue_by_pid.get(pid) or {}
+            fatigue_st = safe_float(fat.get("st"), 0.0) if isinstance(fat, Mapping) else 0.0
+            fatigue_lt = safe_float(fat.get("lt"), 0.0) if isinstance(fat, Mapping) else 0.0
+
+            active_cid = active_contract_id_by_pid.get(pid)
+            c_row = contracts_by_id.get(str(active_cid)) if active_cid else None
+            contract_end_season_id = str(c_row.get("end_season_id")) if isinstance(c_row, Mapping) and c_row.get("end_season_id") else None
+
+            team_strategy = str(team_strategy_by_team.get(str(eval_tid).upper(), "BALANCED") or "BALANCED").upper()
+
             inp = MonthlyPlayerInputs(
+
                 player_id=pid,
                 team_id=eval_tid,
                 season_year=sy,
@@ -787,6 +882,17 @@ def apply_monthly_agency_tick(
                 ovr=safe_int(rr.get("ovr"), 0),
                 age=safe_int(rr.get("age"), 0),
                 mental=mental,
+                starts=int(starts_eval),
+                closes=int(closes_eval),
+                starts_rate=float(starts_rate),
+                closes_rate=float(closes_rate),
+                usage_est=float(usage_est_eval),
+                usage_share=float(usage_share),
+                fatigue_st=float(fatigue_st),
+                fatigue_lt=float(fatigue_lt),
+                active_contract_id=str(active_cid) if active_cid else None,
+                contract_end_season_id=contract_end_season_id,
+                team_strategy=team_strategy,
             )
 
             # If the previous SSOT state belongs to a different team than the team we are
@@ -829,6 +935,11 @@ def apply_monthly_agency_tick(
                     }
 
             new_state, new_events = apply_monthly_player_tick(prev_for_tick, inputs=inp, cfg=cfg)
+
+            # Persist derived evidence caches (v2 UI/explainability). Tick logic may ignore.
+            new_state["starts_rate"] = float(starts_rate)
+            new_state["closes_rate"] = float(closes_rate)
+            new_state["usage_share"] = float(usage_share)
 
             # Attach attribution context for UI / debugging.
             ctx = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
@@ -1175,4 +1286,3 @@ def apply_monthly_agency_tick(
             },
             "promise_stats": promise_stats,
         }
-

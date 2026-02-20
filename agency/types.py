@@ -40,9 +40,22 @@ class AgencyState:
     minutes_expected_mpg: float = 0.0
     minutes_actual_mpg: float = 0.0
 
+    # v1 axes
     minutes_frustration: float = 0.0
     team_frustration: float = 0.0
     trust: float = 0.5
+
+    # v2 axes (additional)
+    role_frustration: float = 0.0
+    contract_frustration: float = 0.0
+    health_frustration: float = 0.0
+    chemistry_frustration: float = 0.0
+    usage_frustration: float = 0.0
+
+    # v2 monthly role evidence cache (derived)
+    starts_rate: float = 0.0
+    closes_rate: float = 0.0
+    usage_share: float = 0.0
 
     trade_request_level: int = 0  # 0 none, 1 private, 2 public
 
@@ -50,6 +63,18 @@ class AgencyState:
     cooldown_trade_until: Optional[str] = None
     cooldown_help_until: Optional[str] = None
     cooldown_contract_until: Optional[str] = None
+
+    # v2 cooldowns
+    cooldown_role_until: Optional[str] = None
+    cooldown_health_until: Optional[str] = None
+    cooldown_chemistry_until: Optional[str] = None
+
+    # v2 escalation stages (0..4)
+    escalation_role: int = 0
+    escalation_contract: int = 0
+    escalation_team: int = 0
+    escalation_health: int = 0
+    escalation_chemistry: int = 0
 
     last_processed_month: Optional[str] = None
 
@@ -68,11 +93,27 @@ class AgencyState:
             "minutes_frustration": float(self.minutes_frustration),
             "team_frustration": float(self.team_frustration),
             "trust": float(self.trust),
+            "role_frustration": float(self.role_frustration),
+            "contract_frustration": float(self.contract_frustration),
+            "health_frustration": float(self.health_frustration),
+            "chemistry_frustration": float(self.chemistry_frustration),
+            "usage_frustration": float(self.usage_frustration),
+            "starts_rate": float(self.starts_rate),
+            "closes_rate": float(self.closes_rate),
+            "usage_share": float(self.usage_share),
             "trade_request_level": int(self.trade_request_level),
             "cooldown_minutes_until": self.cooldown_minutes_until,
             "cooldown_trade_until": self.cooldown_trade_until,
             "cooldown_help_until": self.cooldown_help_until,
             "cooldown_contract_until": self.cooldown_contract_until,
+            "cooldown_role_until": self.cooldown_role_until,
+            "cooldown_health_until": self.cooldown_health_until,
+            "cooldown_chemistry_until": self.cooldown_chemistry_until,
+            "escalation_role": int(self.escalation_role),
+            "escalation_contract": int(self.escalation_contract),
+            "escalation_team": int(self.escalation_team),
+            "escalation_health": int(self.escalation_health),
+            "escalation_chemistry": int(self.escalation_chemistry),
             "last_processed_month": self.last_processed_month,
             "context": dict(self.context or {}),
         }
@@ -151,6 +192,29 @@ class MonthlyPlayerInputs:
     # Mental traits (0..100 expected; missing allowed)
     mental: Mapping[str, Any] = field(default_factory=dict)
 
+    # ------------------------------------------------------------------
+    # v2 evidence inputs (all optional; used by the v2 tick)
+    # ------------------------------------------------------------------
+
+    # Simple role evidence (month-level)
+    starts: int = 0
+    closes: int = 0
+    starts_rate: float = 0.0
+    closes_rate: float = 0.0
+
+    # Usage evidence (month-level)
+    usage_est: float = 0.0
+    usage_share: float = 0.0
+
+    # Between-game fatigue state (0..1). Optional.
+    fatigue_st: Optional[float] = None
+    fatigue_lt: Optional[float] = None
+
+    # Contract/strategy context (SSOT-derived). Optional.
+    active_contract_id: Optional[str] = None
+    contract_end_season_id: Optional[str] = None
+    team_strategy: Optional[str] = None
+
 
 @dataclass(frozen=True, slots=True)
 class PlayerOptionInputs:
@@ -175,5 +239,3 @@ class PlayerOptionInputs:
 class PlayerOptionDecision:
     decision: Literal["EXERCISE", "DECLINE"]
     meta: Dict[str, Any] = field(default_factory=dict)
-
-
