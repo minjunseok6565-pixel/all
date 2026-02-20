@@ -227,7 +227,7 @@ class DealEvaluator:
                 incoming=incoming_pairs,
                 outgoing=outgoing_pairs,
                 ctx=ctx,
-                env=env,,
+                env=env,
                 config=self.package_config,  # can be None -> default inside module
             )
 
