@@ -20,6 +20,7 @@ from league_repo import LeagueRepo
 
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .expectations import compute_expectations_for_league
+from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
 from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
 from .expectations_month import compute_month_expectations
 from .month_context import (
@@ -1431,6 +1432,81 @@ def apply_monthly_agency_tick(
 
 
         # ------------------------------------------------------------------
+        # Pass 3.5: locker room team pass (v2)
+        # ------------------------------------------------------------------
+        # This pass is derived purely from existing SSOT state (player_agency_state)
+        # and emits at most one team-level event per team per month.
+        locker_room_stats: Dict[str, Any] = {
+            'teams_considered': 0,
+            'contagion_updates': 0,
+            'meeting_candidates': 0,
+            'meetings_emitted': 0,
+            'meetings_suppressed_cooldown': 0,
+        }
+
+        meeting_candidates_by_team: Dict[str, Dict[str, Any]] = {}
+
+        if states_final:
+            pids_by_team: Dict[str, list[str]] = {}
+            for pid, st in states_final.items():
+                tid = str(st.get('team_id') or '').upper()
+                if not tid:
+                    continue
+                pids_by_team.setdefault(tid, []).append(str(pid))
+
+            for tid, pids in pids_by_team.items():
+                team_states: Dict[str, Dict[str, Any]] = {pid: states_final[pid] for pid in pids if pid in states_final}
+                if not team_states:
+                    continue
+
+                locker_room_stats['teams_considered'] = int(locker_room_stats['teams_considered']) + 1
+
+                tt = compute_team_temperature(team_states)
+                team_temp = float(tt.team_temperature)
+
+                # Store the derived temperature for debug/telemetry (small context footprint).
+                for pid in pids:
+                    st = states_final.get(pid)
+                    if not st:
+                        continue
+                    ctx = st.get('context') if isinstance(st.get('context'), dict) else {}
+                    lr = ctx.get('locker_room') if isinstance(ctx.get('locker_room'), dict) else {}
+                    lr['team_temperature'] = float(team_temp)
+                    # Clear stale leader marker, then set for current leader.
+                    if 'is_leader' in lr:
+                        lr.pop('is_leader', None)
+                    if tt.leader_player_id and pid == str(tt.leader_player_id):
+                        lr['is_leader'] = True
+                    ctx['locker_room'] = lr
+                    st['context'] = ctx
+
+                # Mild social contagion: pull chemistry frustration upward toward team temperature.
+                deltas_by_pid = compute_contagion_deltas(team_temp=team_temp, states_by_pid=team_states, cfg=cfg)
+                for pid, deltas in (deltas_by_pid or {}).items():
+                    st = states_final.get(pid)
+                    if not st:
+                        continue
+                    if 'chemistry_frustration' in deltas:
+                        st['chemistry_frustration'] = float(
+                            clamp01(safe_float(st.get('chemistry_frustration'), 0.0) + safe_float(deltas.get('chemistry_frustration'), 0.0))
+                        )
+                        locker_room_stats['contagion_updates'] = int(locker_room_stats['contagion_updates']) + 1
+
+                # Candidate meeting event (cooldown enforced in DB transaction below).
+                meet_ev = build_locker_room_meeting_event(
+                    team_id=tid,
+                    season_year=sy,
+                    month_key=mk,
+                    now_date_iso=str(now_iso)[:10],
+                    states_by_pid=team_states,
+                    cfg=cfg,
+                )
+                if meet_ev:
+                    meeting_candidates_by_team[tid] = meet_ev
+                    locker_room_stats['meeting_candidates'] = int(locker_room_stats['meeting_candidates']) + 1
+
+
+        # ------------------------------------------------------------------
         # Persist: write promise updates + state + events + meta key in ONE transaction.
         # ------------------------------------------------------------------
         with repo.transaction() as cur:
@@ -1438,6 +1514,38 @@ def apply_monthly_agency_tick(
             # as state/events/meta to avoid SSOT inconsistencies on crash/retry.
             if promise_updates:
                 update_promises(cur, promise_updates)
+
+            # Team-level meeting events (cooldown enforced via SSOT query).
+            if meeting_candidates_by_team:
+                meeting_et = str(cfg.event_types.get('locker_room_meeting', 'LOCKER_ROOM_MEETING')).upper()
+                try:
+                    cd_days = int(getattr(cfg.events, 'locker_room_meeting_cooldown_days', 55))
+                except Exception:
+                    cd_days = 55
+                cutoff = date_add_days(str(now_iso)[:10], -int(cd_days))
+
+                for tid, ev_meet in meeting_candidates_by_team.items():
+                    try:
+                        row_last = cur.execute(
+                            """
+                            SELECT date
+                            FROM agency_events
+                            WHERE team_id=? AND event_type=?
+                            ORDER BY date DESC, created_at DESC
+                            LIMIT 1;
+                            """,
+                            (str(tid).upper(), meeting_et),
+                        ).fetchone()
+                        last_date = str(row_last[0])[:10] if row_last and row_last[0] is not None else None
+                        if last_date and str(last_date) >= str(cutoff):
+                            locker_room_stats['meetings_suppressed_cooldown'] = int(locker_room_stats['meetings_suppressed_cooldown']) + 1
+                            continue
+                    except Exception:
+                        # If query fails for any reason, still emit deterministically.
+                        last_date = None
+
+                    events.append(ev_meet)
+                    locker_room_stats['meetings_emitted'] = int(locker_room_stats['meetings_emitted']) + 1
 
             upsert_player_agency_states(cur, states_final, now=str(now_iso))
             insert_agency_events(cur, events, now=str(now_iso))
@@ -1460,4 +1568,5 @@ def apply_monthly_agency_tick(
                 "splits_count": int(len(splits_by_pid)),
             },
             "promise_stats": promise_stats,
+            "locker_room_stats": locker_room_stats,
         }

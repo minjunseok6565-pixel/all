@@ -53,6 +53,9 @@ AgencyEventType = Literal[
     "CHEMISTRY_PRIVATE",
     "CHEMISTRY_AGENT",
     "CHEMISTRY_PUBLIC",
+
+    # team pass
+    "LOCKER_ROOM_MEETING",
 ]
 
 ResponseType = Literal[
@@ -76,6 +79,11 @@ ResponseType = Literal[
     "SHOP_TRADE",
     "REFUSE_TRADE",
     "PROMISE_COMPETE",
+
+    # Team meeting
+    "TEAM_TALK_CALM",
+    "TEAM_TALK_FIRM",
+    "TEAM_TALK_IGNORE",
 ]
 
 
@@ -113,6 +121,19 @@ class ResponseConfig:
     axis_relief_acknowledge: float = 0.03
     axis_relief_promise: float = 0.05
     axis_bump_dismiss: float = 0.03
+
+    # v2: team-level locker room meeting talk
+    team_talk_trust_calm: float = 0.03
+    team_talk_trust_firm: float = -0.01
+    team_talk_trust_ignore: float = -0.06
+
+    team_talk_chem_relief_calm: float = 0.05
+    team_talk_chem_relief_firm: float = 0.02
+    team_talk_chem_bump_ignore: float = 0.03
+
+    team_talk_team_relief_calm: float = 0.02
+    team_talk_team_relief_firm: float = 0.01
+    team_talk_team_bump_ignore: float = 0.02
 
     # Promise due months
     promise_minutes_due_months: int = 1
@@ -155,6 +176,9 @@ class ResponseOutcome:
     # New absolute values to write to player_agency_state (only for affected fields).
     # The DB layer should clamp once more.
     state_updates: Dict[str, Any] = field(default_factory=dict)
+
+    # Team events may affect multiple players (deltas, not absolutes).
+    bulk_state_deltas: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     promise: Optional[PromiseSpec] = None
 
@@ -205,6 +229,9 @@ def apply_user_response(
         "HEALTH_PRIVATE", "HEALTH_AGENT", "HEALTH_PUBLIC",
         "TEAM_PRIVATE", "TEAM_PUBLIC",
         "CHEMISTRY_PRIVATE", "CHEMISTRY_AGENT", "CHEMISTRY_PUBLIC",
+
+        # team pass
+        "LOCKER_ROOM_MEETING",
     }
     if et not in supported_events:
         return ResponseOutcome(
@@ -275,6 +302,8 @@ def apply_user_response(
     promise: Optional[PromiseSpec] = None
     reasons: List[Dict[str, Any]] = []
 
+    bulk_state_deltas: Dict[str, Dict[str, Any]] = {}
+
     # Apply
     if et == "MINUTES_COMPLAINT":
         trust1, mfr1, tfr1, tr_level1, promise, reasons = _apply_minutes_complaint(
@@ -344,6 +373,51 @@ def apply_user_response(
             event=event,
         )
 
+
+    elif et == "LOCKER_ROOM_MEETING":
+        # Team meeting: affects multiple players. We return per-player deltas and
+        # let the DB orchestration layer apply them to each current state.
+        bulk_state_deltas = {}
+
+        # Base deltas (scaled by severity and leverage of the spokesperson)
+        if rt == "TEAM_TALK_CALM":
+            dt_trust = float(rcfg.team_talk_trust_calm) * impact * pos_mult * sev_mult
+            dt_chem = -float(rcfg.team_talk_chem_relief_calm) * impact * pos_mult * sev_mult
+            dt_team = -float(rcfg.team_talk_team_relief_calm) * impact * pos_mult * sev_mult
+            reasons = [{"code": "TEAM_TALK_CALM", "evidence": {"trust_delta": dt_trust}}]
+
+        elif rt == "TEAM_TALK_FIRM":
+            dt_trust = float(rcfg.team_talk_trust_firm) * impact * neg_mult * sev_mult
+            dt_chem = -float(rcfg.team_talk_chem_relief_firm) * impact * pos_mult * sev_mult
+            dt_team = -float(rcfg.team_talk_team_relief_firm) * impact * pos_mult * sev_mult
+            reasons = [{"code": "TEAM_TALK_FIRM", "evidence": {"trust_delta": dt_trust}}]
+
+        else:  # TEAM_TALK_IGNORE
+            dt_trust = float(rcfg.team_talk_trust_ignore) * impact * neg_mult * sev_mult
+            dt_chem = float(rcfg.team_talk_chem_bump_ignore) * impact * neg_mult * sev_mult
+            dt_team = float(rcfg.team_talk_team_bump_ignore) * impact * neg_mult * sev_mult
+            reasons = [{"code": "TEAM_TALK_IGNORE", "evidence": {"trust_delta": dt_trust}}]
+
+        # Affected players list (best-effort).
+        affected = []
+        evp = event.get("payload")
+        if isinstance(evp, Mapping):
+            ap = evp.get("affected_player_ids")
+            if isinstance(ap, list):
+                affected = [str(x) for x in ap if str(x).strip()]
+
+        if not affected:
+            affected = [str(event.get("player_id") or "")]
+            affected = [x for x in affected if x]
+
+        per = {"trust": float(dt_trust), "chemistry_frustration": float(dt_chem), "team_frustration": float(dt_team)}
+        for pid in affected:
+            bulk_state_deltas[str(pid)] = dict(per)
+
+        # Apply to the spokesperson's state locally so meta/after are meaningful.
+        trust1 = trust0 + float(dt_trust)
+        tfr1 = tfr0 + float(dt_team)
+        chfr1 = chfr0 + float(dt_chem)
 
     else:
         # v2 issue families (axis-based). Some axes allow promises.
@@ -534,6 +608,9 @@ def apply_user_response(
             "chemistry_frustration": float(chfr1 - chfr0),
             "usage_frustration": float(ufr1 - ufr0),
         },
+        "bulk": {
+            "player_count": int(len(bulk_state_deltas or {})),
+        },
     }
 
     updates: Dict[str, Any] = {
@@ -553,6 +630,7 @@ def apply_user_response(
         event_type=et,
         response_type=rt,
         state_updates=updates,
+        bulk_state_deltas=bulk_state_deltas,
         promise=promise,
         tone=tone,
         player_reply=reply,
@@ -587,6 +665,9 @@ def _allowed_responses_for_event(event_type: str) -> set[str]:
     if et.startswith("CHEMISTRY_"):
         return {"ACKNOWLEDGE", "DISMISS"}
 
+    if et == "LOCKER_ROOM_MEETING":
+        return {"TEAM_TALK_CALM", "TEAM_TALK_FIRM", "TEAM_TALK_IGNORE"}
+
     return {"ACKNOWLEDGE"}
 
 
@@ -619,10 +700,28 @@ def _extract_leverage(*, state: Mapping[str, Any], event: Mapping[str, Any]) -> 
 
 def _tone_for_response(event_type: str, response_type: str, *, ego: float, sev: float) -> Literal["CALM", "FIRM", "ANGRY"]:
     rt = str(response_type).upper()
-    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE", "PROMISE_ROLE", "PROMISE_LOAD", "PROMISE_EXTENSION_TALKS"}:
+
+    # Promises and positive team talks
+    if rt in {
+        "PROMISE_MINUTES",
+        "PROMISE_HELP",
+        "SHOP_TRADE",
+        "PROMISE_COMPETE",
+        "PROMISE_ROLE",
+        "PROMISE_LOAD",
+        "PROMISE_EXTENSION_TALKS",
+        "TEAM_TALK_CALM",
+    }:
         return "CALM"
+
+    if rt == "TEAM_TALK_FIRM":
+        return "FIRM"
+    if rt == "TEAM_TALK_IGNORE":
+        return "ANGRY"
+
     if rt in {"ACKNOWLEDGE"}:
         return "FIRM" if sev > 0.65 else "CALM"
+
     # Negative responses
     if ego > 0.70 or sev > 0.75:
         return "ANGRY"
@@ -632,12 +731,31 @@ def _tone_for_response(event_type: str, response_type: str, *, ego: float, sev: 
 def _player_reply(event_type: str, response_type: str, *, tone: str) -> str:
     # Keep this short; UI can localize or override.
     rt = str(response_type).upper()
+
     if rt == "ACKNOWLEDGE":
         return "Alright. I hear you." if tone != "ANGRY" else "You better mean that."
-    if rt in {"PROMISE_MINUTES", "PROMISE_HELP", "SHOP_TRADE", "PROMISE_COMPETE", "PROMISE_ROLE", "PROMISE_LOAD", "PROMISE_EXTENSION_TALKS"}:
+
+    if rt in {
+        "PROMISE_MINUTES",
+        "PROMISE_HELP",
+        "SHOP_TRADE",
+        "PROMISE_COMPETE",
+        "PROMISE_ROLE",
+        "PROMISE_LOAD",
+        "PROMISE_EXTENSION_TALKS",
+    }:
         return "Okay. I'll hold you to that." if tone != "ANGRY" else "Don't waste my time."
+
+    if rt == "TEAM_TALK_CALM":
+        return "Okay. Let's reset." if tone != "ANGRY" else "We'll see."
+    if rt == "TEAM_TALK_FIRM":
+        return "We'll respond the right way." if tone != "ANGRY" else "Don't lecture me."
+    if rt == "TEAM_TALK_IGNORE":
+        return "..." if tone != "ANGRY" else "Unbelievable."
+
     if rt in {"DISMISS", "REFUSE_HELP", "REFUSE_TRADE"}:
         return "So that's how it is." if tone != "ANGRY" else "This is disrespectful."
+
     return "Understood."
 
 
