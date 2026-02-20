@@ -228,7 +228,7 @@ class MarketPricer:
         snap: AssetSnapshot,
         *,
         asset_key: str,
-        env: Optional[ValuationEnv] = None,
+        env: ValuationEnv,
         pick_expectation: Optional[PickExpectation] = None,
         resolved_pick_a: Optional[PickSnapshot] = None,
         resolved_pick_b: Optional[PickSnapshot] = None,
@@ -246,8 +246,9 @@ class MarketPricer:
         ref_id = snapshot_ref_id(snap)
 
         # Cache key includes runtime season-year context.
-        # - When env is missing, fall back to 0 (neutral/no-season).
-        env_key = int(getattr(env, "current_season_year", 0) or 0)
+        env_key = int(env.current_season_year)
+        if env_key <= 0:
+            raise ValueError("ValuationEnv.current_season_year must be a positive integer")
         cache_key = (str(ref_id), int(env_key))
 
         if kind == AssetKind.PLAYER:
@@ -297,7 +298,7 @@ class MarketPricer:
         snap: PlayerSnapshot,
         *,
         asset_key: str,
-        env: Optional[ValuationEnv],
+        env: ValuationEnv,
     ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
@@ -485,16 +486,16 @@ class MarketPricer:
         self,
         snap: PlayerSnapshot,
         *,
-        env: Optional[ValuationEnv],
+        env: ValuationEnv,
     ) -> Tuple[ValueComponents, Dict[str, Any]]:
         cfg = self.config
         ovr = _safe_float(snap.ovr, 70.0)
 
         # SSOT: current season context comes from env, NOT snapshot.meta.
-        if env is None or int(getattr(env, "current_season_year", 0) or 0) <= 0:
-            return ValueComponents.zero(), {"reason": "no_env"}
 
         cur = int(env.current_season_year)
+        if cur <= 0:
+            raise ValueError("ValuationEnv.current_season_year must be a positive integer")
 
         terms = player_contract_terms(snap, current_season_year=cur)
         sched = list(terms.schedule)
@@ -721,7 +722,7 @@ class MarketPricer:
         *,
         asset_key: str,
         expectation: Optional[PickExpectation],
-        env: Optional[ValuationEnv],
+        env: ValuationEnv,
     ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
@@ -766,42 +767,25 @@ class MarketPricer:
 
         value = _vc(now=0.0, future=base + curve_bonus)
 
-        # 3) year discount
-        # SSOT: prefer env.current_season_year when available.
-        cur_sy_i: Optional[int] = None
-        if env is not None and int(getattr(env, "current_season_year", 0) or 0) > 0:
-            cur_sy_i = int(env.current_season_year)
-        elif expectation is not None and isinstance(expectation.meta, dict):
-            cur_sy = expectation.meta.get("current_season_year")
-            if cur_sy is not None:
-                cur_sy_i = _safe_int(cur_sy, year)
+        # 3) year discount (SSOT: env.current_season_year)
+        cur_sy_i = int(env.current_season_year)
+        if cur_sy_i <= 0:
+            raise ValueError("ValuationEnv.current_season_year must be a positive integer")
 
-        if cur_sy_i is not None:
-            years_ahead = max(year - cur_sy_i, 0)
-            disc = (1.0 - cfg.pick_year_discount_rate) ** years_ahead
-            disc = _clamp(disc, 0.35, 1.0)
-            steps.append(
-                ValuationStep(
-                    stage=ValuationStage.MARKET,
-                    mode=StepMode.MUL,
-                    code="PICK_YEAR_DISCOUNT",
-                    label="연도 할인(먼 미래일수록 감소)",
-                    factor=disc,
-                    meta={"current_season_year": cur_sy_i, "pick_year": year, "years_ahead": years_ahead},
-                )
+        years_ahead = max(year - cur_sy_i, 0)
+        disc = (1.0 - cfg.pick_year_discount_rate) ** years_ahead
+        disc = _clamp(disc, 0.35, 1.0)
+        steps.append(
+            ValuationStep(
+                stage=ValuationStage.MARKET,
+                mode=StepMode.MUL,
+                code="PICK_YEAR_DISCOUNT",
+                label="연도 할인(먼 미래일수록 감소)",
+                factor=disc,
+                meta={"current_season_year": cur_sy_i, "pick_year": year, "years_ahead": years_ahead},
             )
-            value = value.scale(disc)
-        else:
-            steps.append(
-                ValuationStep(
-                    stage=ValuationStage.MARKET,
-                    mode=StepMode.MUL,
-                    code="PICK_YEAR_DISCOUNT_SKIPPED",
-                    label="연도 할인(현재 시즌 정보 없음)",
-                    factor=1.0,
-                    meta={"pick_year": year},
-                )
-            )
+        )
+        value = value.scale(disc)
 
         # 4) protection expectation (TOP_N)
         prot = snap.protection
@@ -919,7 +903,7 @@ class MarketPricer:
         pick_b: Optional[PickSnapshot],
         pick_a_expectation: Optional[PickExpectation],
         pick_b_expectation: Optional[PickExpectation],
-        env: Optional[ValuationEnv],
+        env: ValuationEnv,
     ) -> MarketValuation:
         cfg = self.config
         steps: List[ValuationStep] = []
