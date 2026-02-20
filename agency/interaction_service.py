@@ -173,11 +173,33 @@ def _default_state_for_event(event: Mapping[str, Any]) -> Dict[str, Any]:
         "minutes_frustration": 0.0,
         "team_frustration": 0.0,
         "trust": 0.5,
+
+        # v2 axes
+        "role_frustration": 0.0,
+        "contract_frustration": 0.0,
+        "health_frustration": 0.0,
+        "chemistry_frustration": 0.0,
+        "usage_frustration": 0.0,
+
+        # v2 evidence caches (best-effort)
+        "starts_rate": safe_float(payload.get("starts_rate"), 0.0),
+        "closes_rate": safe_float(payload.get("closes_rate"), 0.0),
+        "usage_share": safe_float(payload.get("usage_share"), 0.0),
         "trade_request_level": 0,
         "cooldown_minutes_until": None,
         "cooldown_trade_until": None,
         "cooldown_help_until": None,
         "cooldown_contract_until": None,
+
+        "cooldown_role_until": None,
+        "cooldown_health_until": None,
+        "cooldown_chemistry_until": None,
+
+        "escalation_role": 0,
+        "escalation_contract": 0,
+        "escalation_team": 0,
+        "escalation_health": 0,
+        "escalation_chemistry": 0,
         "last_processed_month": None,
         "context": {},
     }

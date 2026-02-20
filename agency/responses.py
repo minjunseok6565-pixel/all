@@ -33,6 +33,26 @@ AgencyEventType = Literal[
     "HELP_DEMAND",
     "TRADE_REQUEST",
     "TRADE_REQUEST_PUBLIC",
+
+    # v2 issue families
+    "ROLE_PRIVATE",
+    "ROLE_AGENT",
+    "ROLE_PUBLIC",
+
+    "CONTRACT_PRIVATE",
+    "CONTRACT_AGENT",
+    "CONTRACT_PUBLIC",
+
+    "HEALTH_PRIVATE",
+    "HEALTH_AGENT",
+    "HEALTH_PUBLIC",
+
+    "TEAM_PRIVATE",
+    "TEAM_PUBLIC",
+
+    "CHEMISTRY_PRIVATE",
+    "CHEMISTRY_AGENT",
+    "CHEMISTRY_PUBLIC",
 ]
 
 ResponseType = Literal[
@@ -82,6 +102,11 @@ class ResponseConfig:
 
     # Secondary frustration bump when trade is refused
     minutes_bump_refuse_trade: float = 0.02
+
+
+    # v2: generic deltas for non-v1 axis events (role/contract/health/chemistry)
+    axis_relief_acknowledge: float = 0.03
+    axis_bump_dismiss: float = 0.03
 
     # Promise due months
     promise_minutes_due_months: int = 1
@@ -154,7 +179,19 @@ def apply_user_response(
     now_d = norm_date_iso(now_date_iso) or (str(event.get("date") or "")[:10] or "2000-01-01")
 
     # Validate supported event types
-    supported_events = {"MINUTES_COMPLAINT", "HELP_DEMAND", "TRADE_REQUEST", "TRADE_REQUEST_PUBLIC"}
+    supported_events = {
+        "MINUTES_COMPLAINT",
+        "HELP_DEMAND",
+        "TRADE_REQUEST",
+        "TRADE_REQUEST_PUBLIC",
+
+        # v2 families
+        "ROLE_PRIVATE", "ROLE_AGENT", "ROLE_PUBLIC",
+        "CONTRACT_PRIVATE", "CONTRACT_AGENT", "CONTRACT_PUBLIC",
+        "HEALTH_PRIVATE", "HEALTH_AGENT", "HEALTH_PUBLIC",
+        "TEAM_PRIVATE", "TEAM_PUBLIC",
+        "CHEMISTRY_PRIVATE", "CHEMISTRY_AGENT", "CHEMISTRY_PUBLIC",
+    }
     if et not in supported_events:
         return ResponseOutcome(
             ok=False,
@@ -184,6 +221,14 @@ def apply_user_response(
     tfr0 = clamp01(state.get("team_frustration", 0.0))
     tr_level0 = int(state.get("trade_request_level") or 0)
 
+
+    # v2 axis state (safe defaults; older saves may not have these keys)
+    rfr0 = clamp01(state.get("role_frustration", 0.0))
+    cfr0 = clamp01(state.get("contract_frustration", 0.0))
+    hfr0 = clamp01(state.get("health_frustration", 0.0))
+    chfr0 = clamp01(state.get("chemistry_frustration", 0.0))
+    ufr0 = clamp01(state.get("usage_frustration", 0.0))
+
     lev = _extract_leverage(state=state, event=event)
 
     ego = mental_norm(mental, "ego")
@@ -205,6 +250,13 @@ def apply_user_response(
     mfr1 = mfr0
     tfr1 = tfr0
     tr_level1 = tr_level0
+
+
+    rfr1 = rfr0
+    cfr1 = cfr0
+    hfr1 = hfr0
+    chfr1 = chfr0
+    ufr1 = ufr0
 
     promise: Optional[PromiseSpec] = None
     reasons: List[Dict[str, Any]] = []
@@ -278,9 +330,46 @@ def apply_user_response(
             event=event,
         )
 
+
+    else:
+        # v2 generic issue families (ACKNOWLEDGE/DISMISS only)
+        axis = _axis_for_v2_event(et)
+
+        if rt == "ACKNOWLEDGE":
+            trust1 = trust0 + rcfg.trust_acknowledge * impact * pos_mult * sev_mult
+            delta = -rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult
+            reasons = [{"code": "V2_ACKNOWLEDGE", "evidence": {"axis": axis}}]
+        else:  # DISMISS
+            trust1 = trust0 - rcfg.trust_dismiss_penalty * impact * neg_mult * sev_mult
+            delta = rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult
+            reasons = [{"code": "V2_DISMISS", "evidence": {"axis": axis}}]
+
+        if axis == "ROLE":
+            rfr1 = rfr0 + delta
+        elif axis == "CONTRACT":
+            cfr1 = cfr0 + delta
+        elif axis == "HEALTH":
+            hfr1 = hfr0 + delta
+        elif axis == "CHEMISTRY":
+            chfr1 = chfr0 + delta
+        elif axis == "TEAM":
+            # Team axis uses slightly gentler acknowledge relief.
+            if rt == "ACKNOWLEDGE":
+                delta_t = -rcfg.team_relief_acknowledge * impact * pos_mult * sev_mult
+            else:
+                delta_t = rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult
+            tfr1 = tfr0 + delta_t
+
     trust1 = clamp01(trust1)
     mfr1 = clamp01(mfr1)
     tfr1 = clamp01(tfr1)
+
+    rfr1 = clamp01(rfr1)
+    cfr1 = clamp01(cfr1)
+    hfr1 = clamp01(hfr1)
+    chfr1 = clamp01(chfr1)
+    ufr1 = clamp01(ufr1)
+
     tr_level1 = int(max(0, min(2, tr_level1)))
 
     # Tone + player reply (simple v1; keep UI-friendly)
@@ -309,18 +398,33 @@ def apply_user_response(
             "trust": float(trust0),
             "minutes_frustration": float(mfr0),
             "team_frustration": float(tfr0),
+            "role_frustration": float(rfr0),
+            "contract_frustration": float(cfr0),
+            "health_frustration": float(hfr0),
+            "chemistry_frustration": float(chfr0),
+            "usage_frustration": float(ufr0),
             "trade_request_level": int(tr_level0),
         },
         "after": {
             "trust": float(trust1),
             "minutes_frustration": float(mfr1),
             "team_frustration": float(tfr1),
+            "role_frustration": float(rfr1),
+            "contract_frustration": float(cfr1),
+            "health_frustration": float(hfr1),
+            "chemistry_frustration": float(chfr1),
+            "usage_frustration": float(ufr1),
             "trade_request_level": int(tr_level1),
         },
         "deltas": {
             "trust": float(trust1 - trust0),
             "minutes_frustration": float(mfr1 - mfr0),
             "team_frustration": float(tfr1 - tfr0),
+            "role_frustration": float(rfr1 - rfr0),
+            "contract_frustration": float(cfr1 - cfr0),
+            "health_frustration": float(hfr1 - hfr0),
+            "chemistry_frustration": float(chfr1 - chfr0),
+            "usage_frustration": float(ufr1 - ufr0),
         },
     }
 
@@ -357,7 +461,33 @@ def _allowed_responses_for_event(event_type: str) -> set[str]:
         return {"ACKNOWLEDGE", "PROMISE_HELP", "REFUSE_HELP"}
     if et in {"TRADE_REQUEST", "TRADE_REQUEST_PUBLIC"}:
         return {"ACKNOWLEDGE", "SHOP_TRADE", "REFUSE_TRADE", "PROMISE_COMPETE"}
+
+    # v2 issue families
+    if et in {
+        "ROLE_PRIVATE", "ROLE_AGENT", "ROLE_PUBLIC",
+        "CONTRACT_PRIVATE", "CONTRACT_AGENT", "CONTRACT_PUBLIC",
+        "HEALTH_PRIVATE", "HEALTH_AGENT", "HEALTH_PUBLIC",
+        "TEAM_PRIVATE", "TEAM_PUBLIC",
+        "CHEMISTRY_PRIVATE", "CHEMISTRY_AGENT", "CHEMISTRY_PUBLIC",
+    }: 
+        return {"ACKNOWLEDGE", "DISMISS"}
+
     return {"ACKNOWLEDGE"}
+
+
+def _axis_for_v2_event(event_type: str) -> str:
+    et = str(event_type or "").upper()
+    if et.startswith("ROLE_"):
+        return "ROLE"
+    if et.startswith("CONTRACT_"):
+        return "CONTRACT"
+    if et.startswith("HEALTH_"):
+        return "HEALTH"
+    if et.startswith("CHEMISTRY_"):
+        return "CHEMISTRY"
+    if et.startswith("TEAM_"):
+        return "TEAM"
+    return "UNKNOWN"
 
 
 def _extract_leverage(*, state: Mapping[str, Any], event: Mapping[str, Any]) -> float:

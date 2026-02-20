@@ -51,6 +51,37 @@ class ExpectationsConfig:
         }
     )
 
+
+    # v2: expected role evidence (starts/closes) by role bucket (0..1)
+    expected_starts_rate_by_role: Mapping[str, float] = field(
+        default_factory=lambda: {
+            "FRANCHISE": 0.95,
+            "STAR": 0.90,
+            "STARTER": 0.80,
+            "ROTATION": 0.25,
+            "BENCH": 0.05,
+            "GARBAGE": 0.00,
+            "UNKNOWN": 0.30,
+        }
+    )
+
+    expected_closes_rate_by_role: Mapping[str, float] = field(
+        default_factory=lambda: {
+            "FRANCHISE": 0.80,
+            "STAR": 0.65,
+            "STARTER": 0.45,
+            "ROTATION": 0.08,
+            "BENCH": 0.02,
+            "GARBAGE": 0.00,
+            "UNKNOWN": 0.10,
+        }
+    )
+
+    # How sensitive role-status pressure is to gaps in starts/closes
+    role_status_softness: float = 0.35
+    role_status_start_weight: float = 0.65
+    role_status_close_weight: float = 0.35
+
     # Leverage = w_ovr * ovr_rank_score + w_salary * salary_score
     leverage_weight_ovr: float = 0.75
     leverage_weight_salary: float = 0.25
@@ -80,6 +111,38 @@ class FrustrationConfig:
     # team frustration
     team_base_gain: float = 0.35
     team_decay: float = 0.12
+
+
+    # v2 axes frustration (EMA)
+    role_base_gain: float = 0.40
+    role_decay: float = 0.12
+
+    contract_base_gain: float = 0.25
+    contract_decay: float = 0.10
+
+    health_base_gain: float = 0.35
+    health_decay: float = 0.18
+
+    chemistry_base_gain: float = 0.20
+    chemistry_decay: float = 0.10
+
+    usage_base_gain: float = 0.15
+    usage_decay: float = 0.12
+
+    # v2 role pressure composition
+    role_minutes_weight: float = 0.65
+    role_status_weight: float = 0.35
+
+    # v2 fatigue aggregation (matches fatigue.LT_WEIGHT by default)
+    health_lt_weight: float = 0.65
+
+    # v2 fatigue-to-pressure mapping (grace + softness)
+    health_fatigue_grace: float = 0.35
+    health_fatigue_softness: float = 0.40
+
+    # v2 chemistry pressure mapping
+    chemistry_team_grace: float = 0.45
+    chemistry_team_softness: float = 0.35
 
     # Trust updates (simple v1)
     trust_decay: float = 0.05
@@ -122,6 +185,39 @@ class EventConfig:
     # Note: DNP months have games_played=0 but should still be eligible for complaints
     # and requests; tick.py handles this via a DNP override.
     min_games_for_events: int = 2
+
+    # v2: shared escalation deltas (frustration above threshold)
+    axis_escalate_delta_2: float = 0.10
+    axis_escalate_delta_3: float = 0.22
+
+    # v2: role/status issue events
+    role_issue_threshold: float = 0.58
+    role_issue_softness: float = 0.16
+    role_issue_min_leverage: float = 0.25
+    cooldown_role_days: int = 35
+
+    # v2: contract/security issue events
+    contract_issue_threshold: float = 0.60
+    contract_issue_softness: float = 0.18
+    contract_issue_min_leverage: float = 0.45
+    cooldown_contract_days: int = 60
+
+    # v2: health/load issue events
+    health_issue_threshold: float = 0.58
+    health_issue_softness: float = 0.20
+    cooldown_health_days: int = 35
+
+    # v2: chemistry/locker-room issue events
+    chemistry_issue_threshold: float = 0.62
+    chemistry_issue_softness: float = 0.18
+    chemistry_issue_min_leverage: float = 0.20
+    cooldown_chemistry_days: int = 50
+
+    # v2: team direction concern (pre-help-demand)
+    team_issue_threshold: float = 0.56
+    team_issue_softness: float = 0.20
+    team_issue_min_leverage: float = 0.55
+    cooldown_team_days: int = 45
 
     # Minutes complaint
     minutes_complaint_threshold: float = 0.60
@@ -235,6 +331,26 @@ class AgencyConfig:
             "help_demand": "HELP_DEMAND",
             "trade_request": "TRADE_REQUEST",
             "trade_request_public": "TRADE_REQUEST_PUBLIC",
+
+            # v2 issue families (stage-specific)
+            "role_private": "ROLE_PRIVATE",
+            "role_agent": "ROLE_AGENT",
+            "role_public": "ROLE_PUBLIC",
+
+            "contract_private": "CONTRACT_PRIVATE",
+            "contract_agent": "CONTRACT_AGENT",
+            "contract_public": "CONTRACT_PUBLIC",
+
+            "health_private": "HEALTH_PRIVATE",
+            "health_agent": "HEALTH_AGENT",
+            "health_public": "HEALTH_PUBLIC",
+
+            "team_private": "TEAM_PRIVATE",
+            "team_public": "TEAM_PUBLIC",
+
+            "chemistry_private": "CHEMISTRY_PRIVATE",
+            "chemistry_agent": "CHEMISTRY_AGENT",
+            "chemistry_public": "CHEMISTRY_PUBLIC",
         }
     )
 
