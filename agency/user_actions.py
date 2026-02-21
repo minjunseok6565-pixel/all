@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 from .config import AgencyConfig, DEFAULT_CONFIG
 from .promise_negotiation import Offer, evaluate_offer, make_negotiation_event, make_thread_id
 from .promises import PromiseSpec, PromiseType, due_month_from_now
+from .responses import DEFAULT_RESPONSE_CONFIG
 from .stance import apply_stance_deltas, stance_deltas_on_offer_decision
 from .utils import clamp, clamp01, make_event_id, mental_norm, norm_date_iso, safe_float, safe_float_opt
 
@@ -286,16 +287,22 @@ def apply_user_action(
             target_json=target,
         )
 
-        decision, neg_meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
+        decision = evaluate_offer(
+            offer=offer,
+            state=state,
+            mental=mental,
+            cfg=cfg,
+            round_index=0,
+            max_rounds=None,
+        )
         verdict = str(getattr(decision, "verdict", "")).upper()
-        meta_extra["negotiation"] = dict(neg_meta or {})
+        meta_extra["negotiation"] = dict(getattr(decision, "meta", {}) or {})
         meta_extra["negotiation"]["decision"] = getattr(decision, "to_dict", lambda: {})()
 
         # Stance effects for contentious bargaining
         deltas, st_meta = stance_deltas_on_offer_decision(
             verdict=verdict,
             insulting=bool(getattr(decision, "insulting", False)),
-            base_scale=float(impact),
             mental=mental,
             cfg=cfg,
         )
@@ -317,7 +324,7 @@ def apply_user_action(
 
         else:
             # Not accepted: small trust hit + follow-up negotiation event when applicable.
-            rcfg = cfg.response
+            rcfg = getattr(cfg, "response", DEFAULT_RESPONSE_CONFIG)
             if verdict == "COUNTER":
                 trust1 -= float(rcfg.negotiation_counter_trust_penalty) * impact * neg_mult
                 tone = "FIRM"
@@ -335,18 +342,12 @@ def apply_user_action(
 
             if verdict in {"COUNTER", "REJECT"}:
                 # Spawn a negotiation thread event so the user can respond in the same UX.
-                pid = str(payload.get("player_id") or "")
-                tid = str(payload.get("team_id") or "")
-                sy = int(payload.get("season_year") or 0)
+                pid = str(payload.get("player_id") or state.get("player_id") or "")
+                tid = str(payload.get("team_id") or state.get("team_id") or "")
+                sy = int(payload.get("season_year") or state.get("season_year") or 0)
 
                 source_event_id = _action_source_event_id()
                 thread_id = make_thread_id(source_event_id, ptype)
-
-                try:
-                    expire_m = int(getattr(cfg.negotiation, "expire_months", 1))
-                except Exception:
-                    expire_m = 1
-                expires_month = due_month_from_now(now_d, expire_m)
 
                 neg_event = make_negotiation_event(
                     thread_id=thread_id,
@@ -357,7 +358,6 @@ def apply_user_action(
                     now_date_iso=now_d,
                     offer=offer,
                     decision=decision,
-                    expires_month=expires_month,
                     cfg=cfg,
                 )
                 follow_up_events.append(neg_event)

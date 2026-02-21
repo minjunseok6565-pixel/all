@@ -118,8 +118,12 @@ def compute_credibility(
     b_type = int(safe_float((broken_by_type or {}).get(str(promise_type)), 0.0))
     f_type = int(safe_float((fulfilled_by_type or {}).get(str(promise_type)), 0.0))
 
-    # Recent outcomes list (optional): [{"type":"MINUTES","result":"BROKEN"|"FULFILLED"}, ...]
+    # Recent outcomes list (optional):
+    # [{"type":"MINUTES","result":"BROKEN"|"FULFILLED"}, ...]
+    # Backward compatibility: also accept older key/shape.
     recent = mem.get("promise_outcomes_recent")
+    if not isinstance(recent, list):
+        recent = mem.get("recent_promise_outcomes")
     if not isinstance(recent, list):
         recent = []
 
@@ -135,7 +139,7 @@ def compute_credibility(
     for it in recent_slice:
         if not isinstance(it, dict):
             continue
-        r = str(it.get("result") or "").upper()
+        r = str(it.get("result") or it.get("status") or "").upper()
         if r == "BROKEN":
             recent_broken += 1
         elif r == "FULFILLED":

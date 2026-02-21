@@ -1346,7 +1346,11 @@ def apply_monthly_agency_tick(
                                 mem["fulfilled_promises_by_type"] = fpt
 
                             # Small rolling log (for narrative tone + future priors)
-                            rpo = mem.get("recent_promise_outcomes")
+                            # Canonical key: promise_outcomes_recent
+                            rpo = mem.get("promise_outcomes_recent")
+                            if not isinstance(rpo, list):
+                                # Backward compatibility for previous key name.
+                                rpo = mem.get("recent_promise_outcomes")
                             if not isinstance(rpo, list):
                                 rpo = []
                             rpo.append(
@@ -1355,17 +1359,19 @@ def apply_monthly_agency_tick(
                                     "date": str(now_iso)[:10],
                                     "promise_id": str(promise_id),
                                     "promise_type": str(ptype),
+                                    "result": str(status_u),
                                     "status": str(status_u),
                                     "team_id": str(team_eom or promised_team),
                                 }
                             )
                             # Keep last N
                             try:
-                                keep_n = int(getattr(getattr(cfg, "memory", object()), "recent_outcomes_keep", 6))
+                                keep_n = int(getattr(getattr(cfg, "credibility", object()), "recent_window", 6))
                             except Exception:
                                 keep_n = 6
                             if keep_n > 0 and len(rpo) > keep_n:
                                 rpo = rpo[-keep_n:]
+                            mem["promise_outcomes_recent"] = rpo
                             mem["recent_promise_outcomes"] = rpo
 
                             # Update dynamic stances.
