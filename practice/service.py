@@ -17,6 +17,52 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Simulation hook (v1)
+# ---------------------------------------------------------------------------
+
+
+def apply_practice_before_game(
+    repo: LeagueRepo,
+    *,
+    game_date_iso: str,
+    season_year: int,
+    home_team_id: str,
+    away_team_id: str,
+    home_tactics: Optional[Mapping[str, Any]] = None,  # noqa: ARG001
+    away_tactics: Optional[Mapping[str, Any]] = None,  # noqa: ARG001
+) -> None:
+    """Between-game practice hook invoked by the simulation pipeline.
+
+    Current scope (v1):
+      - Safe placeholder so the match pipeline can call a single practice hook
+        before readiness/fatigue/injury.
+
+    Future scope (v2+):
+      - Apply practice sessions to readiness SSOT:
+          * team scheme familiarity updates (off/def)
+          * player sharpness daily adjustments (incl. scrimmage participants)
+
+    Commercial safety:
+      - Must never crash the sim. Errors are logged and ignored.
+    """
+
+    # NOTE: `repo` is intentionally unused in v1. Keep signature stable.
+    _ = repo
+
+    try:
+        _ = game_time.require_date_iso(game_date_iso, field="game_date_iso")
+        _ = int(season_year)
+        _ = str(home_team_id)
+        _ = str(away_team_id)
+    except Exception:
+        logger.warning("PRACTICE_APPLY_INVALID_INPUTS", exc_info=True)
+        return
+
+    # Intentionally no-op.
+    return
+
+
+# ---------------------------------------------------------------------------
 # High-level CRUD (repo wrappers)
 # ---------------------------------------------------------------------------
 

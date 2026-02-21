@@ -23,6 +23,7 @@ Design goals
 """
 
 from .service import (
+    apply_practice_before_game,
     get_or_default_team_practice_plan,
     get_team_practice_session,
     list_team_practice_sessions,
@@ -32,6 +33,7 @@ from .service import (
 )
 
 __all__ = [
+    "apply_practice_before_game",
     "get_or_default_team_practice_plan",
     "get_team_practice_session",
     "list_team_practice_sessions",
