@@ -899,6 +899,10 @@ def build_trade_asset_catalog(
                 continue
             pid = str(pick_id)
 
+            # SSOT: trade-locked picks (draft_picks.trade_locked) are not tradable assets.
+            if bool(pick_state.get("trade_locked")):
+                continue
+
             lock = _lock_info_for_asset_key(
                 asset_key_value=_asset_key(PickAsset(kind="pick", pick_id=pid)),
                 asset_locks=asset_locks,
