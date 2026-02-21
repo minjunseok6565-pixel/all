@@ -571,7 +571,13 @@ def apply_trade_executed_effects_to_state(
     buyer_id: Optional[str] = None,
     seller_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Load market/memory from state, apply executed-trade effects, then persist."""
+    """Apply executed-trade effects to trade_market + trade_memory atomically.
+
+    IMPORTANT:
+    - We must avoid read-modify-write races between separate market/memory saves.
+    - This function therefore mutates both containers inside a single
+      state.transaction() critical section.
+    """
 
     cfg = config or OrchestrationConfig()
 
@@ -594,35 +600,55 @@ def apply_trade_executed_effects_to_state(
         except Exception:
             today = date.today()
 
-    market = load_trade_market()
-    mem = load_trade_memory()
+    # Atomic mutation: update both trade_market and trade_memory in one state transaction.
+    with state.transaction("apply_trade_executed_effects_to_state") as st:
+        raw_market = st.get("trade_market")
+        if not isinstance(raw_market, dict):
+            raw_market = {}
+            st["trade_market"] = raw_market
 
-    report = apply_trade_executed_effects(
-        transaction=transaction,
-        trade_market=market,
-        trade_memory=mem,
-        today=today,
-        config=cfg,
-        score=score,
-        effective_pressure_by_team=effective_pressure_by_team,
-        rush_scalar=rush_scalar,
-        buyer_id=buyer_id,
-        seller_id=seller_id,
-    )
+        raw_mem = st.get("trade_memory")
+        if not isinstance(raw_mem, dict):
+            raw_mem = {}
+            st["trade_memory"] = raw_mem
 
-    # best-effort pruning to avoid state bloat on API-driven trades
-    try:
-        prune_applied_exec_deal_ids(market, max_kept=int(getattr(cfg, "max_applied_exec_deal_ids_kept", 500) or 500))
-    except Exception:
-        pass
-    try:
-        prune_market_events(market, max_kept=int(getattr(cfg, "max_market_events_kept", 200) or 200))
-    except Exception:
-        pass
+        market = _ensure_trade_market_schema(raw_market)
+        mem = _ensure_trade_memory_schema(raw_mem)
 
-    save_trade_market(market)
-    save_trade_memory(mem)
-    return report
+        # Defensive: ensure the state points at the same dict objects we mutate.
+        st["trade_market"] = market
+        st["trade_memory"] = mem
+
+        report = apply_trade_executed_effects(
+            transaction=transaction,
+            trade_market=market,
+            trade_memory=mem,
+            today=today,
+            config=cfg,
+            score=score,
+            effective_pressure_by_team=effective_pressure_by_team,
+            rush_scalar=rush_scalar,
+            buyer_id=buyer_id,
+            seller_id=seller_id,
+        )
+
+        # best-effort pruning to avoid state bloat on API-driven trades
+        try:
+            prune_applied_exec_deal_ids(
+                market,
+                max_kept=int(getattr(cfg, "max_applied_exec_deal_ids_kept", 500) or 500),
+            )
+        except Exception:
+            pass
+        try:
+            prune_market_events(
+                market,
+                max_kept=int(getattr(cfg, "max_market_events_kept", 200) or 200),
+            )
+        except Exception:
+            pass
+
+        return report
 
 
 
