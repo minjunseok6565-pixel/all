@@ -17,6 +17,7 @@ from matchengine_v3.sim_game import simulate_game
 import fatigue
 import injury
 import readiness
+import practice
 from state import (
     export_full_state_snapshot,
     get_db_path,
@@ -69,6 +70,8 @@ def _run_match(
                 season_year=int(season_year),
                 home_team_id=str(home_team_id),
                 away_team_id=str(away_team_id),
+                home_tactics=home_tactics,
+                away_tactics=away_tactics,
             )
             unavailable_by_team = dict(prepared_inj.unavailable_pids_by_team or {})
             attrs_mods_by_pid = prepared_inj.attrs_mods_by_pid
@@ -81,6 +84,29 @@ def _run_match(
                 exc_info=True,
             )
             prepared_inj = None
+
+        # ------------------------------------------------------------
+        # Practice: between-game training sessions (team conditioning)
+        # - placeholder hook in v1; later will update readiness SSOT
+        # ------------------------------------------------------------
+        try:
+            practice.apply_practice_before_game(
+                repo,
+                game_date_iso=str(game_date),
+                season_year=int(season_year),
+                home_team_id=str(home_team_id),
+                away_team_id=str(away_team_id),
+                home_tactics=home_tactics,
+                away_tactics=away_tactics,
+            )
+        except Exception:
+            logger.warning(
+                "PRACTICE_APPLY_FAILED game_date=%s home=%s away=%s",
+                game_date,
+                str(home_team_id),
+                str(away_team_id),
+                exc_info=True,
+            )
 
         # ------------------------------------------------------------
         # Readiness: prepare between-game readiness (player sharpness + scheme familiarity)
