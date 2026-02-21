@@ -10,6 +10,7 @@ import schema
 from league_repo import LeagueRepo
 from matchengine_v3.models import TeamState
 from matchengine_v3.tactics import canonical_defense_scheme
+from sim import roster_adapter as _roster_adapter
 
 from . import config as r_cfg
 from . import repo as r_repo
@@ -82,6 +83,37 @@ def _scaled_factor_01(value_0_100: float) -> float:
     """Map 0..100 to -1..1 with 50 as neutral."""
     f = (float(value_0_100) - 50.0) / 50.0
     return _clamp(f, -1.0, 1.0)
+
+
+def _resolve_effective_schemes(
+    team_id: str,
+    raw_tactics: Optional[Mapping[str, Any]],
+) -> Tuple[str, str]:
+    """Resolve effective (offense_scheme, defense_scheme) using roster_adapter SSOT.
+
+    Why:
+      - CPU teams rely on coach presets (team_coach_preset_map + coach_presets.json).
+      - User teams directly set schemes and/or USER_COACH; roster_adapter already enforces:
+          * if USER_COACH: preset application is skipped
+          * never override explicit caller-provided scheme fields
+    """
+    raw_dict: Optional[Dict[str, Any]]
+    if raw_tactics is None:
+        raw_dict = None
+    elif isinstance(raw_tactics, dict):
+        raw_dict = raw_tactics
+    else:
+        try:
+            raw_dict = dict(raw_tactics)
+        except Exception:
+            raw_dict = None
+
+    cfg = _roster_adapter._build_tactics_config(raw_dict)
+    _roster_adapter._apply_default_coach_preset(team_id, cfg)
+    _roster_adapter._apply_coach_preset_tactics(team_id, cfg, raw_dict)
+    off = str(cfg.offense_scheme)
+    de = canonical_defense_scheme(cfg.defense_scheme)
+    return (off, de)
 
 
 # ---------------------------------------------------------------------------
@@ -245,14 +277,9 @@ def prepare_game_readiness(
     if hid == aid:
         raise ValueError(f"prepare_game_readiness: home/away team_id must differ (both {hid!r})")
 
-    # Selected schemes for this game.
-    home_off = str((home_tactics or {}).get("offense_scheme") or "Spread_HeavyPnR")
-    away_off = str((away_tactics or {}).get("offense_scheme") or "Spread_HeavyPnR")
-
-    home_def_raw = (home_tactics or {}).get("defense_scheme")
-    away_def_raw = (away_tactics or {}).get("defense_scheme")
-    home_def = canonical_defense_scheme(home_def_raw or "Drop")
-    away_def = canonical_defense_scheme(away_def_raw or "Drop")
+    # Effective schemes for this game (SSOT: roster_adapter applies coach presets).
+    home_off, home_def = _resolve_effective_schemes(hid, home_tactics)
+    away_off, away_def = _resolve_effective_schemes(aid, away_tactics)
 
     # Involved players: active rosters for both teams.
     home_roster = repo.get_team_roster(hid)
