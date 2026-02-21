@@ -18,12 +18,16 @@ The DB layer (agency/interaction_service.py) is responsible for:
 - persisting promises when created
 """
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .promise_negotiation import Offer, evaluate_offer, make_negotiation_event, make_thread_id
 from .promises import PromiseSpec, PromiseType, due_month_from_now
-from .utils import clamp, clamp01, mental_norm, norm_date_iso, safe_float, safe_float_opt
+from .stance import apply_stance_deltas, stance_deltas_on_offer_decision
+from .utils import clamp, clamp01, make_event_id, mental_norm, norm_date_iso, safe_float, safe_float_opt
 
 
 UserActionType = Literal[
@@ -50,6 +54,9 @@ class UserActionOutcome:
     # Optional promise to persist.
     promise: Optional[PromiseSpec] = None
 
+    # Optional follow-up events to persist (e.g., negotiation thread).
+    follow_up_events: List[Dict[str, Any]] = field(default_factory=list)
+
     # Explainability
     reasons: List[Dict[str, Any]] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -64,10 +71,17 @@ def apply_user_action(
     now_date_iso: Optional[str] = None,
     cfg: AgencyConfig = DEFAULT_CONFIG,
 ) -> UserActionOutcome:
-    """Apply a user-initiated action (pure logic)."""
+    """Apply a user-initiated action (pure logic).
+
+    v3:
+    - SET_EXPECTATION offers are evaluated for credibility; the player can counter/reject,
+      producing a PROMISE_NEGOTIATION follow-up event.
+    - Offer decisions can update dynamic stances.
+    """
 
     at = str(action_type or "").upper()
-    payload = dict(action_payload or {})
+    payload0 = dict(action_payload or {})
+    payload = dict(payload0)  # local copy
 
     if now_date_iso is None:
         now_date_iso = str(payload.get("now_date") or "")
@@ -81,30 +95,65 @@ def apply_user_action(
             reasons=[{"code": "USER_ACTION_UNKNOWN", "evidence": {"action_type": at}}],
         )
 
-    trust0 = clamp01(state.get("trust", 0.5))
-    mfr0 = clamp01(state.get("minutes_frustration", 0.0))
-    tfr0 = clamp01(state.get("team_frustration", 0.0))
-    rfr0 = clamp01(state.get("role_frustration", 0.0))
-    cfr0 = clamp01(state.get("contract_frustration", 0.0))
-    hfr0 = clamp01(state.get("health_frustration", 0.0))
-    chfr0 = clamp01(state.get("chemistry_frustration", 0.0))
+    trust0 = float(clamp01(safe_float(state.get("trust"), 0.5)))
+    mfr0 = float(clamp01(safe_float(state.get("minutes_frustration"), 0.0)))
+    tfr0 = float(clamp01(safe_float(state.get("team_frustration"), 0.0)))
+    rfr0 = float(clamp01(safe_float(state.get("role_frustration"), 0.0)))
+    cfr0 = float(clamp01(safe_float(state.get("contract_frustration"), 0.0)))
+    hfr0 = float(clamp01(safe_float(state.get("health_frustration"), 0.0)))
+    chfr0 = float(clamp01(safe_float(state.get("chemistry_frustration"), 0.0)))
+
+    # v3: stances
+    sk0 = float(clamp01(safe_float(state.get("stance_skepticism"), 0.0)))
+    rs0 = float(clamp01(safe_float(state.get("stance_resentment"), 0.0)))
+    hb0 = float(clamp01(safe_float(state.get("stance_hardball"), 0.0)))
 
     lev = float(clamp01(safe_float(state.get("leverage"), 0.0)))
 
-    ego = mental_norm(mental, "ego")
-    loy = mental_norm(mental, "loyalty")
-    coach = mental_norm(mental, "coachability")
-    adapt = mental_norm(mental, "adaptability")
+    ego = float(clamp01(mental_norm(mental, "ego")))
+    loy = float(clamp01(mental_norm(mental, "loyalty")))
+    coach = float(clamp01(mental_norm(mental, "coachability")))
+    adapt = float(clamp01(mental_norm(mental, "adaptability")))
 
     impact = 0.45 + 0.55 * lev
-    pos_mult = clamp(0.85 + 0.35 * coach + 0.25 * loy + 0.10 * adapt - 0.15 * ego, 0.55, 1.65)
-    neg_mult = clamp(0.90 + 0.50 * ego - 0.25 * loy - 0.10 * coach, 0.55, 2.10)
+    pos_mult = float(clamp(0.85 + 0.35 * coach + 0.25 * loy + 0.10 * adapt - 0.15 * ego, 0.55, 1.65))
+    neg_mult = float(clamp(0.90 + 0.50 * ego - 0.25 * loy - 0.10 * coach, 0.55, 2.10))
 
     trust1 = trust0
     mfr1, tfr1, rfr1, cfr1, hfr1, chfr1 = mfr0, tfr0, rfr0, cfr0, hfr0, chfr0
+    sk1, rs1, hb1 = sk0, rs0, hb0
 
     promise: Optional[PromiseSpec] = None
+    follow_up_events: List[Dict[str, Any]] = []
     reasons: List[Dict[str, Any]] = []
+    meta_extra: Dict[str, Any] = {}
+
+    # Default talk tone for user actions (can be overridden by negotiation verdicts)
+    tone: str = "CALM"
+    player_reply: str = ""
+
+    def _apply_stance_updates(upd: Mapping[str, Any]) -> None:
+        nonlocal sk1, rs1, hb1
+        if not upd:
+            return
+        if "stance_skepticism" in upd:
+            sk1 = float(clamp01(safe_float(upd.get("stance_skepticism"), sk1)))
+        if "stance_resentment" in upd:
+            rs1 = float(clamp01(safe_float(upd.get("stance_resentment"), rs1)))
+        if "stance_hardball" in upd:
+            hb1 = float(clamp01(safe_float(upd.get("stance_hardball"), hb1)))
+
+    def _action_source_event_id() -> str:
+        """Mirror interaction_service action_event_id generation for stable thread IDs."""
+        pid = str(payload.get("player_id") or "")
+        try:
+            payload_hash = hashlib.md5(
+                json.dumps(payload0, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:8]
+        except Exception:
+            payload_hash = "00000000"
+        action_key = f"{at}:{payload_hash}"
+        return make_event_id("agency", "user_action", pid, str(now_d)[:10], action_key)
 
     # ------------------------------------------------------------------
     # Action behaviors
@@ -115,7 +164,6 @@ def apply_user_action(
         trust1 += dt
 
         focus = str(payload.get("focus_axis") or "").upper()
-        # If no focus was provided, calm the highest frustration axis.
         axis_vals: List[Tuple[str, float]] = [
             ("MINUTES", mfr0),
             ("TEAM", tfr0),
@@ -128,7 +176,6 @@ def apply_user_action(
             focus = max(axis_vals, key=lambda kv: kv[1])[0]
 
         calm = 0.03 * impact * pos_mult
-
         if focus == "MINUTES":
             mfr1 -= calm
         elif focus == "TEAM":
@@ -156,7 +203,7 @@ def apply_user_action(
         reasons.append({"code": "USER_WARN", "evidence": {"trust_delta": dt}})
 
     elif at == "SET_EXPECTATION":
-        # Create a promise without a triggering player event.
+        # Create a promise without a triggering player event, but still run credibility/negotiation.
         ptype = str(payload.get("promise_type") or "").upper()
         if ptype not in {"MINUTES", "ROLE", "HELP", "LOAD", "EXTENSION_TALKS"}:
             return UserActionOutcome(
@@ -173,17 +220,13 @@ def apply_user_action(
 
         due = due_month_from_now(now_d, int(payload.get("due_months") or due_months))
 
-        # Optional numeric target (some promise types require it).
         tv = safe_float_opt(payload.get("target_value"))
-
         target: Dict[str, Any] = dict(payload.get("target") or {}) if isinstance(payload.get("target"), Mapping) else {}
 
-        # Common convenience keys
         if ptype == "ROLE" and "role" not in target:
             tr = str(payload.get("target_role") or payload.get("role") or "STARTER").upper()
             target["role"] = tr
 
-        # Convenience for MINUTES/LOAD targets
         if ptype == "MINUTES" and tv is None:
             tv = safe_float_opt(payload.get("target_mpg"))
 
@@ -192,13 +235,18 @@ def apply_user_action(
             if tv is None:
                 tv = safe_float_opt(payload.get("target_mpg"))
 
-        # HELP convenience: allow need_tags list
         if ptype == "HELP" and "need_tags" not in target:
             nt = payload.get("need_tags")
             if isinstance(nt, list) and nt:
                 target["need_tags"] = [str(x).upper() for x in nt if str(x).strip()]
 
-        # Validation: MINUTES/LOAD promises must include a numeric target.
+        if ptype == "EXTENSION_TALKS" and "years_left" not in target:
+            yl = safe_float_opt(payload.get("years_left"))
+            if yl is None:
+                yl = safe_float_opt(state.get("contract_seasons_left")) or 1.0
+            target["years_left"] = float(clamp(yl, 0.0, 10.0))
+            target.setdefault("now_month_key", due_month_from_now(now_d, 0))
+
         if ptype in {"MINUTES", "LOAD"} and tv is None:
             return UserActionOutcome(
                 ok=False,
@@ -220,15 +268,99 @@ def apply_user_action(
             target.setdefault("max_mpg", float(tv))
             target.setdefault("mode", "MAX_MPG")
 
-        promise = PromiseSpec(
-            promise_type=ptype,  # type: ignore[arg-type]
+        # Build an offer for credibility evaluation.
+        axis_map = {
+            "MINUTES": "MINUTES",
+            "ROLE": "ROLE",
+            "HELP": "TEAM",
+            "LOAD": "HEALTH",
+            "EXTENSION_TALKS": "CONTRACT",
+        }
+        axis = axis_map.get(ptype, "TEAM")
+
+        offer = Offer(
+            promise_type=ptype,
+            axis=axis,
             due_month=due,
             target_value=tv,
-            target=target,
+            target_json=target,
         )
 
-        trust1 += 0.01 * impact * pos_mult
-        reasons.append({"code": "USER_SET_EXPECTATION", "evidence": {"promise_type": ptype, "due_month": due}})
+        decision, neg_meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
+        verdict = str(getattr(decision, "verdict", "")).upper()
+        meta_extra["negotiation"] = dict(neg_meta or {})
+        meta_extra["negotiation"]["decision"] = getattr(decision, "to_dict", lambda: {})()
+
+        # Stance effects for contentious bargaining
+        deltas, st_meta = stance_deltas_on_offer_decision(
+            verdict=verdict,
+            insulting=bool(getattr(decision, "insulting", False)),
+            base_scale=float(impact),
+            mental=mental,
+            cfg=cfg,
+        )
+        if deltas:
+            _apply_stance_updates(apply_stance_deltas(state={"stance_skepticism": sk1, "stance_resentment": rs1, "stance_hardball": hb1}, deltas=deltas))
+            meta_extra["negotiation"].setdefault("stance", st_meta)
+
+        if verdict == "ACCEPT":
+            promise = PromiseSpec(
+                promise_type=ptype,  # type: ignore[arg-type]
+                due_month=due,
+                target_value=tv,
+                target_json=target,
+            )
+            trust1 += 0.01 * impact * pos_mult
+            tone = "CALM"
+            player_reply = "Okay. We'll see."
+            reasons.append({"code": "USER_SET_EXPECTATION_ACCEPTED", "evidence": {"promise_type": ptype, "due_month": due}})
+
+        else:
+            # Not accepted: small trust hit + follow-up negotiation event when applicable.
+            rcfg = cfg.response
+            if verdict == "COUNTER":
+                trust1 -= float(rcfg.negotiation_counter_trust_penalty) * impact * neg_mult
+                tone = "FIRM"
+                player_reply = "That's not enough."
+            elif verdict == "REJECT":
+                trust1 -= float(rcfg.negotiation_reject_trust_penalty) * impact * neg_mult
+                tone = "FIRM"
+                player_reply = "No."
+            else:
+                trust1 -= float(rcfg.negotiation_walkout_trust_penalty) * impact * neg_mult
+                tone = "ANGRY"
+                player_reply = "I'm done talking."
+
+            reasons.append({"code": "USER_SET_EXPECTATION_NEGOTIATION", "evidence": {"promise_type": ptype, "verdict": verdict}})
+
+            if verdict in {"COUNTER", "REJECT"}:
+                # Spawn a negotiation thread event so the user can respond in the same UX.
+                pid = str(payload.get("player_id") or "")
+                tid = str(payload.get("team_id") or "")
+                sy = int(payload.get("season_year") or 0)
+
+                source_event_id = _action_source_event_id()
+                thread_id = make_thread_id(source_event_id, ptype)
+
+                try:
+                    expire_m = int(getattr(cfg.negotiation, "expire_months", 1))
+                except Exception:
+                    expire_m = 1
+                expires_month = due_month_from_now(now_d, expire_m)
+
+                neg_event = make_negotiation_event(
+                    thread_id=thread_id,
+                    source_event_id=source_event_id,
+                    player_id=pid,
+                    team_id=tid,
+                    season_year=sy,
+                    now_date_iso=now_d,
+                    offer=offer,
+                    decision=decision,
+                    expires_month=expires_month,
+                    cfg=cfg,
+                )
+                follow_up_events.append(neg_event)
 
     elif at == "START_EXTENSION_TALKS":
         # No promise created; this event is used as SSOT evidence.
@@ -236,15 +368,17 @@ def apply_user_action(
         trust1 += dt
         reasons.append({"code": "USER_START_EXTENSION_TALKS", "evidence": {"trust_delta": dt}})
 
-    trust1 = clamp01(trust1)
-    mfr1 = clamp01(mfr1)
-    tfr1 = clamp01(tfr1)
-    rfr1 = clamp01(rfr1)
-    cfr1 = clamp01(cfr1)
-    hfr1 = clamp01(hfr1)
-    chfr1 = clamp01(chfr1)
+    trust1 = float(clamp01(trust1))
+    mfr1 = float(clamp01(mfr1))
+    tfr1 = float(clamp01(tfr1))
+    rfr1 = float(clamp01(rfr1))
+    cfr1 = float(clamp01(cfr1))
+    hfr1 = float(clamp01(hfr1))
+    chfr1 = float(clamp01(chfr1))
+    sk1 = float(clamp01(sk1))
+    rs1 = float(clamp01(rs1))
+    hb1 = float(clamp01(hb1))
 
-    # Build state updates (absolute values)
     updates: Dict[str, Any] = {
         "trust": float(trust1),
         "minutes_frustration": float(mfr1),
@@ -253,6 +387,9 @@ def apply_user_action(
         "contract_frustration": float(cfr1),
         "health_frustration": float(hfr1),
         "chemistry_frustration": float(chfr1),
+        "stance_skepticism": float(sk1),
+        "stance_resentment": float(rs1),
+        "stance_hardball": float(hb1),
     }
 
     event_type = "USER_ACTION"
@@ -264,6 +401,8 @@ def apply_user_action(
     meta = {
         "action_type": at,
         "now_date": now_d,
+        "tone": tone,
+        "player_reply": player_reply,
         "scales": {
             "leverage": float(lev),
             "impact": float(impact),
@@ -278,6 +417,9 @@ def apply_user_action(
             "contract_frustration": float(cfr0),
             "health_frustration": float(hfr0),
             "chemistry_frustration": float(chfr0),
+            "stance_skepticism": float(sk0),
+            "stance_resentment": float(rs0),
+            "stance_hardball": float(hb0),
         },
         "after": {
             "trust": float(trust1),
@@ -287,8 +429,12 @@ def apply_user_action(
             "contract_frustration": float(cfr1),
             "health_frustration": float(hfr1),
             "chemistry_frustration": float(chfr1),
+            "stance_skepticism": float(sk1),
+            "stance_resentment": float(rs1),
+            "stance_hardball": float(hb1),
         },
     }
+    meta.update(meta_extra)
 
     return UserActionOutcome(
         ok=True,
@@ -297,6 +443,7 @@ def apply_user_action(
         severity=float(clamp01(sev)),
         state_updates=updates,
         promise=promise,
+        follow_up_events=follow_up_events,
         reasons=reasons,
         meta=meta,
     )

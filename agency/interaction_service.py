@@ -645,6 +645,14 @@ def respond_to_agency_event(
                             },
                         }
                     )
+            # v3: insert follow-up events (e.g., negotiation threads)
+            try:
+                for fev in (getattr(outcome, "follow_up_events", None) or []):
+                    if isinstance(fev, dict):
+                        events_to_insert.append(fev)
+            except Exception:
+                pass
+
             insert_agency_events(cur, events_to_insert, now=str(now_iso))
 
             return {
@@ -992,6 +1000,14 @@ def apply_user_agency_action(
                             },
                         }
                     )
+
+            # v3: insert follow-up events (e.g., negotiation threads)
+            try:
+                for fev in (getattr(outcome, "follow_up_events", None) or []):
+                    if isinstance(fev, dict):
+                        events_to_insert.append(fev)
+            except Exception:
+                pass
 
             insert_agency_events(cur, events_to_insert, now=str(now_iso))
 
