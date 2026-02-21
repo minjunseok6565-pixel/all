@@ -1029,11 +1029,12 @@ def apply_monthly_agency_tick(
                                 SELECT payload_json
                                 FROM transactions_log
                                 WHERE tx_date >= ?
+                                  AND substr(tx_date, 1, 10) <= ?
                                   AND teams_json LIKE ?
                                 ORDER BY COALESCE(tx_date,'') DESC, created_at DESC
                                 LIMIT 1000;
                                 """,
-                                (str(since_d), str(like_pat)),
+                                (str(since_d)[:10], str(month_end_date)[:10], str(like_pat)),
                             ).fetchall()
                             tx_list: list[Dict[str, Any]] = []
                             for (payload_json,) in rows_tx:
@@ -1154,9 +1155,10 @@ def apply_monthly_agency_tick(
                                 FROM agency_events
                                 WHERE event_type='CONTRACT_TALKS_STARTED'
                                   AND date >= ?
+                                  AND substr(date, 1, 10) <= ?
                                   AND player_id IN ({ph});
                                 """,
-                                [str(min_d), *pids],
+                                [str(min_d)[:10], str(month_end_date)[:10], *pids],
                             ).fetchall()
                             for pid_r, d_r in rows_ev:
                                 pid_s = str(pid_r)
@@ -1247,7 +1249,8 @@ def apply_monthly_agency_tick(
                         # Talks started evidence (derived from agency_events, SSOT).
                         created_d = norm_date_iso(p.get("created_date")) or str(now_iso)[:10]
                         talk_dates = talks_dates_by_pid.get(pid) or []
-                        talks_started = any(str(d) >= str(created_d) for d in talk_dates)
+                        month_end_d = str(month_end_date)[:10]
+                        talks_started = any(str(created_d) <= str(d) <= month_end_d for d in talk_dates)
 
                         help_ev = help_evidence_by_team.get(promised_team) if ptype == "HELP" else None
                         help_supply = (help_ev.get("supply_by_tag") if isinstance(help_ev, Mapping) else None)
