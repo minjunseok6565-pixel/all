@@ -4,7 +4,7 @@ import logging
 import random
 from contextlib import contextmanager
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 import schema
 
@@ -16,6 +16,7 @@ from matchengine_v2_adapter import (
 from matchengine_v3.sim_game import simulate_game
 import fatigue
 import injury
+import readiness
 from state import (
     export_full_state_snapshot,
     get_db_path,
@@ -47,7 +48,7 @@ def _run_match(
 ) -> Dict[str, Any]:
     rng = random.Random()
     with _repo_ctx() as repo:
-        # Ensure schema is applied (idempotent). This guarantees fatigue/injury tables exist
+        # Ensure schema is applied (idempotent). This guarantees fatigue/injury/readiness tables exist
         # even if the DB was created before the modules were added.
         repo.init_db()
 
@@ -81,6 +82,60 @@ def _run_match(
             )
             prepared_inj = None
 
+        # ------------------------------------------------------------
+        # Readiness: prepare between-game readiness (player sharpness + scheme familiarity)
+        # - must run BEFORE building TeamState so roster_adapter can apply readiness mods
+        # ------------------------------------------------------------
+        prepared_ready = None
+        try:
+            prepared_ready = readiness.prepare_game_readiness(
+                repo,
+                game_date_iso=str(game_date),
+                season_year=int(season_year),
+                home_team_id=str(home_team_id),
+                away_team_id=str(away_team_id),
+                home_tactics=home_tactics,
+                away_tactics=away_tactics,
+            )
+        except Exception:
+            logger.warning(
+                "READINESS_PREPARE_FAILED game_date=%s home=%s away=%s",
+                game_date,
+                str(home_team_id),
+                str(away_team_id),
+                exc_info=True,
+            )
+            prepared_ready = None
+
+        # Merge readiness attribute mods with injury RETURNING debuffs (both are temporary deltas).
+        # SSOT: persistence is handled by each subsystem; this merge is only for roster_adapter input.
+        if prepared_ready is not None and getattr(prepared_ready, "attrs_mods_by_pid", None):
+            if attrs_mods_by_pid is None:
+                attrs_mods_by_pid = prepared_ready.attrs_mods_by_pid
+            else:
+                merged_mods: Dict[str, Dict[str, float]] = {}
+
+                def _merge_src(src: Optional[Mapping[str, Mapping[str, float]]]) -> None:
+                    if not src:
+                        return
+                    for pid, mods in src.items():
+                        if not isinstance(mods, Mapping) or not mods:
+                            continue
+                        bucket = merged_mods.setdefault(str(pid), {})
+                        for k, delta in mods.items():
+                            try:
+                                d = float(delta)
+                            except Exception:
+                                continue
+                            if d == 0.0:
+                                continue
+                            key = str(k)
+                            bucket[key] = float(bucket.get(key, 0.0) or 0.0) + d
+
+                _merge_src(attrs_mods_by_pid)
+                _merge_src(prepared_ready.attrs_mods_by_pid)
+                attrs_mods_by_pid = merged_mods
+
         hid = schema.normalize_team_id(str(home_team_id)).upper()
         aid = schema.normalize_team_id(str(away_team_id)).upper()
 
@@ -98,6 +153,27 @@ def _run_match(
             exclude_pids=set(unavailable_by_team.get(aid, set()) or set()),
             attrs_mods_by_pid=attrs_mods_by_pid,
         )
+
+        # ------------------------------------------------------------
+        # Readiness: apply familiarity-derived multipliers to TeamState.tactics (in-memory only)
+        # ------------------------------------------------------------
+        if prepared_ready is not None:
+            try:
+                mult_h = prepared_ready.tactics_mult_by_team.get(hid)
+                if mult_h is not None:
+                    readiness.apply_readiness_to_team_state(home, mult_h)
+
+                mult_a = prepared_ready.tactics_mult_by_team.get(aid)
+                if mult_a is not None:
+                    readiness.apply_readiness_to_team_state(away, mult_a)
+            except Exception:
+                logger.warning(
+                    "READINESS_APPLY_FAILED game_date=%s home=%s away=%s",
+                    game_date,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
 
         # ------------------------------------------------------------
         # Fatigue: prepare between-game condition (start_energy + energy_cap)
@@ -177,7 +253,23 @@ def _run_match(
                     str(away_team_id),
                     exc_info=True,
                 )
-                
+
+        if prepared_ready is not None:
+            try:
+                readiness.finalize_game_readiness(
+                    repo,
+                    prepared=prepared_ready,
+                    raw_result=raw_result,
+                )
+            except Exception:
+                logger.warning(
+                    "READINESS_FINALIZE_FAILED game_date=%s home=%s away=%s",
+                    game_date,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+
     v2_result = adapt_matchengine_result_to_v2(
         raw_result,
         context,
