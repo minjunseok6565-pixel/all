@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Set, Tuple
 from ...models import Deal, PlayerAsset, PickAsset, SwapAsset
 from ...valuation.types import DealDecision, TeamDealEvaluation
 
+from ...trade_rules import is_trade_window_open
+
 from ..generation_tick import TradeGenerationTickContext
 from ..asset_catalog import TradeAssetCatalog, TeamOutgoingCatalog, build_trade_asset_catalog
 
@@ -146,13 +148,13 @@ class DealGenerator:
 
         tid = str(team_id).upper()
 
-        # trade deadline hard stop (SSOT: DeadlineRule / parse_trade_deadline)
+        # trade deadline hard stop (SSOT: trades.trade_rules.is_trade_window_open)
         try:
             deadline = _get_trade_deadline_date(tick_ctx)
         except ValueError:
             self.last_stats = DealGeneratorStats(mode="SKIP_DEADLINE_INVALID")
             return []
-        if deadline is not None and tick_ctx.current_date > deadline:
+        if deadline is not None and not is_trade_window_open(current_date=tick_ctx.current_date, trade_deadline=deadline):
             self.last_stats = DealGeneratorStats(mode="SKIP_DEADLINE")
             return []
 
