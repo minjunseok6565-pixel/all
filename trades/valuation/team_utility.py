@@ -25,6 +25,7 @@ from .types import (
     ValuationStep,
     snapshot_kind,
     snapshot_ref_id,
+    pick_protection_signature,
 )
 
 
@@ -178,7 +179,7 @@ class TeamUtilityAdjuster:
 
     # team-specific cache: (team_id, asset_key, season_year_ctx) -> TeamValuation
     # NOTE: team utility can depend on season-year via cap-scaled finance thresholds.
-    _cache: Dict[Tuple[str, str, int], TeamValuation] = field(default_factory=dict, init=False)
+    _cache: Dict[Tuple[str, str, int, str], TeamValuation] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         # Single Source of Truth for fit evaluation.
@@ -208,12 +209,17 @@ class TeamUtilityAdjuster:
         env_key = int(env.current_season_year)
         if env_key <= 0:
             raise ValueError("ValuationEnv.current_season_year must be a positive integer")
-        key = (str(ctx.team_id), str(market.asset_key), env_key)
+        kind = snapshot_kind(snap)
+
+        prot_sig = ""
+        if kind == AssetKind.PICK and isinstance(snap, PickSnapshot):
+            prot_sig = pick_protection_signature(snap.protection)
+
+        key = (str(ctx.team_id), str(market.asset_key), env_key, str(prot_sig))
         cached = self._cache.get(key)
         if cached is not None:
             return cached
 
-        kind = snapshot_kind(snap)
         ref_id = snapshot_ref_id(snap)
 
         team_steps: List[ValuationStep] = []
