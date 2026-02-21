@@ -25,6 +25,7 @@ from .types import (
     MarketValuation,
     snapshot_kind,
     snapshot_ref_id,
+    pick_protection_signature,
 )
 
 
@@ -216,7 +217,7 @@ class MarketPricer:
     config: MarketPricingConfig = field(default_factory=MarketPricingConfig)
 
     _cache_player: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
-    _cache_pick: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
+    _cache_pick: Dict[Tuple[str, int, str], MarketValuation] = field(default_factory=dict, init=False)
     _cache_swap: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
     _cache_fixed: Dict[Tuple[str, int], MarketValuation] = field(default_factory=dict, init=False)
 
@@ -260,11 +261,17 @@ class MarketPricer:
             return out
 
         if kind == AssetKind.PICK:
-            cached = self._cache_pick.get(cache_key)
+            prot_sig = ""
+            if isinstance(snap, PickSnapshot):
+                prot_sig = pick_protection_signature(snap.protection)
+
+            pick_cache_key = (str(ref_id), int(env_key), str(prot_sig))
+
+            cached = self._cache_pick.get(pick_cache_key)
             if cached is not None:
                 return cached
             out = self._price_pick(snap, asset_key=asset_key, expectation=pick_expectation, env=env)
-            self._cache_pick[cache_key] = out
+            self._cache_pick[pick_cache_key] = out
             return out
 
         if kind == AssetKind.SWAP:
