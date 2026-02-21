@@ -153,6 +153,14 @@ def apply_team_transition(
     old_m_fr = float(clamp01(safe_float(st.get("minutes_frustration"), 0.0)))
     old_t_fr = float(clamp01(safe_float(st.get("team_frustration"), 0.0)))
 
+    # v3: dynamic stances + self expectations
+    old_sk = float(clamp01(safe_float(st.get("stance_skepticism"), 0.0)))
+    old_rs = float(clamp01(safe_float(st.get("stance_resentment"), 0.0)))
+    old_hb = float(clamp01(safe_float(st.get("stance_hardball"), 0.0)))
+    old_self_mpg = st.get("self_expected_mpg")
+    old_self_sr = st.get("self_expected_starts_rate")
+    old_self_cr = st.get("self_expected_closes_rate")
+
     lev = float(clamp01(safe_float(st.get("leverage"), 0.0)))
 
     req = _infer_requested_trade(requested_trade=requested_trade, trade_request_level_before=trade_request_level_before)
@@ -198,6 +206,25 @@ def apply_team_transition(
     # Reset trade request level when moving teams (requests are team-specific).
     st["trade_request_level"] = 0
 
+    # v3: stances + self expectations partially reset on a new team.
+    # The player gets a "fresh start" effect; requested moves reset more.
+    clear_s = 0.20 + 0.40 * adapt + (0.15 if req else 0.0)
+    if not req:
+        clear_s -= 0.15 * loy
+    clear_s = float(clamp(clear_s, 0.0, 0.85))
+
+    new_sk = float(clamp01(old_sk * (1.0 - clear_s)))
+    new_rs = float(clamp01(old_rs * (1.0 - clear_s)))
+    new_hb = float(clamp01(old_hb * (1.0 - clear_s)))
+    st["stance_skepticism"] = float(new_sk)
+    st["stance_resentment"] = float(new_rs)
+    st["stance_hardball"] = float(new_hb)
+
+    # Recalibrate self expectations on the new team.
+    st["self_expected_mpg"] = None
+    st["self_expected_starts_rate"] = None
+    st["self_expected_closes_rate"] = None
+
     # Add a settling cooldown to prevent immediate re-request loops.
     if int(cfg.trade_cooldown_days_after_move) > 0:
         until = date_add_days(nd, int(cfg.trade_cooldown_days_after_move))
@@ -212,6 +239,9 @@ def apply_team_transition(
     trust_delta = float(new_trust - old_trust)
     m_delta = float(new_m_fr - old_m_fr)
     t_delta = float(new_t_fr - old_t_fr)
+    sk_delta = float(new_sk - old_sk)
+    rs_delta = float(new_rs - old_rs)
+    hb_delta = float(new_hb - old_hb)
 
     classification = "REQUESTED_TRADE" if req else "UNEXPECTED_TRADE"
 
@@ -231,12 +261,21 @@ def apply_team_transition(
             "trust": trust_delta,
             "minutes_frustration": m_delta,
             "team_frustration": t_delta,
+            "stance_skepticism": sk_delta,
+            "stance_resentment": rs_delta,
+            "stance_hardball": hb_delta,
         },
         "state_before": {
             "team_id": from_tid or old_team,
             "trust": old_trust,
             "minutes_frustration": old_m_fr,
             "team_frustration": old_t_fr,
+            "stance_skepticism": old_sk,
+            "stance_resentment": old_rs,
+            "stance_hardball": old_hb,
+            "self_expected_mpg": old_self_mpg,
+            "self_expected_starts_rate": old_self_sr,
+            "self_expected_closes_rate": old_self_cr,
             "trade_request_level": safe_int(trade_request_level_before, safe_int(state.get("trade_request_level"), 0)),
         },
         "state_after": {
@@ -244,6 +283,12 @@ def apply_team_transition(
             "trust": new_trust,
             "minutes_frustration": new_m_fr,
             "team_frustration": new_t_fr,
+            "stance_skepticism": new_sk,
+            "stance_resentment": new_rs,
+            "stance_hardball": new_hb,
+            "self_expected_mpg": None,
+            "self_expected_starts_rate": None,
+            "self_expected_closes_rate": None,
             "trade_request_level": 0,
         },
     }
@@ -271,6 +316,7 @@ def apply_team_transition(
         "baseline_trust": baseline,
         "clear_minutes_fraction": clear_m,
         "clear_team_fraction": clear_t,
+        "clear_stance_fraction": clear_s,
     }
 
     return TeamTransitionOutcome(state_after=st, event=event, meta=meta)
