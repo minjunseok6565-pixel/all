@@ -27,7 +27,7 @@ from .actor_selection import select_trade_actors
 from .promotion import promote_and_commit, compute_deal_key
 from .telemetry import build_tick_summary_payload, emit_tick_summary_event
 from . import policy
-from ..trade_rules import parse_trade_deadline
+from ..trade_rules import parse_trade_deadline, is_trade_window_open, offseason_trade_reopen_date
 
 
 def _allow_state_mutation(current_date_override: Optional[date]) -> bool:
@@ -194,7 +194,7 @@ def run_trade_orchestration_tick(
             db_path=resolved_db_path,
             validate_integrity=bool(validate_integrity),
         ) as tick_ctx:
-            # trade_deadline hard stop (SSOT: trades.trade_rules.parse_trade_deadline)
+            # trade_deadline hard stop (SSOT: trades.trade_rules.is_trade_window_open)
             try:
                 league = (tick_ctx.rule_tick_ctx.ctx_state_base or {}).get("league", {})
                 tr = (league or {}).get("trade_rules", {}) if isinstance(league, dict) else {}
@@ -207,10 +207,12 @@ def run_trade_orchestration_tick(
                         report.skip_reason = "DEADLINE_PARSE_ERROR"
                         report.meta["trade_deadline_raw"] = repr(deadline_raw)
                         return report
-                    if d is not None and today > d:
+                    if d is not None and not is_trade_window_open(current_date=today, trade_deadline=d):
+                        reopen = offseason_trade_reopen_date(d)
                         report.skipped = True
                         report.skip_reason = "DEADLINE_PASSED"
                         report.meta["trade_deadline"] = d.isoformat()
+                        report.meta["trade_reopens"] = reopen.isoformat()
                         return report
             except Exception:
                 report.skipped = True
