@@ -75,6 +75,11 @@ def get_player_agency_states(
             closes_rate,
             usage_share,
 
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            credibility_damage,
+
             trade_request_level,
 
             cooldown_minutes_until,
@@ -122,21 +127,25 @@ def get_player_agency_states(
             "starts_rate": safe_float(r[15], 0.0),
             "closes_rate": safe_float(r[16], 0.0),
             "usage_share": safe_float(r[17], 0.0),
-            "trade_request_level": safe_int(r[18], 0),
-            "cooldown_minutes_until": norm_date_iso(r[19]),
-            "cooldown_trade_until": norm_date_iso(r[20]),
-            "cooldown_help_until": norm_date_iso(r[21]),
-            "cooldown_contract_until": norm_date_iso(r[22]),
-            "cooldown_role_until": norm_date_iso(r[23]),
-            "cooldown_health_until": norm_date_iso(r[24]),
-            "cooldown_chemistry_until": norm_date_iso(r[25]),
-            "escalation_role": safe_int(r[26], 0),
-            "escalation_contract": safe_int(r[27], 0),
-            "escalation_team": safe_int(r[28], 0),
-            "escalation_health": safe_int(r[29], 0),
-            "escalation_chemistry": safe_int(r[30], 0),
-            "last_processed_month": norm_month_key(r[31]),
-            "context": json_loads(r[32], default={}) or {},
+            "self_expected_mpg": safe_float(r[18], 0.0),
+            "self_expected_starts_rate": safe_float(r[19], 0.0),
+            "self_expected_closes_rate": safe_float(r[20], 0.0),
+            "credibility_damage": safe_float(r[21], 0.0),
+            "trade_request_level": safe_int(r[22], 0),
+            "cooldown_minutes_until": norm_date_iso(r[23]),
+            "cooldown_trade_until": norm_date_iso(r[24]),
+            "cooldown_help_until": norm_date_iso(r[25]),
+            "cooldown_contract_until": norm_date_iso(r[26]),
+            "cooldown_role_until": norm_date_iso(r[27]),
+            "cooldown_health_until": norm_date_iso(r[28]),
+            "cooldown_chemistry_until": norm_date_iso(r[29]),
+            "escalation_role": safe_int(r[30], 0),
+            "escalation_contract": safe_int(r[31], 0),
+            "escalation_team": safe_int(r[32], 0),
+            "escalation_health": safe_int(r[33], 0),
+            "escalation_chemistry": safe_int(r[34], 0),
+            "last_processed_month": norm_month_key(r[35]),
+            "context": json_loads(r[36], default={}) or {},
         }
 
     return out
@@ -194,6 +203,12 @@ def upsert_player_agency_states(
             closes_rate = float(clamp01(st.get("closes_rate")))
             usage_share = float(clamp01(st.get("usage_share")))
 
+            # v3 self-expectations + relationship credibility damage
+            self_expected_mpg = float(max(0.0, min(48.0, safe_float(st.get("self_expected_mpg"), exp_mpg))))
+            self_expected_starts_rate = float(clamp01(st.get("self_expected_starts_rate")))
+            self_expected_closes_rate = float(clamp01(st.get("self_expected_closes_rate")))
+            credibility_damage = float(clamp01(st.get("credibility_damage")))
+
             tr_level = safe_int(st.get("trade_request_level"), 0)
 
             cd_minutes = norm_date_iso(st.get("cooldown_minutes_until"))
@@ -248,6 +263,10 @@ def upsert_player_agency_states(
                 float(starts_rate),
                 float(closes_rate),
                 float(usage_share),
+                float(self_expected_mpg),
+                float(self_expected_starts_rate),
+                float(self_expected_closes_rate),
+                float(credibility_damage),
                 int(tr_level),
                 cd_minutes,
                 cd_trade,
@@ -292,6 +311,10 @@ def upsert_player_agency_states(
             starts_rate,
             closes_rate,
             usage_share,
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            credibility_damage,
             trade_request_level,
             cooldown_minutes_until,
             cooldown_trade_until,
@@ -310,7 +333,7 @@ def upsert_player_agency_states(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(player_id) DO UPDATE SET
             team_id=excluded.team_id,
             season_year=excluded.season_year,
@@ -329,6 +352,10 @@ def upsert_player_agency_states(
             starts_rate=excluded.starts_rate,
             closes_rate=excluded.closes_rate,
             usage_share=excluded.usage_share,
+            self_expected_mpg=excluded.self_expected_mpg,
+            self_expected_starts_rate=excluded.self_expected_starts_rate,
+            self_expected_closes_rate=excluded.self_expected_closes_rate,
+            credibility_damage=excluded.credibility_damage,
             trade_request_level=excluded.trade_request_level,
             cooldown_minutes_until=excluded.cooldown_minutes_until,
             cooldown_trade_until=excluded.cooldown_trade_until,

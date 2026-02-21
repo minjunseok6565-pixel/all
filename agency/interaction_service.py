@@ -171,6 +171,23 @@ def _default_state_for_event(event: Mapping[str, Any]) -> Dict[str, Any]:
         "leverage": float(clamp01(lev)),
         "minutes_expected_mpg": safe_float(payload.get("expected_mpg"), 0.0),
         "minutes_actual_mpg": safe_float(payload.get("actual_mpg"), 0.0),
+
+        # v3 self-expectations + promise credibility damage
+        # If a state row does not exist yet, we default self expectations to the
+        # best available evidence in the event payload to avoid pathological gaps.
+        "self_expected_mpg": safe_float(
+            payload.get("self_expected_mpg"),
+            safe_float(payload.get("expected_mpg"), 0.0),
+        ),
+        "self_expected_starts_rate": safe_float(
+            payload.get("self_expected_starts_rate"),
+            safe_float(payload.get("starts_rate"), 0.0),
+        ),
+        "self_expected_closes_rate": safe_float(
+            payload.get("self_expected_closes_rate"),
+            safe_float(payload.get("closes_rate"), 0.0),
+        ),
+        "credibility_damage": safe_float(payload.get("credibility_damage"), 0.0),
         "minutes_frustration": 0.0,
         "team_frustration": 0.0,
         "trust": 0.5,
@@ -439,6 +456,7 @@ def respond_to_agency_event(
                             "health_frustration",
                             "chemistry_frustration",
                             "usage_frustration",
+                            "credibility_damage",
                         }:
                             st1[k] = float(clamp01(safe_float(st1.get(k), 0.0) + safe_float(dv, 0.0)))
                         elif k == "trade_request_level":
@@ -466,10 +484,35 @@ def respond_to_agency_event(
                 new_state["team_id"] = ev["team_id"]
                 new_state["season_year"] = int(ev["season_year"])
 
-                # Defensive clamp
-                new_state["trust"] = float(clamp01(new_state.get("trust", 0.5)))
-                new_state["minutes_frustration"] = float(clamp01(new_state.get("minutes_frustration", 0.0)))
-                new_state["team_frustration"] = float(clamp01(new_state.get("team_frustration", 0.0)))
+                # Defensive clamp (commercial safety): never trust response payloads.
+                for k, default in [
+                    ("trust", 0.5),
+                    ("minutes_frustration", 0.0),
+                    ("team_frustration", 0.0),
+                    ("role_frustration", 0.0),
+                    ("contract_frustration", 0.0),
+                    ("health_frustration", 0.0),
+                    ("chemistry_frustration", 0.0),
+                    ("usage_frustration", 0.0),
+                    ("credibility_damage", 0.0),
+                    ("starts_rate", 0.0),
+                    ("closes_rate", 0.0),
+                    ("usage_share", 0.0),
+                    ("self_expected_starts_rate", 0.0),
+                    ("self_expected_closes_rate", 0.0),
+                ]:
+                    new_state[k] = float(clamp01(safe_float(new_state.get(k), default)))
+
+                # self_expected_mpg is not a 0..1 field
+                try:
+                    new_state["self_expected_mpg"] = float(
+                        max(0.0, min(48.0, safe_float(new_state.get("self_expected_mpg"), 0.0)))
+                    )
+                except Exception:
+                    new_state["self_expected_mpg"] = float(
+                        max(0.0, min(48.0, safe_float(prev_state.get("self_expected_mpg"), 0.0)))
+                    )
+
                 try:
                     new_state["trade_request_level"] = int(max(0, min(2, int(new_state.get("trade_request_level") or 0))))
                 except Exception:
@@ -481,6 +524,22 @@ def respond_to_agency_event(
                 try:
                     ctx0 = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
                     mem = ctx0.get("mem") if isinstance(ctx0.get("mem"), dict) else {}
+
+                    # Generic memory updates (future-proofing): allow response logic
+                    # to request mem merges without duplicating bookkeeping here.
+                    try:
+                        mem_updates = getattr(outcome, "mem_updates", None)
+                    except Exception:
+                        mem_updates = None
+                    if isinstance(mem_updates, Mapping) and mem_updates:
+                        for mk, mv in mem_updates.items():
+                            # shallow merge; if both dicts, merge one level deep
+                            if isinstance(mv, dict) and isinstance(mem.get(mk), dict):
+                                mm = dict(mem.get(mk) or {})
+                                mm.update(mv)
+                                mem[mk] = mm
+                            else:
+                                mem[mk] = mv
 
                     # If the team is shopping the player, they remember it.
                     if str(outcome.response_type).upper() == "SHOP_TRADE":
@@ -537,6 +596,16 @@ def respond_to_agency_event(
             }
 
             events_to_insert = [response_event]
+
+            # Optional follow-up events (e.g., negotiation counter-offers).
+            try:
+                followups = getattr(outcome, "followup_events", None)
+            except Exception:
+                followups = None
+            if isinstance(followups, list) and followups:
+                for fev in followups:
+                    if isinstance(fev, Mapping):
+                        events_to_insert.append(dict(fev))
 
             promise_row: Optional[Dict[str, Any]] = None
             promise_id: Optional[str] = None
@@ -684,6 +753,10 @@ def respond_to_agency_event(
                     "starts_rate": new_state.get("starts_rate"),
                     "closes_rate": new_state.get("closes_rate"),
                     "usage_share": new_state.get("usage_share"),
+                    "self_expected_mpg": new_state.get("self_expected_mpg"),
+                    "self_expected_starts_rate": new_state.get("self_expected_starts_rate"),
+                    "self_expected_closes_rate": new_state.get("self_expected_closes_rate"),
+                    "credibility_damage": new_state.get("credibility_damage"),
                     "trade_request_level": new_state.get("trade_request_level"),
                     "cooldown_minutes_until": new_state.get("cooldown_minutes_until"),
                     "cooldown_trade_until": new_state.get("cooldown_trade_until"),
@@ -799,6 +872,13 @@ def apply_user_agency_action(
                     'leverage': 0.0,
                     'minutes_expected_mpg': 0.0,
                     'minutes_actual_mpg': 0.0,
+
+                    # v3 self-expectations + promise credibility damage
+                    'self_expected_mpg': 0.0,
+                    'self_expected_starts_rate': 0.0,
+                    'self_expected_closes_rate': 0.0,
+                    'credibility_damage': 0.0,
+
                     'minutes_frustration': 0.0,
                     'team_frustration': 0.0,
                     'trust': 0.5,
@@ -852,6 +932,29 @@ def apply_user_agency_action(
             new_state = dict(st)
             new_state.update(outcome.state_updates or {})
 
+            # Generic memory updates (optional): allow proactive actions to attach
+            # narrative bookkeeping without duplicating logic across layers.
+            try:
+                mem_updates = getattr(outcome, 'mem_updates', None)
+            except Exception:
+                mem_updates = None
+            if isinstance(mem_updates, Mapping) and mem_updates:
+                try:
+                    ctx0 = new_state.get('context') if isinstance(new_state.get('context'), dict) else {}
+                    mem0 = ctx0.get('mem') if isinstance(ctx0.get('mem'), dict) else {}
+                    mem1 = dict(mem0)
+                    for mk, mv in mem_updates.items():
+                        if isinstance(mv, dict) and isinstance(mem1.get(mk), dict):
+                            mm = dict(mem1.get(mk) or {})
+                            mm.update(mv)
+                            mem1[mk] = mm
+                        else:
+                            mem1[mk] = mv
+                    ctx0['mem'] = mem1
+                    new_state['context'] = ctx0
+                except Exception:
+                    pass
+
             # Clamp key fields
             for k, default in [
                 ('trust', 0.5),
@@ -862,9 +965,24 @@ def apply_user_agency_action(
                 ('health_frustration', 0.0),
                 ('chemistry_frustration', 0.0),
                 ('usage_frustration', 0.0),
+                ('credibility_damage', 0.0),
             ]:
                 if k in new_state:
                     new_state[k] = float(clamp01(safe_float(new_state.get(k), default)))
+
+            # v3 self expectation clamps
+            try:
+                new_state['self_expected_mpg'] = float(
+                    max(0.0, min(48.0, safe_float(new_state.get('self_expected_mpg'), 0.0)))
+                )
+            except Exception:
+                new_state['self_expected_mpg'] = float(safe_float(st.get('self_expected_mpg'), 0.0))
+
+            for k in ['self_expected_starts_rate', 'self_expected_closes_rate']:
+                try:
+                    new_state[k] = float(clamp01(safe_float(new_state.get(k), 0.0)))
+                except Exception:
+                    new_state[k] = float(clamp01(safe_float(st.get(k), 0.0)))
 
             try:
                 new_state['trade_request_level'] = int(max(0, min(2, int(new_state.get('trade_request_level') or 0))))
@@ -897,6 +1015,16 @@ def apply_user_agency_action(
             }
 
             events_to_insert = [action_event]
+
+            # Optional follow-up events (e.g., negotiation counter-offers).
+            try:
+                followups = getattr(outcome, 'followup_events', None)
+            except Exception:
+                followups = None
+            if isinstance(followups, list) and followups:
+                for fev in followups:
+                    if isinstance(fev, Mapping):
+                        events_to_insert.append(dict(fev))
 
             # Promise persistence (optional)
             promise_id: Optional[str] = None
@@ -1024,6 +1152,10 @@ def apply_user_agency_action(
                     'health_frustration': new_state.get('health_frustration'),
                     'chemistry_frustration': new_state.get('chemistry_frustration'),
                     'usage_frustration': new_state.get('usage_frustration'),
+                    'self_expected_mpg': new_state.get('self_expected_mpg'),
+                    'self_expected_starts_rate': new_state.get('self_expected_starts_rate'),
+                    'self_expected_closes_rate': new_state.get('self_expected_closes_rate'),
+                    'credibility_damage': new_state.get('credibility_damage'),
                     'trade_request_level': new_state.get('trade_request_level'),
                     'context': new_state.get('context'),
                 },

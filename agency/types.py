@@ -40,6 +40,12 @@ class AgencyState:
     minutes_expected_mpg: float = 0.0
     minutes_actual_mpg: float = 0.0
 
+    # v3 self-expectations + relationship credibility damage
+    self_expected_mpg: float = 0.0
+    self_expected_starts_rate: float = 0.0
+    self_expected_closes_rate: float = 0.0
+    credibility_damage: float = 0.0
+
     # v1 axes
     minutes_frustration: float = 0.0
     team_frustration: float = 0.0
@@ -90,6 +96,10 @@ class AgencyState:
             "leverage": float(self.leverage),
             "minutes_expected_mpg": float(self.minutes_expected_mpg),
             "minutes_actual_mpg": float(self.minutes_actual_mpg),
+            "self_expected_mpg": float(self.self_expected_mpg),
+            "self_expected_starts_rate": float(self.self_expected_starts_rate),
+            "self_expected_closes_rate": float(self.self_expected_closes_rate),
+            "credibility_damage": float(self.credibility_damage),
             "minutes_frustration": float(self.minutes_frustration),
             "team_frustration": float(self.team_frustration),
             "trust": float(self.trust),

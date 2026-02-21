@@ -68,6 +68,16 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     usage_share REAL NOT NULL DEFAULT 0.0
                         CHECK(usage_share >= 0.0 AND usage_share <= 1.0),
 
+                    -- v3 self-expectations + relationship credibility damage (SSOT)
+                    self_expected_mpg REAL NOT NULL DEFAULT 0.0
+                        CHECK(self_expected_mpg >= 0.0 AND self_expected_mpg <= 48.0),
+                    self_expected_starts_rate REAL NOT NULL DEFAULT 0.0
+                        CHECK(self_expected_starts_rate >= 0.0 AND self_expected_starts_rate <= 1.0),
+                    self_expected_closes_rate REAL NOT NULL DEFAULT 0.0
+                        CHECK(self_expected_closes_rate >= 0.0 AND self_expected_closes_rate <= 1.0),
+                    credibility_damage REAL NOT NULL DEFAULT 0.0
+                        CHECK(credibility_damage >= 0.0 AND credibility_damage <= 1.0),
+
                     trade_request_level INTEGER NOT NULL DEFAULT 0
                         CHECK(trade_request_level IN (0,1,2)),
 
