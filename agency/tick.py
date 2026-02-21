@@ -1173,6 +1173,100 @@ def _candidate_team_issue(
     )
 
 
+def _candidate_minutes_complaint(
+    *,
+    state: Mapping[str, Any],
+    inputs: MonthlyPlayerInputs,
+    cfg: AgencyConfig,
+    sample_weight: float,
+) -> Optional[EventCandidate]:
+    ecfg = cfg.events
+
+    fr = float(clamp01(state.get("minutes_frustration")))
+    if fr < float(ecfg.minutes_complaint_threshold):
+        return None
+
+    now_date = str(inputs.now_date_iso)[:10]
+    if _cooldown_active(state.get("cooldown_minutes_until"), now_date_iso=now_date):
+        return None
+
+    ego = mental_norm(inputs.mental, "ego")
+    lev = float(clamp01(inputs.leverage))
+
+    if lev < float(ecfg.minutes_complaint_min_leverage) and ego < float(ecfg.minutes_complaint_ego_override):
+        return None
+
+    role = str(inputs.role_bucket or "UNKNOWN")
+    low_role = role in {"GARBAGE", "BENCH"}
+    if low_role and lev < 0.20 and ego < 0.90:
+        return None
+
+    gp = int(inputs.games_played or 0)
+    try:
+        min_g = int(ecfg.min_games_for_events)
+    except Exception:
+        min_g = 2
+    if gp > 0 and gp < max(1, min_g):
+        if float(inputs.actual_minutes or 0.0) > 0.0:
+            return None
+
+    softness = max(1e-6, float(ecfg.minutes_complaint_softness))
+    base_p = clamp01((fr - float(ecfg.minutes_complaint_threshold)) / softness)
+
+    p = base_p * (0.40 + 0.60 * lev) * (0.80 + 0.40 * ego)
+    p *= clamp(0.35 + 0.65 * float(clamp01(sample_weight)), 0.20, 1.00)
+
+    roll = stable_u01(inputs.player_id, inputs.month_key, "minutes_complaint")
+    if roll >= p:
+        return None
+
+    et = cfg.event_types.get("minutes_complaint", "MINUTES_COMPLAINT")
+    event_id = make_event_id("agency", inputs.player_id, inputs.month_key, et)
+
+    severity = clamp01(0.50 * fr + 0.30 * ego + 0.20 * lev)
+    severity *= clamp(0.60 + 0.40 * float(clamp01(sample_weight)), 0.60, 1.00)
+
+    ctx_m = ((state.get("context") or {}).get("minutes") or {})
+    if not isinstance(ctx_m, Mapping):
+        ctx_m = {}
+
+    payload = {
+        "axis": "MINUTES",
+        "role_bucket": role,
+        "expected_mpg": float(inputs.expected_mpg),
+        "actual_mpg": float(ctx_m.get("actual_mpg") or state.get("minutes_actual_mpg") or 0.0),
+        "gap": float(ctx_m.get("gap") or 0.0),
+        "leverage": float(lev),
+        "ego": float(ego),
+        "frustration": float(fr),
+        "sample_games_played": int(inputs.games_played or 0),
+        "sample_weight": float(clamp01(sample_weight)),
+    }
+
+    state_updates = {
+        "cooldown_minutes_until": date_add_days(now_date, int(ecfg.cooldown_minutes_days)),
+    }
+
+    priority = float(severity)
+
+    return EventCandidate(
+        axis="MINUTES",
+        priority=priority,
+        event={
+            "event_id": event_id,
+            "player_id": inputs.player_id,
+            "team_id": inputs.team_id,
+            "season_year": int(inputs.season_year),
+            "date": now_date,
+            "event_type": et,
+            "severity": float(severity),
+            "payload": payload,
+        },
+        state_updates=state_updates,
+        mem_updates={"last_major_issue_axis": "MINUTES", "last_major_issue_month": str(inputs.month_key)},
+    )
+
+
 def _candidate_trade_request(
     *,
     state: Mapping[str, Any],
@@ -1212,6 +1306,7 @@ def _candidate_trade_request(
 
     request_score = (
         + 0.30 * fr_team
+        + 0.25 * fr_role
         + 0.15 * fr_contract
         + 0.15 * fr_health
         + 0.10 * fr_chem
@@ -1617,6 +1712,7 @@ def apply_monthly_player_tick(
 
     for cand in (
         _candidate_trade_request(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight),
+        _candidate_minutes_complaint(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight),
         _candidate_role_issue(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight),
         _candidate_contract_issue(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight),
         _candidate_health_issue(state=st, inputs=inputs, cfg=cfg, sample_weight=sample_weight),
