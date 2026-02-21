@@ -706,7 +706,7 @@ def apply_user_response(
             if verdict == "ACCEPT":
                 promise = PromiseSpec(promise_type="HELP", due_month=due, target={"need_tags": offer_tags})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                tfr1 = float(clamp01(tfr1 + rcfg.team_relief_promise * impact * pos_mult * sev_mult))
+                tfr1 = float(clamp01(tfr1 - rcfg.team_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_HELP_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)
@@ -939,7 +939,7 @@ def apply_user_response(
             if verdict == "ACCEPT":
                 promise = PromiseSpec(promise_type="HELP", due_month=due, target={"need_tags": offer_tags})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                _apply_axis_delta(axis, rcfg.team_relief_promise * impact * pos_mult * sev_mult)
+                _apply_axis_delta(axis, -rcfg.team_relief_promise * impact * pos_mult * sev_mult)
                 reasons.append({"code": "PROMISE_HELP_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)
