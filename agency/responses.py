@@ -518,8 +518,30 @@ def apply_user_response(
             due = due_month_from_now(now_d, int(rcfg.promise_help_due_months))
             tgt: Dict[str, Any] = {"source": "team_issue"}
             need_tags = payload.get("need_tags")
-            if isinstance(need_tags, list) and need_tags:
-                tgt["need_tags"] = [str(x).upper() for x in need_tags if str(x).strip()]
+            need_tag = payload.get("need_tag")
+            if (not isinstance(need_tags, list) or not need_tags) and (need_tag is None or not str(need_tag).strip()):
+                evp2 = event.get("payload")
+                if isinstance(evp2, Mapping):
+                    need_tags = evp2.get("need_tags")
+                    if need_tag is None:
+                        need_tag = evp2.get("need_tag")
+
+            norm_tags: List[str] = []
+            if isinstance(need_tags, list):
+                for x in need_tags:
+                    if x is None:
+                        continue
+                    s = str(x).strip().upper()
+                    if s:
+                        norm_tags.append(s)
+
+            if not norm_tags and need_tag is not None:
+                s = str(need_tag).strip().upper()
+                if s:
+                    norm_tags = [s]
+
+            if norm_tags:
+                tgt["need_tags"] = norm_tags
             promise = PromiseSpec(promise_type="HELP", due_month=due, target=tgt)
             reasons = [{"code": "V2_PROMISE_HELP_CREATED", "evidence": {"due_month": due, "trust_delta": dt, "need_tags": tgt.get("need_tags")}}]
 
@@ -883,11 +905,35 @@ def _apply_help_demand(
         tfr1 -= float(rcfg.team_relief_promise) * impact * sev_mult
 
         due = due_month_from_now(now_date_iso, int(rcfg.promise_help_due_months))
-        # Optional need tag
+      
+        need_tags = payload.get("need_tags")
         need_tag = payload.get("need_tag")
+
+        if (not isinstance(need_tags, list) or not need_tags) and (need_tag is None or not str(need_tag).strip()):
+            evp = event.get("payload")
+            if isinstance(evp, Mapping):
+                if not isinstance(need_tags, list) or not need_tags:
+                    need_tags = evp.get("need_tags")
+                if need_tag is None:
+                    need_tag = evp.get("need_tag")
+
+        norm_tags: List[str] = []
+        if isinstance(need_tags, list):
+            for t in need_tags:
+                if t is None:
+                    continue
+                s = str(t).strip().upper()
+                if s:
+                    norm_tags.append(s)
+
+        if not norm_tags and need_tag is not None:
+            s = str(need_tag).strip().upper()
+            if s:
+                norm_tags = [s]
+      
         target: Dict[str, Any] = {}
-        if need_tag is not None:
-            target["need_tag"] = str(need_tag)
+        if norm_tags:
+            target["need_tags"] = norm_tags
 
         promise = PromiseSpec(
             promise_type="HELP",
@@ -895,7 +941,7 @@ def _apply_help_demand(
             target_value=None,
             target=target,
         )
-        reasons.append({"code": "PROMISE_HELP_CREATED", "evidence": {"due_month": due, "need_tag": need_tag}})
+        reasons.append({"code": "PROMISE_HELP_CREATED", "evidence": {"due_month": due, "need_tags": norm_tags or None}})
 
     elif rt == "REFUSE_HELP":
         dt = -float(rcfg.trust_refuse_help_penalty) * impact * neg_mult * sev_mult
