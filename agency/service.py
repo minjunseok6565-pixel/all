@@ -21,6 +21,7 @@ from league_repo import LeagueRepo
 from contract_codec import derive_contract_end_season_id
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .help_needs import compute_team_need_tags
 from .expectations import compute_expectations_for_league
 from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
 from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
@@ -1548,6 +1549,128 @@ def apply_monthly_agency_tick(
 
                     events.append(ev_meet)
                     locker_room_stats['meetings_emitted'] = int(locker_room_stats['meetings_emitted']) + 1
+
+            teams_need_tags: set[str] = set()
+            for ev0 in events:
+                try:
+                    pl = ev0.get("payload")
+                    if not isinstance(pl, dict):
+                        continue
+                    if str(pl.get("axis") or "").upper() != "TEAM":
+                        continue
+                    if pl.get("need_tags") or pl.get("need_tag"):
+                        continue
+                    tid0 = str(ev0.get("team_id") or "").upper()
+                    if tid0:
+                        teams_need_tags.add(tid0)
+                except Exception:
+                    continue
+
+            if teams_need_tags:
+                try:
+                    top_n = int(getattr(cfg.events, "help_need_rotation_top_n", 8))
+                except Exception:
+                    top_n = 8
+                try:
+                    max_tags = int(getattr(cfg.events, "help_need_tags_max", 3))
+                except Exception:
+                    max_tags = 3
+
+                allowed = getattr(cfg.events, "help_need_allowed_tags", None)
+
+                weighted_top_by_team: Dict[str, list[tuple[str, float]]] = {}
+                all_pids_need: set[str] = set()
+
+                for tid0 in sorted(teams_need_tags):
+                    pids0 = month_players_by_team.get(tid0) or []
+                    if not pids0:
+                        pids0 = [
+                            str(rr.get("player_id") or "")
+                            for rr in roster_rows
+                            if str(rr.get("team_id") or "").upper() == tid0
+                        ]
+                        pids0 = [pid for pid in pids0 if pid]
+
+                    weighted: list[tuple[str, float]] = []
+                    for pid0 in pids0:
+                        mins0, _gp0 = _slice_minutes_games(splits_by_pid.get(pid0), tid0)
+                        w0 = float(mins0)
+                        if w0 <= 0.0:
+                            exp0 = month_expectations.get((pid0, tid0))
+                            if exp0 is None:
+                                exp0 = expectations_current.get(pid0)
+                            if exp0 is not None:
+                                w0 = float(getattr(exp0, "expected_mpg", 0.0) or 0.0)
+                        if w0 <= 0.0:
+                            continue
+                        weighted.append((str(pid0), float(w0)))
+
+                    weighted.sort(key=lambda x: (-x[1], x[0]))
+                    if top_n > 0:
+                        weighted = weighted[: top_n]
+
+                    if weighted:
+                        weighted_top_by_team[tid0] = weighted
+                        for pid0, _w in weighted:
+                            all_pids_need.add(str(pid0))
+
+                attrs_by_pid: Dict[str, Dict[str, Any]] = {}
+                if all_pids_need:
+                    pids_list = sorted(all_pids_need)
+                    chunk = 400
+                    for i in range(0, len(pids_list), chunk):
+                        part = pids_list[i : i + chunk]
+                        if not part:
+                            continue
+                        ph = ",".join(["?"] * len(part))
+                        try:
+                            rows_p = cur.execute(
+                                f"SELECT player_id, attrs_json FROM players WHERE player_id IN ({ph});",
+                                list(part),
+                            ).fetchall()
+                            for pid_r, attrs_json in rows_p:
+                                pid_s = str(pid_r or "")
+                                if not pid_s:
+                                    continue
+                                attrs = json_loads(attrs_json, default={})
+                                attrs_by_pid[pid_s] = attrs if isinstance(attrs, dict) else {}
+                        except Exception:
+                            continue
+
+                need_tags_by_team: Dict[str, list[str]] = {}
+                for tid0, weighted in weighted_top_by_team.items():
+                    players_in = []
+                    for pid0, w0 in weighted:
+                        attrs = attrs_by_pid.get(pid0) or {}
+                        players_in.append((pid0, attrs, float(w0)))
+
+                    try:
+                        if isinstance(allowed, (list, tuple)):
+                            tags = compute_team_need_tags(players_in, max_tags=max_tags, allowed_tags=list(allowed))
+                        else:
+                            tags = compute_team_need_tags(players_in, max_tags=max_tags)
+                    except Exception:
+                        tags = []
+
+                    if tags:
+                        need_tags_by_team[str(tid0).upper()] = [str(t).upper() for t in tags if str(t).strip()]
+
+                if need_tags_by_team:
+                    for ev0 in events:
+                        pl = ev0.get("payload")
+                        if not isinstance(pl, dict):
+                            continue
+                        if str(pl.get("axis") or "").upper() != "TEAM":
+                            continue
+                        if pl.get("need_tags") or pl.get("need_tag"):
+                            continue
+                        tid0 = str(ev0.get("team_id") or "").upper()
+                        tags = need_tags_by_team.get(tid0)
+                        if not tags:
+                            continue
+                        pl["need_tags"] = list(tags)
+                        if "need_tag" not in pl and tags:
+                            pl["need_tag"] = str(tags[0])
 
             upsert_player_agency_states(cur, states_final, now=str(now_iso))
             insert_agency_events(cur, events, now=str(now_iso))
