@@ -180,6 +180,30 @@ def _ensure_draft_picks_seeded_for_season_year(state: dict, season_year: int) ->
         repo.ensure_draft_picks_seeded(draft_year, list(ALL_TEAM_IDS), years_ahead=years_ahead)
 
 
+def _ensure_second_apron_frozen_picks_once(
+    *,
+    db_path: str,
+    season_year: int,
+    draft_year: int,
+    trade_rules: Mapping[str, Any],
+    now_iso: str,
+) -> None:
+    """Apply DB-level pick trade locks (second-apron frozen picks) once per season.
+
+    SSOT is trades.apron_pick_freeze.ensure_second_apron_frozen_picks(), which is idempotent
+    via meta key 'second_apron_frozen_picks_done_{season_year}'.
+    """
+    from trades.apron_pick_freeze import ensure_second_apron_frozen_picks
+
+    ensure_second_apron_frozen_picks(
+        db_path=str(db_path),
+        season_year=int(season_year),
+        draft_year=int(draft_year),
+        trade_rules=trade_rules,
+        now_iso=str(now_iso),
+    )
+
+
 def ensure_schedule_for_active_season(*, force: bool = False) -> None:
     """현재 active_season_id에 맞는 master_schedule을 보장한다(시즌 전환은 하지 않음)."""
     def _impl(state: dict) -> None:
@@ -315,6 +339,22 @@ def start_new_season(
             ensure_schedule_for_active_season(force=True)
         else:
             _clear_master_schedule(league)
+
+        # SSOT: apply DB-level pick locks (2nd apron frozen picks) once per season.
+        # This is part of the season transition (not a validation rule).
+        trade_rules = league.get("trade_rules")
+        if not isinstance(trade_rules, dict):
+            trade_rules = {}
+            league["trade_rules"] = trade_rules
+
+        season_start = date(int(target_year), SEASON_START_MONTH, SEASON_START_DAY)
+        _ensure_second_apron_frozen_picks_once(
+            db_path=str(league["db_path"]),
+            season_year=int(target_year),
+            draft_year=int(league.get("draft_year") or (int(target_year) + 1)),
+            trade_rules=trade_rules,
+            now_iso=season_start.isoformat(),
+        )
 
         return {
             "ok": True,
