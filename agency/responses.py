@@ -129,6 +129,13 @@ class ResponseConfig:
     # Secondary frustration bump when trade is refused
     minutes_bump_refuse_trade: float = 0.02
 
+    # v3 scaling knobs (kept backward-compatible with v2 behavior)
+    impact_min: float = 0.45
+    impact_per_leverage: float = 0.55
+    sev_mult_scale: float = 0.40
+    pos_mult_scale: float = 0.35
+    neg_mult_scale: float = 0.50
+
 
     # v2: generic deltas for non-v1 axis events (role/contract/health/chemistry)
     axis_relief_acknowledge: float = 0.03
@@ -147,6 +154,8 @@ class ResponseConfig:
     team_talk_team_relief_calm: float = 0.02
     team_talk_team_relief_firm: float = 0.01
     team_talk_team_bump_ignore: float = 0.02
+    team_talk_team_bump_calm: float = -0.02
+    team_talk_team_bump_firm: float = -0.01
 
     # Promise due months
     promise_minutes_due_months: int = 1
@@ -160,6 +169,9 @@ class ResponseConfig:
     promise_role_min_starts_rate: float = 0.60
     promise_role_min_closes_rate: float = 0.35
     promise_load_default_max_mpg: float = 30.0
+    promise_role_starts_rate: float = 0.60
+    promise_role_closes_rate: float = 0.35
+    promise_load_max_mpg: float = 30.0
 
     # Minutes promise target bounds (safety)
     promise_minutes_min_mpg: float = 8.0
@@ -196,8 +208,9 @@ DEFAULT_RESPONSE_CONFIG = ResponseConfig()
 class ResponseOutcome:
     ok: bool
 
-    event_type: str
-    response_type: str
+    event_type: str = ""
+    response_type: str = ""
+    error: str = ""
 
     # New absolute values to write to player_agency_state (only for affected fields).
     # The DB layer should clamp once more.
@@ -207,6 +220,7 @@ class ResponseOutcome:
     bulk_state_deltas: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     promise: Optional[PromiseSpec] = None
+    follow_up_events: List[Dict[str, Any]] = field(default_factory=list)
 
     # Explainability
     tone: Literal["CALM", "FIRM", "ANGRY"] = "CALM"
@@ -358,7 +372,7 @@ def apply_user_response(
                 promise_type=str(off2.promise_type),
                 due_month=str(off2.due_month),
                 target_value=safe_float_opt(off2.target_value),
-                target_json=off2.target_json,
+                target=off2.target_json,
             )
             reasons.append({"code": "NEGOTIATION_ACCEPT_COUNTER", "evidence": {"thread_id": thread_id}})
             trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.85))
@@ -389,7 +403,7 @@ def apply_user_response(
             if str(off.promise_type).upper() != promise_type:
                 return ResponseOutcome(ok=False, error="Offer promise_type mismatch.", state_updates={})
 
-            decision, meta = evaluate_offer(
+            decision = evaluate_offer(
                 offer=off,
                 state=state,
                 mental=mental,
@@ -397,7 +411,8 @@ def apply_user_response(
                 max_rounds=max_rounds,
                 cfg=cfg,
             )
-            negotiation_meta = dict(meta or {})
+            meta = getattr(decision, "meta", {})
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
 
             st_updates, st_meta = _apply_offer_decision_stances(
@@ -418,7 +433,7 @@ def apply_user_response(
                     promise_type=str(off.promise_type),
                     due_month=str(off.due_month),
                     target_value=safe_float_opt(off.target_value),
-                    target_json=off.target_json,
+                    target=off.target_json,
                 )
                 reasons.append({"code": "NEGOTIATION_ACCEPT", "evidence": {"thread_id": thread_id}})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.80))
@@ -540,8 +555,8 @@ def apply_user_response(
                     target_value=target,
                     target_json={"target_mpg": target},
                 )
-                decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-                negotiation_meta = dict(meta or {})
+                decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+                negotiation_meta = dict(getattr(decision, "meta", {}) or {})
                 negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
                 verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -558,7 +573,7 @@ def apply_user_response(
                     negotiation_meta.setdefault("stance", st_meta)
 
                 if verdict == "ACCEPT":
-                    promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target_json={"target_mpg": target})
+                    promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target={"target_mpg": target})
                     trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.90))
                     _apply_axis_delta("MINUTES", rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.90)
                     reasons.append({"code": "BROKEN_PROMISE_REPAIR_ACCEPTED"})
@@ -591,8 +606,8 @@ def apply_user_response(
                 target_value=target,
                 target_json={"target_mpg": target},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -609,7 +624,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target_json={"target_mpg": target})
+                promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target={"target_mpg": target})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 mfr1 = float(clamp01(mfr1 + rcfg.minutes_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_MINUTES_ACCEPTED"})
@@ -638,17 +653,25 @@ def apply_user_response(
 
         else:
             trust1, mfr1, tfr1, tr_level1, promise, reasons = _apply_minutes_complaint(
-                event=event,
-                response_type=rt,
-                response_payload=payload,
-                state=state,
-                now_date_iso=now_d,
-                cfg=cfg,
+                rt,
+                payload,
+                now_d,
+                trust0=trust0,
+                mfr0=mfr0,
+                tfr0=tfr0,
+                tr_level0=tr_level0,
+                lev=lev,
                 ego=ego,
-                ambition=amb,
-                loyalty=loy,
-                coachability=coach,
-                adaptability=adapt,
+                amb=amb,
+                loy=loy,
+                coach=coach,
+                impact=impact,
+                pos_mult=pos_mult,
+                neg_mult=neg_mult,
+                sev_mult=sev_mult,
+                rcfg=rcfg,
+                event=event,
+                state=state,
             )
 
     elif et == "HELP_DEMAND":
@@ -663,8 +686,8 @@ def apply_user_response(
                 target_value=None,
                 target_json={"ask_need_tags": ask_tags, "offer_need_tags": offer_tags, "need_tags": offer_tags},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -681,7 +704,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="HELP", due_month=due, target_json={"need_tags": offer_tags})
+                promise = PromiseSpec(promise_type="HELP", due_month=due, target={"need_tags": offer_tags})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 tfr1 = float(clamp01(tfr1 + rcfg.team_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_HELP_ACCEPTED"})
@@ -697,33 +720,48 @@ def apply_user_response(
                 reply_override = "Prove it."
 
         else:
-            trust1, tfr1, promise, reasons = _apply_help_demand(
-                event=event,
-                response_type=rt,
-                response_payload=payload,
-                state=state,
-                now_date_iso=now_d,
-                cfg=cfg,
+            trust1, _mfr_tmp, tfr1, _tr_tmp, promise, reasons = _apply_help_demand(
+                rt,
+                payload,
+                now_d,
+                trust0=trust0,
+                mfr0=mfr0,
+                tfr0=tfr0,
+                tr_level0=tr_level0,
+                lev=lev,
                 ego=ego,
-                ambition=amb,
-                loyalty=loy,
-                coachability=coach,
-                adaptability=adapt,
+                amb=amb,
+                loy=loy,
+                coach=coach,
+                impact=impact,
+                pos_mult=pos_mult,
+                neg_mult=neg_mult,
+                sev_mult=sev_mult,
+                rcfg=rcfg,
+                event=event,
             )
 
     elif et in {"TRADE_REQUEST", "TRADE_REQUEST_PUBLIC"}:
-        trust1, tfr1, tr_level1, promise, reasons = _apply_trade_request(
-            event=event,
-            response_type=rt,
-            response_payload=payload,
-            state=state,
-            now_date_iso=now_d,
-            cfg=cfg,
+        trust1, mfr1, tfr1, tr_level1, promise, reasons = _apply_trade_request(
+            et,
+            rt,
+            payload,
+            now_d,
+            trust0=trust0,
+            mfr0=mfr0,
+            tfr0=tfr0,
+            tr_level0=tr_level0,
+            lev=lev,
             ego=ego,
-            ambition=amb,
-            loyalty=loy,
-            coachability=coach,
-            adaptability=adapt,
+            amb=amb,
+            loy=loy,
+            coach=coach,
+            impact=impact,
+            pos_mult=pos_mult,
+            neg_mult=neg_mult,
+            sev_mult=sev_mult,
+            rcfg=rcfg,
+            event=event,
         )
 
     elif et == "LOCKER_ROOM_MEETING":
@@ -791,8 +829,8 @@ def apply_user_response(
                 target_value=None,
                 target_json={"role_tag": role_tag, "starts_rate": starts_rate, "closes_rate": closes_rate},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -809,7 +847,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="ROLE", due_month=due, target_json={"role_tag": role_tag, "starts_rate": starts_rate, "closes_rate": closes_rate})
+                promise = PromiseSpec(promise_type="ROLE", due_month=due, target={"role_tag": role_tag, "starts_rate": starts_rate, "closes_rate": closes_rate})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 _apply_axis_delta(axis, rcfg.role_relief_promise * impact * pos_mult * sev_mult)
                 reasons.append({"code": "PROMISE_ROLE_ACCEPTED"})
@@ -837,8 +875,8 @@ def apply_user_response(
                 target_value=max_mpg,
                 target_json={"max_mpg": max_mpg},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -855,7 +893,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="LOAD", due_month=due, target_json={"max_mpg": max_mpg})
+                promise = PromiseSpec(promise_type="LOAD", due_month=due, target={"max_mpg": max_mpg})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 _apply_axis_delta(axis, rcfg.health_relief_promise * impact * pos_mult * sev_mult)
                 reasons.append({"code": "PROMISE_LOAD_ACCEPTED"})
@@ -881,8 +919,8 @@ def apply_user_response(
                 target_value=None,
                 target_json={"ask_need_tags": ask_tags, "offer_need_tags": offer_tags, "need_tags": offer_tags},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -899,7 +937,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="HELP", due_month=due, target_json={"need_tags": offer_tags})
+                promise = PromiseSpec(promise_type="HELP", due_month=due, target={"need_tags": offer_tags})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 _apply_axis_delta(axis, rcfg.team_relief_promise * impact * pos_mult * sev_mult)
                 reasons.append({"code": "PROMISE_HELP_ACCEPTED"})
@@ -927,8 +965,8 @@ def apply_user_response(
                 target_value=None,
                 target_json={"years_left": years_left, "now_month_key": due_month_from_now(now_d, 0)},
             )
-            decision, meta = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0)
-            negotiation_meta = dict(meta or {})
+            decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
+            negotiation_meta = dict(getattr(decision, "meta", {}) or {})
             negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
             verdict = str(getattr(decision, "verdict", "")).upper()
 
@@ -945,7 +983,7 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="EXTENSION_TALKS", due_month=due, target_json={"years_left": years_left})
+                promise = PromiseSpec(promise_type="EXTENSION_TALKS", due_month=due, target={"years_left": years_left})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 _apply_axis_delta(axis, rcfg.contract_relief_promise * impact * pos_mult * sev_mult)
                 reasons.append({"code": "PROMISE_EXTENSION_TALKS_ACCEPTED"})
@@ -1114,7 +1152,13 @@ def _extract_leverage(*, state: Mapping[str, Any], event: Mapping[str, Any]) -> 
     return float(clamp01(lev))
 
 
-def _tone_for_response(event_type: str, response_type: str, *, ego: float, sev: float) -> Literal["CALM", "FIRM", "ANGRY"]:
+def _tone_for_response(
+    event_type: str,
+    response_type: str,
+    *,
+    ego: float = 0.5,
+    sev: float = 0.5,
+) -> Literal["CALM", "FIRM", "ANGRY"]:
     rt = str(response_type).upper()
 
     # Promises and positive team talks
@@ -1150,7 +1194,7 @@ def _tone_for_response(event_type: str, response_type: str, *, ego: float, sev: 
     return "FIRM"
 
 
-def _player_reply(event_type: str, response_type: str, *, tone: str) -> str:
+def _player_reply(event_type: str, response_type: str, tone: str) -> str:
     # Keep this short; UI can localize or override.
     rt = str(response_type).upper()
 
@@ -1217,7 +1261,8 @@ def _maybe_make_negotiation_followup(
         return None
 
     source_event_id = str(event.get("event_id") or "")
-    thread_id = str(event.get("payload", {}) or {}).get("thread_id") or make_thread_id(source_event_id, offer.promise_type)
+    ep = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    thread_id = str(ep.get("thread_id") or "") or make_thread_id(source_event_id, offer.promise_type)
 
     # Negotiation threads expire quickly (prevents backlog spam).
     if not expires_month:
@@ -1236,7 +1281,6 @@ def _maybe_make_negotiation_followup(
         now_date_iso=now_date_iso,
         offer=offer,
         decision=decision,
-        expires_month=str(expires_month),
         cfg=cfg,
     )
 
@@ -1254,7 +1298,6 @@ def _apply_offer_decision_stances(
     deltas, meta = stance_deltas_on_offer_decision(
         verdict=str(verdict).upper(),
         insulting=bool(insulting),
-        base_scale=float(base_scale),
         mental=mental,
         cfg=cfg,
     )
