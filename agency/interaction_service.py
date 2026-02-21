@@ -952,6 +952,47 @@ def apply_user_agency_action(
                     }
                 )
 
+                if str(promise_spec.promise_type).upper() == "EXTENSION_TALKS":
+                    talks_event_id = make_event_id("agency", "contract_talks_started", promise_id)
+                    events_to_insert.append(
+                        {
+                            "event_id": talks_event_id,
+                            "player_id": ev["player_id"],
+                            "team_id": ev["team_id"],
+                            "season_year": int(ev["season_year"]),
+                            "date": str(now_date)[:10],
+                            "event_type": "CONTRACT_TALKS_STARTED",
+                            "severity": float(clamp01(0.10 + 0.50 * safe_float(ev.get("severity"), 0.0))),
+                            "payload": {
+                                "promise_id": promise_id,
+                                "promise_type": str(promise_spec.promise_type),
+                                "source_event_id": ev["event_id"],
+                                "response_event_id": response_event_id,
+                                "response_id": response_id,
+                            },
+                        }
+                    )
+
+                if str(promise_spec.promise_type).upper() == 'EXTENSION_TALKS':
+                    talks_event_id = make_event_id('agency', 'contract_talks_started', promise_id)
+                    events_to_insert.append(
+                        {
+                            'event_id': talks_event_id,
+                            'player_id': pid,
+                            'team_id': user_tid,
+                            'season_year': int(sy),
+                            'date': str(now_date)[:10],
+                            'event_type': 'CONTRACT_TALKS_STARTED',
+                            'severity': float(clamp01(0.10 + 0.50 * safe_float(outcome.severity, 0.10))),
+                            'payload': {
+                                'promise_id': promise_id,
+                                'promise_type': str(promise_spec.promise_type),
+                                'source_event_id': str(action_event_id),
+                                'action_type': action_key,
+                            },
+                        }
+                    )
+
             insert_agency_events(cur, events_to_insert, now=str(now_iso))
 
             return {
