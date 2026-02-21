@@ -57,6 +57,17 @@ class AgencyState:
     closes_rate: float = 0.0
     usage_share: float = 0.0
 
+    # v3: self expectations (player self-perception)
+    # These are optional and are bootstrapped during the first monthly tick.
+    self_expected_mpg: Optional[float] = None
+    self_expected_starts_rate: Optional[float] = None
+    self_expected_closes_rate: Optional[float] = None
+
+    # v3: dynamic stances (short-to-mid-term attitude; 0..1)
+    stance_skepticism: float = 0.0
+    stance_resentment: float = 0.0
+    stance_hardball: float = 0.0
+
     trade_request_level: int = 0  # 0 none, 1 private, 2 public
 
     cooldown_minutes_until: Optional[str] = None
@@ -101,6 +112,14 @@ class AgencyState:
             "starts_rate": float(self.starts_rate),
             "closes_rate": float(self.closes_rate),
             "usage_share": float(self.usage_share),
+
+            "self_expected_mpg": None if self.self_expected_mpg is None else float(self.self_expected_mpg),
+            "self_expected_starts_rate": None if self.self_expected_starts_rate is None else float(self.self_expected_starts_rate),
+            "self_expected_closes_rate": None if self.self_expected_closes_rate is None else float(self.self_expected_closes_rate),
+
+            "stance_skepticism": float(self.stance_skepticism),
+            "stance_resentment": float(self.stance_resentment),
+            "stance_hardball": float(self.stance_hardball),
             "trade_request_level": int(self.trade_request_level),
             "cooldown_minutes_until": self.cooldown_minutes_until,
             "cooldown_trade_until": self.cooldown_trade_until,

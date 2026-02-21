@@ -68,6 +68,21 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     usage_share REAL NOT NULL DEFAULT 0.0
                         CHECK(usage_share >= 0.0 AND usage_share <= 1.0),
 
+                    -- v3: self expectations (player self-perception; optional)
+                    self_expected_mpg REAL,
+                    self_expected_starts_rate REAL
+                        CHECK(self_expected_starts_rate IS NULL OR (self_expected_starts_rate >= 0.0 AND self_expected_starts_rate <= 1.0)),
+                    self_expected_closes_rate REAL
+                        CHECK(self_expected_closes_rate IS NULL OR (self_expected_closes_rate >= 0.0 AND self_expected_closes_rate <= 1.0)),
+
+                    -- v3: dynamic stances (short-to-mid-term attitude; 0..1)
+                    stance_skepticism REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_skepticism >= 0.0 AND stance_skepticism <= 1.0),
+                    stance_resentment REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_resentment >= 0.0 AND stance_resentment <= 1.0),
+                    stance_hardball REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_hardball >= 0.0 AND stance_hardball <= 1.0),
+
                     trade_request_level INTEGER NOT NULL DEFAULT 0
                         CHECK(trade_request_level IN (0,1,2)),
 
@@ -202,3 +217,28 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     ON player_agency_promises(status, due_month);
 
 """
+
+
+def migrate(cur, *, ensure_columns) -> None:
+    """Post-DDL migrations (additive columns).
+
+    NOTE: This project intentionally keeps agency schema migrations additive
+    (no destructive changes) to preserve commercial robustness.
+
+    The `ensure_columns` helper matches LeagueRepo._ensure_table_columns.
+    """
+    ensure_columns(
+        cur,
+        "player_agency_state",
+        {
+            # v3: self expectations
+            "self_expected_mpg": "REAL",
+            "self_expected_starts_rate": "REAL",
+            "self_expected_closes_rate": "REAL",
+
+            # v3: dynamic stances
+            "stance_skepticism": "REAL NOT NULL DEFAULT 0.0",
+            "stance_resentment": "REAL NOT NULL DEFAULT 0.0",
+            "stance_hardball": "REAL NOT NULL DEFAULT 0.0",
+        },
+    )
