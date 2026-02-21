@@ -826,6 +826,24 @@ def _candidate_role_issue(
         "sample_weight": float(clamp01(sample_weight)),
     }
 
+    # Negotiation focus hint: which role-status axis is currently the bigger gap.
+    try:
+        exp_s = state.get("self_expected_starts_rate")
+        exp_c = state.get("self_expected_closes_rate")
+        if exp_s is None and isinstance(status_meta, Mapping):
+            exp_s = status_meta.get("expected_starts_rate")
+        if exp_c is None and isinstance(status_meta, Mapping):
+            exp_c = status_meta.get("expected_closes_rate")
+
+        if exp_s is not None and exp_c is not None:
+            gap_s = float(exp_s) - float(clamp01(inputs.starts_rate))
+            gap_c = float(exp_c) - float(clamp01(inputs.closes_rate))
+            payload["gap_starts"] = float(gap_s)
+            payload["gap_closes"] = float(gap_c)
+            payload["role_focus"] = "STARTS" if gap_s >= gap_c else "CLOSES"
+    except Exception:
+        pass
+
     state_updates = {
         "cooldown_role_until": date_add_days(now_date, int(ecfg.cooldown_role_days)),
         "escalation_role": int(stage),
@@ -1674,7 +1692,7 @@ def apply_monthly_player_tick(
 
     self_exp_updates, self_exp_meta = update_self_expectations_monthly(
         state=st,
-        expected_mpg=float(st.get("self_expected_mpg") or st.get("minutes_expected_mpg") or 0.0),
+        expected_mpg=float(st.get("minutes_expected_mpg") or 0.0),
         role_bucket=str(st.get("role_bucket") or inputs.role_bucket or "UNKNOWN"),
         mental=inputs.mental or {},
         cfg=cfg,
@@ -1741,6 +1759,12 @@ def apply_monthly_player_tick(
         role_bucket=str(st.get("role_bucket") or "UNKNOWN"),
         starts_rate=float(st.get("starts_rate") or 0.0),
         closes_rate=float(st.get("closes_rate") or 0.0),
+        expected_starts_rate=(
+            float(st.get("self_expected_starts_rate")) if st.get("self_expected_starts_rate") is not None else None
+        ),
+        expected_closes_rate=(
+            float(st.get("self_expected_closes_rate")) if st.get("self_expected_closes_rate") is not None else None
+        ),
         mental=inputs.mental,
         leverage=float(st.get("leverage") or 0.0),
         injury_status=inputs.injury_status,
@@ -1939,4 +1963,3 @@ def apply_monthly_player_tick(
         events.append(dict(chosen.event))
  
     return st, events
-

@@ -626,7 +626,7 @@ def apply_user_response(
             if verdict == "ACCEPT":
                 promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target={"target_mpg": target})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                mfr1 = float(clamp01(mfr1 + rcfg.minutes_relief_promise * impact * pos_mult * sev_mult))
+                mfr1 = float(clamp01(mfr1 - rcfg.minutes_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_MINUTES_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)

@@ -25,8 +25,10 @@ from typing import Any, Dict, Mapping, Optional
 from league_repo import LeagueRepo
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .expectations import compute_team_expectations
 from .repo import get_player_agency_states, insert_agency_events, upsert_player_agency_states
 from .responses import DEFAULT_RESPONSE_CONFIG, ResponseConfig, apply_user_response
+from .self_expectations import bootstrap_self_expectations
 from .user_actions import apply_user_action
 from .utils import (
     clamp01,
@@ -204,6 +206,80 @@ def _default_state_for_event(event: Mapping[str, Any]) -> Dict[str, Any]:
         "last_processed_month": None,
         "context": {},
     }
+
+
+def _ensure_baseline_state(
+    cur,
+    *,
+    team_id: str,
+    season_year: int,
+    player_id: str,
+    state: Mapping[str, Any],
+    mental: Mapping[str, Any],
+    cfg: AgencyConfig,
+) -> Dict[str, Any]:
+    """Best-effort baseline fill for missing/weak expectation fields.
+
+    Keeps this path resilient when user actions happen before monthly tick has
+    initialized agency state.
+    """
+    st = dict(state or {})
+    tid = str(team_id or "").upper()
+    pid = str(player_id or "")
+
+    needs_team_exp = (
+        not st.get("role_bucket")
+        or str(st.get("role_bucket") or "").upper() == "UNKNOWN"
+        or safe_float(st.get("minutes_expected_mpg"), 0.0) <= 0.0
+        or safe_float(st.get("leverage"), 0.0) <= 0.0
+    )
+
+    if needs_team_exp and tid and pid:
+        rows = cur.execute(
+            """
+            SELECT r.player_id, p.ovr, r.salary_amount
+            FROM roster r
+            LEFT JOIN players p ON p.player_id = r.player_id
+            WHERE r.team_id=? AND r.status='active';
+            """,
+            (tid,),
+        ).fetchall()
+        team_players = [
+            {
+                "player_id": str(r[0]),
+                "ovr": safe_int(r[1], 0),
+                "salary_amount": safe_float(r[2], 0.0),
+            }
+            for r in rows
+            if r and str(r[0])
+        ]
+        if team_players:
+            exp_map = compute_team_expectations(team_players, config=cfg.expectations)
+            exp = exp_map.get(pid)
+            if exp is not None:
+                st["role_bucket"] = str(exp.role_bucket)
+                st["leverage"] = float(clamp01(exp.leverage))
+                st["minutes_expected_mpg"] = float(max(0.0, exp.expected_mpg))
+
+    missing_self_exp = (
+        st.get("self_expected_mpg") is None
+        or st.get("self_expected_starts_rate") is None
+        or st.get("self_expected_closes_rate") is None
+    )
+    if missing_self_exp:
+        updates, _meta = bootstrap_self_expectations(
+            state=st,
+            expected_mpg=float(max(0.0, safe_float(st.get("minutes_expected_mpg"), 0.0))),
+            role_bucket=str(st.get("role_bucket") or "UNKNOWN"),
+            mental=mental or {},
+            cfg=cfg,
+        )
+        st.update(updates)
+
+    st["player_id"] = pid
+    st["team_id"] = tid
+    st["season_year"] = int(season_year)
+    return st
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +916,17 @@ def apply_user_agency_action(
             mental = prof.get('mental') if isinstance(prof, dict) else {}
             if not isinstance(mental, Mapping):
                 mental = {}
+
+            # Fill baseline expectations/self-expectations for robust user-initiated flows.
+            st = _ensure_baseline_state(
+                cur,
+                team_id=user_tid,
+                season_year=sy,
+                player_id=pid,
+                state=st,
+                mental=mental,
+                cfg=cfg,
+            )
 
             outcome = apply_user_action(
                 action_type=action_key,
