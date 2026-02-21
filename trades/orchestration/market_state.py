@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Dict, Iterable, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import state
 
@@ -21,6 +21,7 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
     m.setdefault("events", [])
     m.setdefault("human_controlled_team_ids", [])
     m.setdefault("tick_nonce", 0)
+    m.setdefault("applied_exec_deal_ids", {})
     if not isinstance(m.get("listings"), dict):
         m["listings"] = {}
     if not isinstance(m.get("threads"), dict):
@@ -29,6 +30,8 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
         m["cooldowns"] = {}
     if not isinstance(m.get("events"), list):
         m["events"] = []
+    if not isinstance(m.get("applied_exec_deal_ids"), dict):
+        m["applied_exec_deal_ids"] = {}
     if not isinstance(m.get("human_controlled_team_ids"), (list, tuple, set, str, type(None))):
         m["human_controlled_team_ids"] = []
     try:
@@ -100,6 +103,58 @@ def prune_market_events(trade_market: Dict[str, Any], *, max_kept: int) -> int:
         m["events"] = ev[prune_n:]
         return prune_n
     return 0
+
+
+def prune_applied_exec_deal_ids(trade_market: Dict[str, Any], *, max_kept: int) -> int:
+    """Keep only the most recent N applied exec_deal_id markers.
+
+    Stored schema:
+      trade_market["applied_exec_deal_ids"]: { exec_deal_id(str): "YYYY-MM-DD" }
+
+    This is used as an idempotency guard so a trade commit (DB SSOT) can be safely
+    projected into market/memory multiple times without duplicating events/counts.
+    """
+    m = _ensure_trade_market_schema(trade_market)
+    raw = m.get("applied_exec_deal_ids")
+    if not isinstance(raw, dict):
+        raw = {}
+        m["applied_exec_deal_ids"] = raw
+
+    try:
+        max_i = int(max_kept)
+    except Exception:
+        max_i = 500
+
+    if max_i <= 0:
+        max_i = 500
+
+    if len(raw) <= max_i:
+        return 0
+
+    items: List[tuple[date, str]] = []
+    for k, v in raw.items():
+        key = str(k)
+        d = date.min
+        if isinstance(v, str) and v:
+            s = v[:10]
+            try:
+                d = date.fromisoformat(s)
+            except Exception:
+                d = date.min
+        items.append((d, key))
+
+    items.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    keep_keys = {key for _, key in items[:max_i]}
+
+    before_n = len(raw)
+    new_map: Dict[str, Any] = {}
+    for k, v in raw.items():
+        ks = str(k)
+        if ks in keep_keys:
+            new_map[ks] = v
+
+    m["applied_exec_deal_ids"] = new_map
+    return before_n - len(new_map)
 
 
 def pre_tick_cleanup(
@@ -229,6 +284,13 @@ def pre_tick_cleanup(
             m["threads"] = {k2: v2 for k2, v2 in m["threads"].items() if k2 in keep_keys}
             report.pruned_threads_limit = before_n - len(m["threads"])
 
+    # Keep idempotency markers bounded to avoid state bloat.
+    try:
+        max_ids = int(getattr(config, "max_applied_exec_deal_ids_kept", 500) or 500)
+    except Exception:
+        max_ids = 500
+    report.pruned_applied_exec_deal_ids = prune_applied_exec_deal_ids(m, max_kept=max_ids)
+
     report.pruned_events = prune_market_events(m, max_kept=int(config.max_market_events_kept))
     return report
 
@@ -281,6 +343,286 @@ def record_market_event(
     m["events"].append(
         {"at": today.isoformat(), "type": str(event_type), "payload": dict(payload or {})}
     )
+
+
+# -----------------------------------------------------------------------------
+# Trade execution projector (SSOT)
+# -----------------------------------------------------------------------------
+
+
+def _normalized_team_ids_from_transaction(transaction: Dict[str, Any]) -> List[str]:
+    raw = transaction.get("teams")
+    teams: List[str] = []
+
+    if isinstance(raw, (list, tuple, set)):
+        for t in raw:
+            if t:
+                teams.append(str(t).upper())
+    elif isinstance(raw, str) and raw:
+        # Accept "A,B" or "A|B"-style strings just in case.
+        parts = [p.strip() for p in raw.replace("|", ",").split(",")]
+        teams.extend([p.upper() for p in parts if p])
+
+    if not teams:
+        assets = transaction.get("assets")
+        if isinstance(assets, dict):
+            for k in assets.keys():
+                if k:
+                    teams.append(str(k).upper())
+
+    # stable dedupe (preserve order)
+    out: List[str] = []
+    seen: Set[str] = set()
+    for t in teams:
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _has_trade_executed_event(trade_market: Dict[str, Any], *, exec_deal_id: str) -> bool:
+    m = _ensure_trade_market_schema(trade_market)
+    ev = m.get("events") if isinstance(m.get("events"), list) else []
+    x = str(exec_deal_id)
+    for e in reversed(ev or []):
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("type", "")) != "TRADE_EXECUTED":
+            continue
+        payload = e.get("payload")
+        if isinstance(payload, dict) and str(payload.get("exec_deal_id", "")) == x:
+            return True
+    return False
+
+
+def apply_trade_executed_effects(
+    *,
+    transaction: Dict[str, Any],
+    trade_market: Dict[str, Any],
+    trade_memory: Dict[str, Any],
+    today: date,
+    config: OrchestrationConfig,
+    score: Optional[float] = None,
+    effective_pressure_by_team: Optional[Dict[str, float]] = None,
+    rush_scalar: Optional[float] = None,
+    buyer_id: Optional[str] = None,
+    seller_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Project a committed trade (DB SSOT) into trade_market/trade_memory.
+
+    SSOT principle:
+      - transaction (LeagueService.execute_trade payload) is the source of truth.
+      - trade_market/trade_memory are derived "presentation + constraints" state.
+
+    Idempotency:
+      - Uses trade_market["applied_exec_deal_ids"][exec_deal_id] to avoid duplicates.
+      - Also applies lightweight dedupe for events/relationships as a safety net.
+    """
+    m = _ensure_trade_market_schema(trade_market)
+    mem = _ensure_trade_memory_schema(trade_memory)
+
+    exec_deal_id = str(transaction.get("deal_id") or "").strip()
+    if not exec_deal_id:
+        raise ValueError("transaction.deal_id is required to apply market effects")
+
+    deal_key = str(transaction.get("deal_identity") or exec_deal_id).strip()
+    teams = _normalized_team_ids_from_transaction(transaction)
+
+    applied_map = m.get("applied_exec_deal_ids")
+    if not isinstance(applied_map, dict):
+        applied_map = {}
+        m["applied_exec_deal_ids"] = applied_map
+
+    if exec_deal_id in applied_map:
+        return {
+            "applied": False,
+            "already_applied": True,
+            "exec_deal_id": exec_deal_id,
+            "deal_id": deal_key,
+            "teams": teams,
+            "event_recorded": False,
+            "relationships_bumped": 0,
+        }
+
+    # Normalize optional meta inputs
+    try:
+        rush = float(rush_scalar or 0.0)
+    except Exception:
+        rush = 0.0
+
+    # Cooldowns
+    for tid in teams:
+        others = [x for x in teams if x != tid]
+        pressure = 0.0
+        if isinstance(effective_pressure_by_team, dict):
+            try:
+                pressure = float(effective_pressure_by_team.get(tid, 0.0) or 0.0)
+            except Exception:
+                pressure = 0.0
+
+        days = int(getattr(config, "cooldown_days_after_executed_trade", 5) or 5)
+        if effective_pressure_by_team is not None or rush_scalar is not None:
+            try:
+                from . import policy  # local import to avoid cycles
+
+                days = int(policy.cooldown_days_after_executed_trade(pressure, rush, config=config))
+            except Exception:
+                days = int(getattr(config, "cooldown_days_after_executed_trade", 5) or 5)
+
+        meta: Dict[str, Any] = {
+            "deal_id": deal_key,
+            "exec_deal_id": exec_deal_id,
+            "source": transaction.get("source"),
+        }
+        if len(others) == 1:
+            meta["other"] = others[0]
+        elif others:
+            meta["others"] = others
+        if effective_pressure_by_team is not None:
+            meta["effective_pressure"] = float(pressure or 0.0)
+        if rush_scalar is not None:
+            meta["rush_scalar"] = float(rush or 0.0)
+
+        add_team_cooldown(
+            trade_market,
+            team_id=tid,
+            today=today,
+            days=int(days),
+            reason="TRADE_EXECUTED",
+            meta=meta,
+        )
+
+    # Market event (dedupe by exec_deal_id)
+    event_recorded = False
+    if not _has_trade_executed_event(trade_market, exec_deal_id=exec_deal_id):
+        payload: Dict[str, Any] = {
+            "deal_id": deal_key,
+            "exec_deal_id": exec_deal_id,
+            "teams": teams,
+            "source": transaction.get("source"),
+        }
+
+        b = str(buyer_id).upper() if buyer_id else (teams[0] if len(teams) == 2 else "")
+        s = str(seller_id).upper() if seller_id else (teams[1] if len(teams) == 2 else "")
+        if b:
+            payload["buyer_id"] = b
+        if s:
+            payload["seller_id"] = s
+        if score is not None:
+            try:
+                payload["score"] = float(score or 0.0)
+            except Exception:
+                payload["score"] = 0.0
+
+        record_market_event(trade_market, today=today, event_type="TRADE_EXECUTED", payload=payload)
+        event_recorded = True
+
+    # Relationship bump: bump each pair once (dedupe by last_exec_deal_id)
+    relationships_bumped = 0
+    for i in range(len(teams)):
+        for j in range(i + 1, len(teams)):
+            a = teams[i]
+            b = teams[j]
+            entry = get_relationship_entry(trade_memory, team_a=a, team_b=b)
+            if isinstance(entry, dict):
+                meta = entry.get("meta")
+                if isinstance(meta, dict) and str(meta.get("last_exec_deal_id", "")) == exec_deal_id:
+                    continue
+
+            bump_relationship(
+                trade_memory,
+                team_a=a,
+                team_b=b,
+                today=today,
+                patch={
+                    "counts": {"trade_executed": 1},
+                    "meta": {"last_deal_id": deal_key, "last_exec_deal_id": exec_deal_id},
+                },
+            )
+            relationships_bumped += 1
+
+    # Mark applied (idempotency)
+    try:
+        m["applied_exec_deal_ids"][exec_deal_id] = today.isoformat()
+    except Exception:
+        # Best-effort: keep running even if state is corrupted.
+        m["applied_exec_deal_ids"] = {str(exec_deal_id): today.isoformat()}
+
+    return {
+        "applied": True,
+        "already_applied": False,
+        "exec_deal_id": exec_deal_id,
+        "deal_id": deal_key,
+        "teams": teams,
+        "event_recorded": bool(event_recorded),
+        "relationships_bumped": int(relationships_bumped),
+    }
+
+
+def apply_trade_executed_effects_to_state(
+    *,
+    transaction: Dict[str, Any],
+    today: Optional[date] = None,
+    config: Optional[OrchestrationConfig] = None,
+    score: Optional[float] = None,
+    effective_pressure_by_team: Optional[Dict[str, float]] = None,
+    rush_scalar: Optional[float] = None,
+    buyer_id: Optional[str] = None,
+    seller_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Load market/memory from state, apply executed-trade effects, then persist."""
+
+    cfg = config or OrchestrationConfig()
+
+    if today is None:
+        iso = None
+        for k in ("trade_date", "date"):
+            v = transaction.get(k)
+            if isinstance(v, str) and v:
+                iso = v
+                break
+        if iso:
+            try:
+                today = date.fromisoformat(iso[:10])
+            except Exception:
+                today = None
+
+    if today is None:
+        try:
+            today = state.get_current_date_as_date()
+        except Exception:
+            today = date.today()
+
+    market = load_trade_market()
+    mem = load_trade_memory()
+
+    report = apply_trade_executed_effects(
+        transaction=transaction,
+        trade_market=market,
+        trade_memory=mem,
+        today=today,
+        config=cfg,
+        score=score,
+        effective_pressure_by_team=effective_pressure_by_team,
+        rush_scalar=rush_scalar,
+        buyer_id=buyer_id,
+        seller_id=seller_id,
+    )
+
+    # best-effort pruning to avoid state bloat on API-driven trades
+    try:
+        prune_applied_exec_deal_ids(market, max_kept=int(getattr(cfg, "max_applied_exec_deal_ids_kept", 500) or 500))
+    except Exception:
+        pass
+    try:
+        prune_market_events(market, max_kept=int(getattr(cfg, "max_market_events_kept", 200) or 200))
+    except Exception:
+        pass
+
+    save_trade_market(market)
+    save_trade_memory(mem)
+    return report
 
 
 
