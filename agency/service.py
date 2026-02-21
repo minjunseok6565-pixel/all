@@ -24,6 +24,8 @@ from .config import AgencyConfig, DEFAULT_CONFIG
 from .help_needs import compute_team_need_tags
 from .expectations import compute_expectations_for_league
 from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
+from .behavior_profile import compute_behavior_profile
+from .stance import apply_stance_deltas, stance_deltas_on_promise_outcome
 from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
 from .expectations_month import compute_month_expectations
 from .month_context import (
@@ -975,6 +977,14 @@ def apply_monthly_agency_tick(
         promise_events: list[Dict[str, Any]] = []
         promise_updates: list[Dict[str, Any]] = []
 
+        # If a player already surfaced an actionable issue event this month (tick pass),
+        # avoid stacking an additional broken-promise reaction event on top. (Spam control)
+        players_with_actionable_event = {
+            str(ev.get("player_id"))
+            for ev in (events or [])
+            if isinstance(ev, dict) and ev.get("player_id") and str(ev.get("event_type") or "").upper() not in {"PROMISE_FULFILLED", "PROMISE_BROKEN", "PROMISE_DEFERRED", "PROMISE_DUE"}
+        }
+
         with repo.transaction() as cur:
             # Promise tables are optional for older saves. If missing, we skip cleanly.
             has_promise_schema = bool(
@@ -1310,18 +1320,145 @@ def apply_monthly_agency_tick(
                                     cur_tr = 0
                                 st["trade_request_level"] = int(max(cur_tr, floor_v))
 
-                        # Promise memory: count broken promises by type.
-                        if res.resolved and str(res.new_status).upper() == "BROKEN":
+                        # ------------------------------------------------------------------
+                        # v3 memory + stances: promise outcomes shape the relationship/personality
+                        # ------------------------------------------------------------------
+                        if res.resolved and str(res.new_status).upper() in {"BROKEN", "FULFILLED"}:
                             ctx0 = st.get("context") if isinstance(st.get("context"), dict) else {}
                             mem = ctx0.get("mem") if isinstance(ctx0.get("mem"), dict) else {}
-                            mem["broken_promises_total"] = int(mem.get("broken_promises_total") or 0) + 1
-                            bpt = mem.get("broken_promises_by_type")
-                            if not isinstance(bpt, dict):
-                                bpt = {}
-                            bpt[ptype] = int(bpt.get(ptype) or 0) + 1
-                            mem["broken_promises_by_type"] = bpt
+
+                            status_u = str(res.new_status).upper()
+
+                            # Aggregate counts
+                            if status_u == "BROKEN":
+                                mem["broken_promises_total"] = int(mem.get("broken_promises_total") or 0) + 1
+                                bpt = mem.get("broken_promises_by_type")
+                                if not isinstance(bpt, dict):
+                                    bpt = {}
+                                bpt[ptype] = int(bpt.get(ptype) or 0) + 1
+                                mem["broken_promises_by_type"] = bpt
+                            else:
+                                mem["fulfilled_promises_total"] = int(mem.get("fulfilled_promises_total") or 0) + 1
+                                fpt = mem.get("fulfilled_promises_by_type")
+                                if not isinstance(fpt, dict):
+                                    fpt = {}
+                                fpt[ptype] = int(fpt.get(ptype) or 0) + 1
+                                mem["fulfilled_promises_by_type"] = fpt
+
+                            # Small rolling log (for narrative tone + future priors)
+                            rpo = mem.get("recent_promise_outcomes")
+                            if not isinstance(rpo, list):
+                                rpo = []
+                            rpo.append(
+                                {
+                                    "month_key": str(mk),
+                                    "date": str(now_iso)[:10],
+                                    "promise_id": str(promise_id),
+                                    "promise_type": str(ptype),
+                                    "status": str(status_u),
+                                    "team_id": str(team_eom or promised_team),
+                                }
+                            )
+                            # Keep last N
+                            try:
+                                keep_n = int(getattr(getattr(cfg, "memory", object()), "recent_outcomes_keep", 6))
+                            except Exception:
+                                keep_n = 6
+                            if keep_n > 0 and len(rpo) > keep_n:
+                                rpo = rpo[-keep_n:]
+                            mem["recent_promise_outcomes"] = rpo
+
+                            # Update dynamic stances.
+                            # Use leverage as an impact scalar: star players react more strongly.
+                            s_deltas, s_meta = stance_deltas_on_promise_outcome(
+                                status=str(status_u),
+                                base_scale=float(clamp01(safe_float(st.get("leverage"), 0.0))) * 1.15 + 0.20,
+                                mental=mental,
+                                cfg=cfg,
+                            )
+                            if s_deltas:
+                                st.update(apply_stance_deltas(state=st, deltas=s_deltas))
+                                mem["last_stance_change"] = {
+                                    "month_key": str(mk),
+                                    "promise_id": str(promise_id),
+                                    "status": str(status_u),
+                                    "deltas": dict(s_deltas),
+                                    "meta": dict(s_meta or {}),
+                                }
+
                             ctx0["mem"] = mem
                             st["context"] = ctx0
+
+                            # Reaction event (actionable) for broken promises, if the player
+                            # did not already surface a separate issue event this month.
+                            if status_u == "BROKEN" and pid not in players_with_actionable_event:
+                                axis_map = {
+                                    "MINUTES": "MINUTES",
+                                    "ROLE": "ROLE",
+                                    "HELP": "TEAM",
+                                    "LOAD": "HEALTH",
+                                    "EXTENSION_TALKS": "CONTRACT",
+                                    "SHOP_TRADE": "TRADE",
+                                }
+                                axis = axis_map.get(str(ptype), "TEAM")
+
+                                # Determine escalation stage based on dynamic stances + publicness.
+                                prof, prof_meta = compute_behavior_profile(
+                                    mental=mental,
+                                    trust=st.get("trust", 0.5),
+                                    stance_skepticism=st.get("stance_skepticism", 0.0),
+                                    stance_resentment=st.get("stance_resentment", 0.0),
+                                    stance_hardball=st.get("stance_hardball", 0.0),
+                                )
+                                rs = float(clamp01(safe_float(st.get("stance_resentment"), 0.0)))
+                                sk = float(clamp01(safe_float(st.get("stance_skepticism"), 0.0)))
+                                hb = float(clamp01(safe_float(st.get("stance_hardball"), 0.0)))
+                                pub = float(clamp01(getattr(prof, "publicness", 0.5)))
+                                lev0 = float(clamp01(safe_float(st.get("leverage"), 0.0)))
+
+                                # Repeated broken promises accelerate escalation.
+                                broken_total_prev = int(mem.get("broken_promises_total") or 0)
+
+                                score = 0.40 * rs + 0.20 * sk + 0.15 * hb + 0.15 * pub + 0.10 * lev0
+                                score += 0.04 * float(min(3, max(0, broken_total_prev - 1)))
+                                score = float(clamp01(score))
+
+                                if score < 0.58:
+                                    stage = 1
+                                    ev_type = str(cfg.event_types.get("broken_promise_private", "BROKEN_PROMISE_PRIVATE")).upper()
+                                elif score < 0.83:
+                                    stage = 2
+                                    ev_type = str(cfg.event_types.get("broken_promise_agent", "BROKEN_PROMISE_AGENT")).upper()
+                                else:
+                                    stage = 3
+                                    ev_type = str(cfg.event_types.get("broken_promise_public", "BROKEN_PROMISE_PUBLIC")).upper()
+
+                                sev_r = float(clamp01(0.35 + 0.55 * score + 0.20 * lev0))
+                                reaction_event = {
+                                    "event_id": make_event_id("agency", "broken_promise", promise_id, mk, ev_type),
+                                    "player_id": pid,
+                                    "team_id": team_eom or promised_team,
+                                    "season_year": sy,
+                                    "date": str(now_iso)[:10],
+                                    "event_type": ev_type,
+                                    "severity": float(sev_r),
+                                    "payload": {
+                                        "axis": str(axis),
+                                        "stage": int(stage),
+                                        "promise_id": str(promise_id),
+                                        "promise_type": str(ptype),
+                                        "month_key": str(mk),
+                                        "due_month": p.get("due_month"),
+                                        "promised_team_id": promised_team,
+                                        "team_end_of_month_id": team_eom,
+                                        "reasons": list(res.reasons or []),
+                                        "meta": dict(res.meta or {}),
+                                        "stance": {"skepticism": sk, "resentment": rs, "hardball": hb},
+                                        "behavior_profile": dict(prof_meta or {}),
+                                    },
+                                }
+                                promise_events.append(reaction_event)
+                                players_with_actionable_event.add(pid)
 
                         upd: Dict[str, Any] = {"promise_id": promise_id}
                         pu = res.promise_updates or {}
