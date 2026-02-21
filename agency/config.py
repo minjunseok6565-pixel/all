@@ -257,6 +257,16 @@ class EventConfig:
     help_demand_softness: float = 0.15
     cooldown_help_days: int = 60
 
+    help_need_rotation_top_n: int = 8
+    help_need_tags_max: int = 3
+    help_need_allowed_tags: tuple[str, ...] = (
+        "DEFENSE",
+        "SPACING",
+        "RIM_PRESSURE",
+        "PRIMARY_INITIATOR",
+        "SHOT_CREATION",
+    )
+
     # Trade request
     trade_request_softness: float = 0.10
     trade_request_threshold_base: float = 0.82
