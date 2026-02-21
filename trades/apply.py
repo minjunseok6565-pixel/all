@@ -125,7 +125,41 @@ def apply_deal_to_db(
             }
 
         with _open_service(db_path) as svc:
-            return svc.execute_trade(deal, source=source, trade_date=trade_date, deal_id=deal_id)
+            tx = svc.execute_trade(deal, source=source, trade_date=trade_date, deal_id=deal_id)
+
+        # Project the committed trade (DB SSOT) into trade_market/trade_memory.
+        # IMPORTANT:
+        # - DB commit is the SSOT; market/memory are derived state.
+        # - Projection failures must NOT fail the trade (otherwise the user sees an error
+        #   while the DB has already changed).
+        try:
+            from .orchestration.market_state import apply_trade_executed_effects_to_state
+
+            today_arg = None
+            try:
+                from datetime import date as _date
+
+                if isinstance(trade_date, _date):
+                    today_arg = trade_date
+            except Exception:
+                today_arg = None
+
+            sync_report = apply_trade_executed_effects_to_state(
+                transaction=tx,
+                today=today_arg,
+            )
+            if isinstance(tx, dict):
+                tx["market_sync"] = sync_report
+        except Exception as exc:
+            if isinstance(tx, dict):
+                tx["market_sync"] = {
+                    "applied": False,
+                    "exec_deal_id": tx.get("deal_id"),
+                    "error": str(exc),
+                    "exc": type(exc).__name__,
+                }
+
+        return tx
     except TradeError:
         raise
     except Exception as exc:
