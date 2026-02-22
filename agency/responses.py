@@ -140,6 +140,10 @@ class ResponseConfig:
     # v2: generic deltas for non-v1 axis events (role/contract/health/chemistry)
     axis_relief_acknowledge: float = 0.03
     axis_relief_promise: float = 0.05
+    role_relief_promise: float = 0.05
+    contract_relief_promise: float = 0.05
+    health_relief_promise: float = 0.05
+    chemistry_relief_promise: float = 0.05
     axis_bump_dismiss: float = 0.03
 
     # v2: team-level locker room meeting talk
@@ -379,17 +383,17 @@ def apply_user_response(
 
             # Relief matches axis
             if axis == "MINUTES":
-                _apply_axis_delta(axis, rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.85))
             elif axis == "ROLE":
-                _apply_axis_delta(axis, rcfg.role_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.role_relief_promise * impact * pos_mult * sev_mult * 0.85))
             elif axis == "CONTRACT":
-                _apply_axis_delta(axis, rcfg.contract_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.contract_relief_promise * impact * pos_mult * sev_mult * 0.85))
             elif axis == "HEALTH":
-                _apply_axis_delta(axis, rcfg.health_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.health_relief_promise * impact * pos_mult * sev_mult * 0.85))
             elif axis == "TEAM":
-                _apply_axis_delta(axis, rcfg.team_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.team_relief_promise * impact * pos_mult * sev_mult * 0.85))
             elif axis == "CHEMISTRY":
-                _apply_axis_delta(axis, rcfg.chemistry_relief_promise * impact * pos_mult * sev_mult * 0.85)
+                _apply_axis_delta(axis, -(rcfg.chemistry_relief_promise * impact * pos_mult * sev_mult * 0.85))
 
         elif rt == "MAKE_NEW_OFFER":
             if round_index >= max_rounds:
@@ -439,17 +443,17 @@ def apply_user_response(
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.80))
                 # relief
                 if axis == "MINUTES":
-                    _apply_axis_delta(axis, rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.80))
                 elif axis == "ROLE":
-                    _apply_axis_delta(axis, rcfg.role_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.role_relief_promise * impact * pos_mult * sev_mult * 0.80))
                 elif axis == "CONTRACT":
-                    _apply_axis_delta(axis, rcfg.contract_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.contract_relief_promise * impact * pos_mult * sev_mult * 0.80))
                 elif axis == "HEALTH":
-                    _apply_axis_delta(axis, rcfg.health_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.health_relief_promise * impact * pos_mult * sev_mult * 0.80))
                 elif axis == "TEAM":
-                    _apply_axis_delta(axis, rcfg.team_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.team_relief_promise * impact * pos_mult * sev_mult * 0.80))
                 elif axis == "CHEMISTRY":
-                    _apply_axis_delta(axis, rcfg.chemistry_relief_promise * impact * pos_mult * sev_mult * 0.80)
+                    _apply_axis_delta(axis, -(rcfg.chemistry_relief_promise * impact * pos_mult * sev_mult * 0.80))
             else:
                 tp, fb = _neg_penalties(verdict)
                 trust1 = float(clamp01(trust1 - tp * impact * neg_mult * sev_mult))
@@ -575,7 +579,7 @@ def apply_user_response(
                 if verdict == "ACCEPT":
                     promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target={"target_mpg": target})
                     trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.90))
-                    _apply_axis_delta("MINUTES", rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.90)
+                    _apply_axis_delta("MINUTES", -(rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.90))
                     reasons.append({"code": "BROKEN_PROMISE_REPAIR_ACCEPTED"})
                 else:
                     tp, fb = _neg_penalties(verdict)
@@ -827,7 +831,7 @@ def apply_user_response(
                 axis="ROLE",
                 due_month=due,
                 target_value=None,
-                target_json={"role_tag": role_tag, "starts_rate": starts_rate, "closes_rate": closes_rate},
+                target_json={"role": role_tag, "min_starts_rate": starts_rate, "min_closes_rate": closes_rate},
             )
             decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
             negotiation_meta = dict(getattr(decision, "meta", {}) or {})
@@ -847,9 +851,9 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="ROLE", due_month=due, target={"role_tag": role_tag, "starts_rate": starts_rate, "closes_rate": closes_rate})
+                promise = PromiseSpec(promise_type="ROLE", due_month=due, target={"role": role_tag, "min_starts_rate": starts_rate, "min_closes_rate": closes_rate})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                _apply_axis_delta(axis, rcfg.role_relief_promise * impact * pos_mult * sev_mult)
+                _apply_axis_delta(axis, -(rcfg.role_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_ROLE_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)
@@ -895,7 +899,7 @@ def apply_user_response(
             if verdict == "ACCEPT":
                 promise = PromiseSpec(promise_type="LOAD", due_month=due, target={"max_mpg": max_mpg})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                _apply_axis_delta(axis, rcfg.health_relief_promise * impact * pos_mult * sev_mult)
+                _apply_axis_delta(axis, -(rcfg.health_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_LOAD_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)
@@ -985,7 +989,7 @@ def apply_user_response(
             if verdict == "ACCEPT":
                 promise = PromiseSpec(promise_type="EXTENSION_TALKS", due_month=due, target={"years_left": years_left})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
-                _apply_axis_delta(axis, rcfg.contract_relief_promise * impact * pos_mult * sev_mult)
+                _apply_axis_delta(axis, -(rcfg.contract_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_EXTENSION_TALKS_ACCEPTED"})
             else:
                 tp, fb = _neg_penalties(verdict)
