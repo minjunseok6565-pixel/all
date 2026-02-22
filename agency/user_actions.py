@@ -315,7 +315,7 @@ def apply_user_action(
                 promise_type=ptype,  # type: ignore[arg-type]
                 due_month=due,
                 target_value=tv,
-                target_json=target,
+                target=target,
             )
             trust1 += 0.01 * impact * pos_mult
             tone = "CALM"
