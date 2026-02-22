@@ -820,7 +820,7 @@ def apply_user_response(
 
         if rt == "ACKNOWLEDGE":
             trust1 = float(clamp01(trust1 + rcfg.trust_acknowledge * impact * pos_mult * sev_mult))
-            _apply_axis_delta(axis, rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult)
+            _apply_axis_delta(axis, -(rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult))
             reasons.append({"code": "ACKNOWLEDGED", "evidence": {"axis": axis, "stage_i": stage_i, "stage": stage}})
 
         elif rt == "DISMISS":
@@ -830,6 +830,15 @@ def apply_user_response(
 
         elif rt == "PROMISE_ROLE" and axis == "ROLE":
             role_tag = str(payload.get("role_tag") or payload.get("role") or "ROTATION").upper()
+            role_focus = str(
+                payload.get("role_focus")
+                or payload.get("focus")
+                or ep.get("role_focus")
+                or ep.get("focus")
+                or "STARTS"
+            ).upper()
+            if role_focus not in {"STARTS", "CLOSES"}:
+                role_focus = "STARTS"
             starts_rate = safe_float_opt(payload.get("starts_rate"))
             closes_rate = safe_float_opt(payload.get("closes_rate"))
             if starts_rate is None:
@@ -845,7 +854,12 @@ def apply_user_response(
                 axis="ROLE",
                 due_month=due,
                 target_value=None,
-                target_json={"role": role_tag, "min_starts_rate": starts_rate, "min_closes_rate": closes_rate},
+                target_json={
+                    "role": role_tag,
+                    "role_focus": role_focus,
+                    "min_starts_rate": starts_rate,
+                    "min_closes_rate": closes_rate,
+                },
             )
             decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
             negotiation_meta = dict(getattr(decision, "meta", {}) or {})
@@ -865,7 +879,16 @@ def apply_user_response(
                 negotiation_meta.setdefault("stance", st_meta)
 
             if verdict == "ACCEPT":
-                promise = PromiseSpec(promise_type="ROLE", due_month=due, target={"role": role_tag, "min_starts_rate": starts_rate, "min_closes_rate": closes_rate})
+                promise = PromiseSpec(
+                    promise_type="ROLE",
+                    due_month=due,
+                    target={
+                        "role": role_tag,
+                        "role_focus": role_focus,
+                        "min_starts_rate": starts_rate,
+                        "min_closes_rate": closes_rate,
+                    },
+                )
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult))
                 _apply_axis_delta(axis, -(rcfg.role_relief_promise * impact * pos_mult * sev_mult))
                 reasons.append({"code": "PROMISE_ROLE_ACCEPTED"})
