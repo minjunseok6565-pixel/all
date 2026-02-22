@@ -632,9 +632,17 @@ def _eval_role(
         # Round to 2 decimals for UI.
         counter_target = round(counter_target, 2)
         if focus == "STARTS":
-            counter_json = {"min_starts_rate": float(counter_target), "role_focus": "STARTS"}
+            counter_json = {
+                "role": str(tj.get("role") or tj.get("desired_role") or "STARTER").upper(),
+                "min_starts_rate": float(counter_target),
+                "role_focus": "STARTS",
+            }
         else:
-            counter_json = {"min_closes_rate": float(counter_target), "role_focus": "CLOSES"}
+            counter_json = {
+                "role": str(tj.get("role") or tj.get("desired_role") or "CLOSER").upper(),
+                "min_closes_rate": float(counter_target),
+                "role_focus": "CLOSES",
+            }
         co = Offer(
             promise_type=offer.promise_type,
             axis=offer.axis,
