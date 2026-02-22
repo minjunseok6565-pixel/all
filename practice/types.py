@@ -105,23 +105,30 @@ def intensity_for_session_type(typ: str) -> float:
     return float(max(0.01, v))
 
 
-def intensity_for_pid(session: Mapping[str, Any], pid: str) -> float:
-    """Return effective practice intensity multiplier for a player on a given date.
+def effective_type_for_pid(session: Mapping[str, Any], pid: str) -> str:
+    """Return effective practice type for a player on a given date.
 
     Scrimmage supports a participant list:
-      - participants use SCRIMMAGE intensity
-      - non-participants use non_participant_type intensity
+      - participants use SCRIMMAGE
+      - non-participants use non_participant_type (default: RECOVERY)
 
-    For other session types, everybody uses the session's type intensity.
+    For other session types, everybody uses the session's type.
     """
     s = normalize_session(session)
     typ = str(s.get("type") or "FILM").upper()
     if typ != "SCRIMMAGE":
-        return intensity_for_session_type(typ)
+        return typ
 
     pids = set(s.get("participant_pids") or [])
     if str(pid) in pids:
-        return intensity_for_session_type("SCRIMMAGE")
+        return "SCRIMMAGE"
 
-    nonp = str(s.get("non_participant_type") or p_cfg.SCRIMMAGE_NON_PARTICIPANT_DEFAULT).upper()
-    return intensity_for_session_type(nonp)
+    nonp = str(s.get("non_participant_type") or p_cfg.SCRIMMAGE_NON_PARTICIPANT_DEFAULT).upper().strip()
+    if nonp not in p_cfg.PRACTICE_TYPES:
+        nonp = p_cfg.SCRIMMAGE_NON_PARTICIPANT_DEFAULT
+    return nonp
+
+
+def intensity_for_pid(session: Mapping[str, Any], pid: str) -> float:
+    """Return effective practice intensity multiplier for a player on a given date."""
+    return intensity_for_session_type(effective_type_for_pid(session, pid))

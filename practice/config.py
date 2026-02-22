@@ -86,4 +86,7 @@ FAMILIARITY_GAIN: dict[str, float] = {
     "DEF_TACTICS": 2.0,
     "FILM": 1.2,
     "SCRIMMAGE": 0.8,
+    # Explicit zeros for completeness (callers may assume missing => 0.0).
+    "RECOVERY": 0.0,
+    "REST": 0.0,
 }
