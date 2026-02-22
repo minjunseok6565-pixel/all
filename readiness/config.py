@@ -55,7 +55,10 @@ SHARPNESS_ATTR_WEIGHTS: dict[str, float] = {
 # Team scheme familiarity
 # ---------------------------------------------------------------------------
 
-FAMILIARITY_DEFAULT: float = 50.0
+# Starting familiarity for a scheme with no persisted row yet.
+# NOTE: 50 is still the mathematical neutral point for scaling formulas, but we
+# intentionally start unseen schemes lower to represent changeover risk.
+FAMILIARITY_DEFAULT: float = 35.0
 
 # Familiarity decays toward this floor (not all the way to 0).
 FAMILIARITY_FLOOR: float = 20.0
