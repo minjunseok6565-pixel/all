@@ -397,7 +397,7 @@ def apply_user_response(
                 _apply_axis_delta(axis, -(rcfg.chemistry_relief_promise * impact * pos_mult * sev_mult * 0.85))
 
         elif rt == "MAKE_NEW_OFFER":
-            if round_index >= max_rounds:
+            if round_index >= (max_rounds - 1):
                 return ResponseOutcome(ok=False, error="Max negotiation rounds reached.", state_updates={})
 
             new_offer_dict = payload.get("offer") if isinstance(payload.get("offer"), dict) else None
@@ -407,6 +407,9 @@ def apply_user_response(
             off = _offer_from_dict(new_offer_dict)
             if str(off.promise_type).upper() != promise_type:
                 return ResponseOutcome(ok=False, error="Offer promise_type mismatch.", state_updates={})
+            if not _is_valid_month_key(off.due_month):
+                return ResponseOutcome(ok=False, error="MAKE_NEW_OFFER requires valid offer.due_month (YYYY-MM).", state_updates={})
+
 
             decision = evaluate_offer(
                 offer=off,
@@ -909,12 +912,13 @@ def apply_user_response(
                 max_mpg = float(rcfg.promise_load_max_mpg)
             max_mpg = float(clamp(max_mpg, 0.0, 48.0))
             due = due_month_from_now(now_d, int(rcfg.promise_load_due_months))
+            ask_max_mpg = _health_load_ask_max_mpg(event_payload=ep, default_max_mpg=max_mpg)
             offer = Offer(
                 promise_type="LOAD",
                 axis="HEALTH",
                 due_month=due,
                 target_value=max_mpg,
-                target_json={"max_mpg": max_mpg},
+                target_json={"max_mpg": max_mpg, "ask_max_mpg": ask_max_mpg},
             )
             decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
             negotiation_meta = dict(getattr(decision, "meta", {}) or {})
@@ -1279,13 +1283,51 @@ def _player_reply(event_type: str, response_type: str, tone: str) -> str:
 
 
 def _offer_from_dict(d: Mapping[str, Any]) -> Offer:
+    tj = d.get("target_json") if isinstance(d.get("target_json"), dict) else None
+    due_month = str(d.get("due_month") or "").strip()
+    if not due_month and isinstance(tj, Mapping):
+        due_month = str(tj.get("due_month") or "").strip()
     return Offer(
         promise_type=str(d.get("promise_type") or "").upper(),
         axis=str(d.get("axis") or "").upper(),
-        due_month=str(d.get("due_month") or ""),
+        due_month=due_month,
         target_value=safe_float_opt(d.get("target_value")),
-        target_json=d.get("target_json") if isinstance(d.get("target_json"), dict) else None,
+        target_json=tj,
     )
+
+
+def _is_valid_month_key(value: Any) -> bool:
+    s = str(value or "").strip()
+    if len(s) != 7 or s[4] != "-":
+        return False
+    try:
+        y = int(s[:4])
+        m = int(s[5:7])
+    except Exception:
+        return False
+    return y >= 1 and 1 <= m <= 12
+
+
+def _health_load_ask_max_mpg(*, event_payload: Mapping[str, Any], default_max_mpg: float) -> float:
+    """Derive LOAD ask cap from health context (fatigue/frustration)."""
+    fatigue_lvl = None
+    fat = event_payload.get("fatigue")
+    if isinstance(fat, Mapping):
+        fatigue_lvl = safe_float_opt(fat.get("fatigue"))
+    if fatigue_lvl is None:
+        fatigue_lvl = safe_float_opt(event_payload.get("fatigue_level"))
+
+    health_fr = safe_float_opt(event_payload.get("health_frustration"))
+
+    if fatigue_lvl is None and health_fr is None:
+        return float(clamp(default_max_mpg, 12.0, 48.0))
+
+    fat_term = clamp01(fatigue_lvl if fatigue_lvl is not None else 0.0)
+    fr_term = clamp01(health_fr if health_fr is not None else fat_term)
+
+    # High fatigue/frustration should request a stricter cap.
+    ask = 34.0 - 10.0 * float(fat_term) - 6.0 * float(fr_term)
+    return float(clamp(ask, 12.0, 40.0))
 
 
 def _maybe_make_negotiation_followup(
