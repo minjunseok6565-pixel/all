@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
-import math
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import game_time
 import schema
 from league_repo import LeagueRepo
 from matchengine_v3.models import TeamState
-from matchengine_v3.tactics import canonical_defense_scheme
-from sim import roster_adapter as _roster_adapter
+from sim.roster_adapter import resolve_effective_schemes
 
 from . import config as r_cfg
+from . import formulas as r_f
 from . import repo as r_repo
 from .types import PreparedGameReadiness, PreparedTeamSchemes, TacticsMultipliers
 
@@ -24,48 +23,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _clamp(x: float, lo: float, hi: float) -> float:
-    try:
-        v = float(x)
-    except Exception:
-        v = 0.0
-    if v < lo:
-        return float(lo)
-    if v > hi:
-        return float(hi)
-    return float(v)
-
-
-def _clamp100(x: float) -> float:
-    return _clamp(x, 0.0, 100.0)
-
-
-def _clamp01(x: float) -> float:
-    return _clamp(x, 0.0, 1.0)
-
-
-def _parse_date_iso(value: Any) -> Optional[_dt.date]:
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    s = s[:10]
-    try:
-        return _dt.date.fromisoformat(s)
-    except Exception:
-        return None
-
-
-def _days_since(*, last_date_iso: Optional[str], game_date: _dt.date) -> int:
-    last = _parse_date_iso(last_date_iso)
-    if last is None:
-        return 0
-    d = (game_date - last).days
-    return int(max(0, d))
-
-
 def _merge_mods(dst: Dict[str, Dict[str, float]], pid: str, add: Mapping[str, float]) -> None:
+    """Accumulate attribute deltas into ``dst[pid]``.
+
+    This is a small local helper because it deals with the exact representation
+    used by roster_adapter.build_team_state_from_db (attrs_mods_by_pid).
+
+    Math SSOT lives in readiness.formulas; this function is only about merging.
+    """
+
     if not add:
         return
     bucket = dst.setdefault(pid, {})
@@ -76,172 +42,7 @@ def _merge_mods(dst: Dict[str, Dict[str, float]], pid: str, add: Mapping[str, fl
             continue
         if dv == 0.0:
             continue
-        bucket[k] = float(bucket.get(k, 0.0) or 0.0) + dv
-
-
-def _scaled_factor_01(value_0_100: float) -> float:
-    """Map 0..100 to -1..1 with 50 as neutral."""
-    f = (float(value_0_100) - 50.0) / 50.0
-    return _clamp(f, -1.0, 1.0)
-
-
-def _resolve_effective_schemes(
-    team_id: str,
-    raw_tactics: Optional[Mapping[str, Any]],
-) -> Tuple[str, str]:
-    """Resolve effective (offense_scheme, defense_scheme) using roster_adapter SSOT.
-
-    Why:
-      - CPU teams rely on coach presets (team_coach_preset_map + coach_presets.json).
-      - User teams directly set schemes and/or USER_COACH; roster_adapter already enforces:
-          * if USER_COACH: preset application is skipped
-          * never override explicit caller-provided scheme fields
-    """
-    raw_dict: Optional[Dict[str, Any]]
-    if raw_tactics is None:
-        raw_dict = None
-    elif isinstance(raw_tactics, dict):
-        raw_dict = raw_tactics
-    else:
-        try:
-            raw_dict = dict(raw_tactics)
-        except Exception:
-            raw_dict = None
-
-    cfg = _roster_adapter._build_tactics_config(raw_dict)
-    _roster_adapter._apply_default_coach_preset(team_id, cfg)
-    _roster_adapter._apply_coach_preset_tactics(team_id, cfg, raw_dict)
-    off = str(cfg.offense_scheme)
-    de = canonical_defense_scheme(cfg.defense_scheme)
-    return (off, de)
-
-
-# ---------------------------------------------------------------------------
-# Sharpness model
-# ---------------------------------------------------------------------------
-
-
-def _decay_sharpness(sharpness: float, *, days: int) -> float:
-    try:
-        d = int(days)
-    except Exception:
-        d = 0
-    if d <= 0:
-        return _clamp100(sharpness)
-    dec = float(r_cfg.SHARPNESS_DECAY_PER_DAY) * float(d)
-    return _clamp100(float(sharpness) - dec)
-
-
-def _gain_from_minutes(minutes: float) -> float:
-    """Compute sharpness gain component from minutes (before diminishing returns)."""
-    m = max(0.0, float(minutes))
-    if m <= 0.0:
-        return 0.0
-    ref = float(r_cfg.SHARPNESS_GAIN_MINUTES_REF)
-    if ref <= 0.0:
-        ref = 36.0
-    x = (m / ref) ** float(r_cfg.SHARPNESS_GAIN_MINUTES_EXP)
-    return float(r_cfg.SHARPNESS_GAIN_BASE) + float(r_cfg.SHARPNESS_GAIN_SCALE) * float(x)
-
-
-def _apply_sharpness_gain(sharpness_pre: float, *, minutes: float) -> float:
-    """Apply post-game gain with diminishing returns near 100."""
-    s = _clamp100(sharpness_pre)
-    if minutes <= 0.0:
-        return s
-
-    raw_gain = _gain_from_minutes(minutes)
-    raw_gain = min(float(raw_gain), float(r_cfg.SHARPNESS_GAIN_MAX_PER_GAME))
-
-    # Diminishing returns: the closer to 100, the smaller the effective gain.
-    eff = float(raw_gain) * (1.0 - _clamp01(s / 100.0))
-    return _clamp100(s + eff)
-
-
-def _sharpness_attr_mods(sharpness: float) -> Dict[str, float]:
-    factor = _scaled_factor_01(float(sharpness))
-    out: Dict[str, float] = {}
-    for k, w in (r_cfg.SHARPNESS_ATTR_WEIGHTS or {}).items():
-        try:
-            delta = int(round(float(w) * float(factor)))
-        except Exception:
-            continue
-        if delta != 0:
-            out[str(k)] = float(delta)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Scheme familiarity model
-# ---------------------------------------------------------------------------
-
-
-def _decay_familiarity(fam: float, *, days: int) -> float:
-    """Exponential decay toward a floor."""
-    f0 = _clamp100(fam)
-    try:
-        d = int(days)
-    except Exception:
-        d = 0
-    if d <= 0:
-        return f0
-
-    floor = _clamp100(float(r_cfg.FAMILIARITY_FLOOR))
-    k = max(0.0, float(r_cfg.FAMILIARITY_DECAY_K))
-    # fam' = floor + (fam-floor)*exp(-k*days)
-    return _clamp100(floor + (f0 - floor) * math.exp(-k * float(d)))
-
-
-def _apply_familiarity_gain(fam_pre: float) -> float:
-    """Apply per-game familiarity gain with diminishing returns."""
-    f0 = _clamp100(fam_pre)
-    g = max(0.0, float(r_cfg.FAMILIARITY_GAIN_PER_GAME))
-    # fam' = fam + g*(1 - fam/100)
-    return _clamp100(f0 + g * (1.0 - _clamp01(f0 / 100.0)))
-
-
-def _tactics_mult_from_familiarity(*, off_fam: float, def_fam: float) -> TacticsMultipliers:
-    off_fac = _scaled_factor_01(float(off_fam))
-    def_fac = _scaled_factor_01(float(def_fam))
-
-    def _mul(base: float, w: float, fac: float) -> float:
-        return _clamp(base + float(w) * float(fac), float(r_cfg.TACTICS_MULT_MIN), float(r_cfg.TACTICS_MULT_MAX))
-
-    return TacticsMultipliers(
-        scheme_weight_sharpness=_mul(1.0, float(r_cfg.OFF_SCHEME_WEIGHT_SHARPNESS_W), off_fac),
-        scheme_outcome_strength=_mul(1.0, float(r_cfg.OFF_SCHEME_OUTCOME_STRENGTH_W), off_fac),
-        def_scheme_weight_sharpness=_mul(1.0, float(r_cfg.DEF_SCHEME_WEIGHT_SHARPNESS_W), def_fac),
-        def_scheme_outcome_strength=_mul(1.0, float(r_cfg.DEF_SCHEME_OUTCOME_STRENGTH_W), def_fac),
-    )
-
-
-def _familiarity_attr_mods(*, off_fam: float, def_fam: float) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Return (offense_mods, defense_mods) based on team familiarity."""
-    if not bool(getattr(r_cfg, "ENABLE_FAMILIARITY_ATTR_MODS", False)):
-        return ({}, {})
-
-    off_fac = _scaled_factor_01(float(off_fam))
-    def_fac = _scaled_factor_01(float(def_fam))
-
-    off_out: Dict[str, float] = {}
-    for k, w in (r_cfg.FAMILIARITY_ATTR_WEIGHTS_OFFENSE or {}).items():
-        try:
-            delta = int(round(float(w) * float(off_fac)))
-        except Exception:
-            continue
-        if delta != 0:
-            off_out[str(k)] = float(delta)
-
-    def_out: Dict[str, float] = {}
-    for k, w in (r_cfg.FAMILIARITY_ATTR_WEIGHTS_DEFENSE or {}).items():
-        try:
-            delta = int(round(float(w) * float(def_fac)))
-        except Exception:
-            continue
-        if delta != 0:
-            def_out[str(k)] = float(delta)
-
-    return (off_out, def_out)
+        bucket[str(k)] = float(bucket.get(str(k), 0.0) or 0.0) + dv
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +68,17 @@ def prepare_game_readiness(
     - attrs_mods_by_pid (sharpness + optional familiarity)
     - tactics_mult_by_team (from familiarity)
 
-    This function does not write to SQLite; persistence happens in finalize_game_readiness.
+    This function does not write to SQLite; persistence happens in
+    ``finalize_game_readiness``.
+
+    SSOT / drift prevention
+    -----------------------
+    - Tactics (effective scheme selection) is delegated to
+      ``sim.roster_adapter.resolve_effective_schemes``.
+    - All readiness math (clamp/decay/gain) is delegated to
+      ``readiness.formulas``.
     """
+
     gdi = game_time.require_date_iso(game_date_iso, field="game_date_iso")
     gdate = _dt.date.fromisoformat(gdi)
 
@@ -278,8 +88,8 @@ def prepare_game_readiness(
         raise ValueError(f"prepare_game_readiness: home/away team_id must differ (both {hid!r})")
 
     # Effective schemes for this game (SSOT: roster_adapter applies coach presets).
-    home_off, home_def = _resolve_effective_schemes(hid, home_tactics)
-    away_off, away_def = _resolve_effective_schemes(aid, away_tactics)
+    home_off, home_def = resolve_effective_schemes(hid, home_tactics)
+    away_off, away_def = resolve_effective_schemes(aid, away_tactics)
 
     # Involved players: active rosters for both teams.
     home_roster = repo.get_team_roster(hid)
@@ -303,11 +113,11 @@ def prepare_game_readiness(
         for pid in all_pids:
             row = st_by_pid.get(pid) or {}
             sharp0 = float(row.get("sharpness", r_cfg.SHARPNESS_DEFAULT) or r_cfg.SHARPNESS_DEFAULT)
-            days = _days_since(last_date_iso=row.get("last_date"), game_date=gdate)
-            sharp_pre = _decay_sharpness(sharp0, days=days)
+            days = r_f.days_since(last_date_iso=row.get("last_date"), on_date=gdate)
+            sharp_pre = r_f.decay_sharpness_linear(sharp0, days=days)
             sharpness_pre_by_pid[pid] = float(sharp_pre)
 
-            mods = _sharpness_attr_mods(sharp_pre)
+            mods = r_f.sharpness_attr_mods(sharp_pre)
             if mods:
                 attrs_mods_by_pid[pid] = dict(mods)
 
@@ -326,11 +136,11 @@ def prepare_game_readiness(
             off0 = float(off_row.get("value", r_cfg.FAMILIARITY_DEFAULT) or r_cfg.FAMILIARITY_DEFAULT)
             def0 = float(def_row.get("value", r_cfg.FAMILIARITY_DEFAULT) or r_cfg.FAMILIARITY_DEFAULT)
 
-            off_days = _days_since(last_date_iso=off_row.get("last_date"), game_date=gdate)
-            def_days = _days_since(last_date_iso=def_row.get("last_date"), game_date=gdate)
+            off_days = r_f.days_since(last_date_iso=off_row.get("last_date"), on_date=gdate)
+            def_days = r_f.days_since(last_date_iso=def_row.get("last_date"), on_date=gdate)
 
-            off_pre = _decay_familiarity(off0, days=off_days)
-            def_pre = _decay_familiarity(def0, days=def_days)
+            off_pre = r_f.decay_familiarity_exp(off0, days=off_days)
+            def_pre = r_f.decay_familiarity_exp(def0, days=def_days)
             return (float(off_pre), float(def_pre))
 
         home_off_fam, home_def_fam = _load_team_fam(hid, off_key=home_off, def_key=home_def)
@@ -351,13 +161,13 @@ def prepare_game_readiness(
             defense_familiarity_pre=float(away_def_fam),
         )
 
-        tactics_mult_by_team[hid] = _tactics_mult_from_familiarity(off_fam=home_off_fam, def_fam=home_def_fam)
-        tactics_mult_by_team[aid] = _tactics_mult_from_familiarity(off_fam=away_off_fam, def_fam=away_def_fam)
+        tactics_mult_by_team[hid] = r_f.tactics_mult_from_familiarity(off_fam=home_off_fam, def_fam=home_def_fam)
+        tactics_mult_by_team[aid] = r_f.tactics_mult_from_familiarity(off_fam=away_off_fam, def_fam=away_def_fam)
 
         # Optional: also apply subtle team-wide IQ/vision/rotation mods derived from familiarity.
         if bool(getattr(r_cfg, "ENABLE_FAMILIARITY_ATTR_MODS", False)):
-            home_off_mods, home_def_mods = _familiarity_attr_mods(off_fam=home_off_fam, def_fam=home_def_fam)
-            away_off_mods, away_def_mods = _familiarity_attr_mods(off_fam=away_off_fam, def_fam=away_def_fam)
+            home_off_mods, home_def_mods = r_f.familiarity_attr_mods(off_fam=home_off_fam, def_fam=home_def_fam)
+            away_off_mods, away_def_mods = r_f.familiarity_attr_mods(off_fam=away_off_fam, def_fam=away_def_fam)
 
             for pid in home_pids:
                 _merge_mods(attrs_mods_by_pid, pid, home_off_mods)
@@ -381,11 +191,14 @@ def prepare_game_readiness(
 def apply_readiness_to_team_state(team: TeamState, mult: TacticsMultipliers) -> None:
     """Apply familiarity-derived multipliers to a TeamState.tactics in memory.
 
-    This mutates `team.tactics` (in-memory only). Persisted SSOT is stored in SQLite.
+    This mutates ``team.tactics`` (in-memory only). Persisted SSOT is stored in
+    SQLite.
 
     Commercial safety:
-    - If tactics is missing or fields are not numeric, this no-ops rather than crashing.
+    - If tactics is missing or fields are not numeric, this no-ops rather than
+      crashing.
     """
+
     try:
         tactics = getattr(team, "tactics", None)
     except Exception:
@@ -399,7 +212,7 @@ def apply_readiness_to_team_state(team: TeamState, mult: TacticsMultipliers) -> 
         except Exception:
             return
         val = float(base) * float(m)
-        val = _clamp(val, float(r_cfg.TACTICS_MULT_MIN), float(r_cfg.TACTICS_MULT_MAX))
+        val = r_f.clamp(val, float(r_cfg.TACTICS_MULT_MIN), float(r_cfg.TACTICS_MULT_MAX))
         try:
             setattr(tactics, get_name, float(val))
         except Exception:
@@ -425,6 +238,7 @@ def finalize_game_readiness(
     Commercial safety:
     - If result payload is missing required fields, we log and no-op.
     """
+
     if not isinstance(raw_result, Mapping):
         logger.warning("finalize_game_readiness: raw_result is not a mapping; skipping")
         return
@@ -467,15 +281,15 @@ def finalize_game_readiness(
 
     for pid, sharp_pre in (prepared.sharpness_pre_by_pid or {}).items():
         minutes = _minutes_for_pid(str(pid))
-        sharp_post = _apply_sharpness_gain(float(sharp_pre), minutes=minutes)
+        sharp_post = r_f.apply_sharpness_gain(float(sharp_pre), minutes=minutes)
         sharp_rows[str(pid)] = {"sharpness": float(sharp_post), "last_date": prepared.game_date_iso}
 
     for tid in (hid, aid):
         tprep = (prepared.schemes_by_team or {}).get(tid)
         if tprep is None:
             continue
-        off_post = _apply_familiarity_gain(float(tprep.offense_familiarity_pre))
-        def_post = _apply_familiarity_gain(float(tprep.defense_familiarity_pre))
+        off_post = r_f.apply_familiarity_gain(float(tprep.offense_familiarity_pre))
+        def_post = r_f.apply_familiarity_gain(float(tprep.defense_familiarity_pre))
 
         fam_rows_by_team[tid][("offense", str(tprep.offense_scheme_key))] = {
             "value": float(off_post),

@@ -28,7 +28,7 @@ from matchengine_v3.offense_roles import (
     ALL_OFFENSE_ROLES,
 )
 from matchengine_v3.role_fit import role_fit_score
-from matchengine_v3.tactics import TacticsConfig
+from matchengine_v3.tactics import TacticsConfig, canonical_defense_scheme
 import schema
 
 
@@ -256,6 +256,54 @@ def _build_tactics_config(raw: Optional[Dict[str, Any]]) -> TacticsConfig:
         cfg.context["PACE"] = pace
 
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# Public tactics helpers
+# ---------------------------------------------------------------------------
+
+
+def resolve_effective_schemes(
+    team_id: str,
+    raw_tactics: Optional[Mapping[str, Any]],
+) -> Tuple[str, str]:
+    """Resolve effective (offense_scheme, defense_scheme) for a team.
+
+    SSOT:
+      Coach preset application lives in roster_adapter. Multiple subsystems
+      (injury/readiness/practice/AI) need the *exact* same resolution rules;
+      they should call this helper rather than duplicating the logic.
+
+    Rules:
+      - Build a TacticsConfig from caller input (if any).
+      - Apply default coach preset mapping (team_coach_presets.json) when the
+        caller didn't explicitly set COACH_PRESET.
+      - Apply coach preset tactics unless USER_COACH is enabled.
+      - Never override explicit caller-provided scheme fields.
+
+    Returns:
+      (offense_scheme_key, defense_scheme_key) where defense scheme is
+      canonicalized.
+    """
+
+    raw_dict: Optional[Dict[str, Any]]
+    if raw_tactics is None:
+        raw_dict = None
+    elif isinstance(raw_tactics, dict):
+        raw_dict = raw_tactics
+    else:
+        try:
+            raw_dict = dict(raw_tactics)
+        except Exception:
+            raw_dict = None
+
+    cfg = _build_tactics_config(raw_dict)
+    _apply_default_coach_preset(team_id, cfg)
+    _apply_coach_preset_tactics(team_id, cfg, raw_dict)
+
+    off = str(cfg.offense_scheme)
+    de = canonical_defense_scheme(cfg.defense_scheme)
+    return (off, de)
 
 
 def _assign_rotation_offense_role_by_pid(players: List[Player]) -> Dict[str, str]:
