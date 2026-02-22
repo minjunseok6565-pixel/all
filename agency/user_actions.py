@@ -18,8 +18,6 @@ The DB layer (agency/interaction_service.py) is responsible for:
 - persisting promises when created
 """
 
-import hashlib
-import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
@@ -146,14 +144,10 @@ def apply_user_action(
 
     def _action_source_event_id() -> str:
         """Mirror interaction_service action_event_id generation for stable thread IDs."""
-        pid = str(payload.get("player_id") or "")
-        try:
-            payload_hash = hashlib.md5(
-                json.dumps(payload0, sort_keys=True, ensure_ascii=False).encode("utf-8")
-            ).hexdigest()[:8]
-        except Exception:
-            payload_hash = "00000000"
-        action_key = f"{at}:{payload_hash}"
+        pid = str(payload.get("player_id") or state.get("player_id") or "")
+        # Keep the same key contract as interaction_service.apply_user_agency_action:
+        #   make_event_id('agency', 'user_action', player_id, date, action_type)
+        action_key = str(at or "").upper()
         return make_event_id("agency", "user_action", pid, str(now_d)[:10], action_key)
 
     # ------------------------------------------------------------------

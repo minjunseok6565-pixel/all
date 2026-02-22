@@ -611,6 +611,10 @@ def _eval_role(
         ok = c >= float(clamp01(min_c))
     elif desired in {"SIXTH_MAN", "SIXTH", "BENCH"}:
         ok = s <= float(clamp01(max_s_sixth))
+    elif desired in {"ROTATION"}:
+        # Rotation role should resolve deterministically instead of deferring forever.
+        # Interpret as the middle band between sixth-man and starter thresholds.
+        ok = (s > float(clamp01(max_s_sixth))) and (s < float(clamp01(min_s)))
     else:
         # Unknown role label => defer rather than resolve incorrectly.
         return _defer(
