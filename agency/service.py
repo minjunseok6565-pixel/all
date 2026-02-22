@@ -21,6 +21,7 @@ from league_repo import LeagueRepo
 from contract_codec import derive_contract_end_season_id
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .escalation import stage_fields
 from .help_needs import compute_team_need_tags
 from .expectations import compute_expectations_for_league
 from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
@@ -1450,7 +1451,7 @@ def apply_monthly_agency_tick(
                                     "severity": float(sev_r),
                                     "payload": {
                                         "axis": str(axis),
-                                        "stage": int(stage),
+                                        **stage_fields(stage),
                                         "promise_id": str(promise_id),
                                         "promise_type": str(ptype),
                                         "month_key": str(mk),
