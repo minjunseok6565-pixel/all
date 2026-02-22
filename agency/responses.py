@@ -794,6 +794,8 @@ def apply_user_response(
 
         return ResponseOutcome(
             ok=True,
+            event_type=et,
+            response_type=rt,
             state_updates={},
             bulk_state_deltas=bulk_deltas,
             promise=None,
@@ -1114,6 +1116,8 @@ def apply_user_response(
 
     return ResponseOutcome(
         ok=True,
+        event_type=et,
+        response_type=rt,
         state_updates=state_updates,
         promise=promise,
         follow_up_events=follow_up_events,
