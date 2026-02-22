@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from .config import AgencyConfig, DEFAULT_CONFIG
+from .escalation import STAGE_AGENT, STAGE_PRIVATE, STAGE_PUBLIC, stage_i_from_payload, stage_label
 from .promises import PromiseSpec, PromiseType, due_month_from_now
 from .promise_negotiation import Offer, evaluate_offer, make_negotiation_event, make_thread_id
 from .stance import apply_stance_deltas, stance_deltas_on_offer_decision
@@ -802,17 +803,30 @@ def apply_user_response(
 
     else:
         axis = _axis_for_v2_event(et)
-        stage = int(ep.get("stage") or 1)
+
+        # Prefer canonical numeric stage_i when available (new payload format).
+        # Fall back to legacy `stage` which may be a label ("PRIVATE") or an int.
+        # If both are missing, derive a reasonable default from the event type suffix.
+        default_stage = STAGE_PRIVATE
+        if et.endswith("_PUBLIC"):
+            default_stage = STAGE_PUBLIC
+        elif et.endswith("_AGENT"):
+            default_stage = STAGE_AGENT
+        elif et.endswith("_PRIVATE"):
+            default_stage = STAGE_PRIVATE
+
+        stage_i = stage_i_from_payload(ep, default=default_stage)
+        stage = stage_label(stage_i)
 
         if rt == "ACKNOWLEDGE":
             trust1 = float(clamp01(trust1 + rcfg.trust_acknowledge * impact * pos_mult * sev_mult))
             _apply_axis_delta(axis, rcfg.axis_relief_acknowledge * impact * pos_mult * sev_mult)
-            reasons.append({"code": "ACKNOWLEDGED", "evidence": {"axis": axis, "stage": stage}})
+            reasons.append({"code": "ACKNOWLEDGED", "evidence": {"axis": axis, "stage_i": stage_i, "stage": stage}})
 
         elif rt == "DISMISS":
             trust1 = float(clamp01(trust1 - rcfg.trust_dismiss_penalty * impact * neg_mult * sev_mult))
             _apply_axis_delta(axis, rcfg.axis_bump_dismiss * impact * neg_mult * sev_mult)
-            reasons.append({"code": "DISMISSED", "evidence": {"axis": axis, "stage": stage}})
+            reasons.append({"code": "DISMISSED", "evidence": {"axis": axis, "stage_i": stage_i, "stage": stage}})
 
         elif rt == "PROMISE_ROLE" and axis == "ROLE":
             role_tag = str(payload.get("role_tag") or payload.get("role") or "ROTATION").upper()

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .config import AgencyConfig
-from .escalation import advance_stage, decay_stage, desired_stage, stage_label
+from .escalation import advance_stage, decay_stage, desired_stage, stage_fields
 from .metrics import contract_seasons_left, fatigue_level, role_status_pressure
 from .types import MonthlyPlayerInputs
 from .behavior_profile import compute_behavior_profile
@@ -802,7 +802,7 @@ def _candidate_role_issue(
 
     payload = {
         "axis": "ROLE",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
@@ -938,7 +938,7 @@ def _candidate_contract_issue(
 
     payload = {
         "axis": "CONTRACT",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
@@ -1048,7 +1048,7 @@ def _candidate_health_issue(
 
     payload = {
         "axis": "HEALTH",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
@@ -1158,7 +1158,7 @@ def _candidate_chemistry_issue(
 
     payload = {
         "axis": "CHEMISTRY",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
@@ -1268,7 +1268,7 @@ def _candidate_team_issue(
 
     payload = {
         "axis": "TEAM",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "team_win_pct": float(inputs.team_win_pct),
         "team_strategy": str(inputs.team_strategy or "BALANCED"),
