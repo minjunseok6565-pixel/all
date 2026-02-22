@@ -32,10 +32,9 @@ import schema
 from derived_formulas import compute_derived
 from league_repo import LeagueRepo
 from matchengine_v3.models import GameState, Player, TeamState
-from matchengine_v3.tactics import canonical_defense_scheme
 from ratings_2k import compute_ovr_proxy
 
-from sim import roster_adapter as _roster_adapter
+from sim.roster_adapter import resolve_effective_schemes
 
 from practice.service import resolve_practice_session
 from practice import types as p_types
@@ -50,6 +49,7 @@ from training.types import intensity_multiplier
 from . import catalog
 from . import config
 from . import repo as inj_repo
+from .status import STATUS_HEALTHY, STATUS_OUT, STATUS_RETURNING, status_for_date
 from .types import InjuryEvent, PreparedGameInjuries
 
 
@@ -119,42 +119,6 @@ def _days_between(a_iso: str, b_iso: str) -> int:
     return (_date_from_iso(b_iso) - _date_from_iso(a_iso)).days
 
 
-# ---------------------------------------------------------------------------
-# Tactics resolution (mirrors readiness.service)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_effective_schemes(
-    team_id: str,
-    raw_tactics: Optional[Mapping[str, Any]],
-) -> Tuple[str, str]:
-    """Resolve effective (offense_scheme, defense_scheme) using roster_adapter SSOT.
-
-    Why:
-      - CPU teams rely on coach presets.
-      - User teams may provide explicit scheme fields.
-    """
-
-    raw_dict: Optional[Dict[str, Any]]
-    if raw_tactics is None:
-        raw_dict = None
-    elif isinstance(raw_tactics, dict):
-        raw_dict = raw_tactics
-    else:
-        try:
-            raw_dict = dict(raw_tactics)
-        except Exception:
-            raw_dict = None
-
-    cfg = _roster_adapter._build_tactics_config(raw_dict)
-    _roster_adapter._apply_default_coach_preset(team_id, cfg)
-    _roster_adapter._apply_coach_preset_tactics(team_id, cfg, raw_dict)
-    off = str(cfg.offense_scheme)
-    de = canonical_defense_scheme(cfg.defense_scheme)
-    return (off, de)
-
-
-# ---------------------------------------------------------------------------
 # Training intensity helpers
 # - Player plan intensity still exists (growth/training system).
 # - Team *practice* intensity is sourced from practice sessions.
@@ -794,19 +758,6 @@ def _load_recent_counts_by_part(
     return out
 
 
-def _normalize_status_for_date(state: Dict[str, Any], *, on_date_iso: str) -> str:
-    """Normalize OUT/RETURNING/HEALTHY based on date and stored ranges."""
-    date_iso = str(on_date_iso)[:10]
-    out_until = state.get("out_until_date")
-    returning_until = state.get("returning_until_date")
-
-    if out_until and date_iso < str(out_until)[:10]:
-        return "OUT"
-    if returning_until and date_iso < str(returning_until)[:10]:
-        return "RETURNING"
-    return "HEALTHY"
-
-
 def _scaled_returning_debuff(state: Mapping[str, Any], *, on_date_iso: str) -> Dict[str, float]:
     """Return a scaled temporary debuff dict for returning players."""
     temp = state.get("temp_debuff") or {}
@@ -896,11 +847,11 @@ def prepare_game_injuries(
     # Resolve effective schemes for practice-session defaults.
     # This mirrors readiness.service so CPU coach presets are respected.
     try:
-        home_off_scheme, home_def_scheme = _resolve_effective_schemes(hid, home_tactics)
+        home_off_scheme, home_def_scheme = resolve_effective_schemes(hid, home_tactics)
     except Exception:
         home_off_scheme, home_def_scheme = ("", "")
     try:
-        away_off_scheme, away_def_scheme = _resolve_effective_schemes(aid, away_tactics)
+        away_off_scheme, away_def_scheme = resolve_effective_schemes(aid, away_tactics)
     except Exception:
         away_off_scheme, away_def_scheme = ("", "")
 
@@ -1129,8 +1080,8 @@ def prepare_game_injuries(
                     break
 
                 # If player is already OUT on this day, skip.
-                status_on_day = _normalize_status_for_date(st, on_date_iso=day_iso)
-                if status_on_day == "OUT":
+                status_on_day = status_for_date(st, on_date_iso=day_iso)
+                if status_on_day == STATUS_OUT:
                     continue
 
                 # Team soft-safety: if available players would fall too low, suppress training injuries.
@@ -1141,7 +1092,7 @@ def prepare_game_injuries(
                     if not isinstance(tst, dict):
                         available += 1
                         continue
-                    if _normalize_status_for_date(tst, on_date_iso=day_iso) != "OUT":
+                    if status_for_date(tst, on_date_iso=day_iso) != STATUS_OUT:
                         available += 1
                 if available <= int(config.MIN_AVAILABLE_PLAYERS_SOFT):
                     continue
@@ -1263,10 +1214,10 @@ def prepare_game_injuries(
             if not isinstance(st, dict):
                 continue
 
-            status = _normalize_status_for_date(st, on_date_iso=gdi)
+            status = status_for_date(st, on_date_iso=gdi)
             st["status"] = status
 
-            if status == "HEALTHY":
+            if status == STATUS_HEALTHY:
                 # Clear current injury payload; history remains in injury_events.
                 st.update(
                     {
@@ -1281,9 +1232,9 @@ def prepare_game_injuries(
                         "perm_drop": {},
                     }
                 )
-            elif status == "OUT":
+            elif status == STATUS_OUT:
                 unavailable_by_team.setdefault(tid, set()).add(pid)
-            elif status == "RETURNING":
+            elif status == STATUS_RETURNING:
                 mods = _scaled_returning_debuff(st, on_date_iso=gdi)
                 if mods:
                     attrs_mods_by_pid[pid] = mods
@@ -1685,4 +1636,3 @@ def finalize_game_injuries(
             inj_repo.upsert_player_injury_states(cur, states, now=now_iso)
         except Exception:
             logger.warning("INJURY_STATE_UPSERT_FAILED", exc_info=True)
-
