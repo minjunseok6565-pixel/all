@@ -19,6 +19,7 @@ _SAVE_LOCK = RLock()
 _SLOT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$")
 _SAVE_FORMAT_VERSION = 1
 _DB_HASH_BLOCK_SIZE = 1024 * 1024
+_RUNTIME_DB_NAME = "_active_runtime.sqlite3"
 _DB_SSOT_KEYS = {
     "draft_picks",
     "swap_rights",
@@ -63,6 +64,14 @@ def _slot_dir(slot_id: str) -> Path:
     return _ensure_save_root() / _validate_slot_id(slot_id)
 
 
+def _runtime_db_path() -> Path:
+    """Runtime DB used after load.
+
+    Save slot DBs are immutable snapshots and should not be used as live DB paths.
+    """
+    return _ensure_save_root() / _RUNTIME_DB_NAME
+
+
 def _tmp_path(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".tmp")
 
@@ -84,6 +93,32 @@ def _atomic_copy_file(src: Path, dst: Path) -> None:
     tmp = _tmp_path(dst)
     shutil.copy2(src, tmp)
     os.replace(tmp, dst)
+
+
+def _prepare_runtime_db_from_slot(slot_db_path: Path) -> Path:
+    runtime_db = _runtime_db_path()
+    _atomic_copy_file(slot_db_path, runtime_db)
+    return runtime_db
+
+
+def _coerce_snapshot_season(snapshot: Dict[str, Any]) -> None:
+    """Align runtime active season/schedule with snapshot before merging payload.
+
+    export_save_state_snapshot excludes league.master_schedule by design, so if snapshot
+    carries a different active_season_id than the just-bootstrapped runtime state, we must
+    explicitly switch seasons and rebuild schedule prior to deep-merge import.
+    """
+    if not isinstance(snapshot, dict):
+        return
+
+    target_active = snapshot.get("active_season_id")
+    if not target_active:
+        return
+
+    cur_active = state.get_active_season_id()
+    if str(cur_active) != str(target_active):
+        state.set_active_season_id(str(target_active))
+        state.ensure_schedule_for_active_season(force=True)
 
 
 def _meta_from_state(*, slot_id: str, slot_name: str, save_name: Optional[str], note: Optional[str], save_version: int) -> Dict[str, Any]:
@@ -303,11 +338,15 @@ def load_game(*, slot_id: str, strict: bool = True, expected_save_version: Optio
                 f"save_version mismatch: expected={int(expected_save_version)} actual={save_version}"
             )
 
-        db_path = slot_dir / "league.sqlite3"
+        slot_db_path = slot_dir / "league.sqlite3"
         state_path = slot_dir / "state.partial.json"
 
+        # IMPORTANT: Never attach save-slot DB as live runtime DB.
+        # The slot must remain immutable for reproducible restores/integrity checks.
+        runtime_db_path = _prepare_runtime_db_from_slot(slot_db_path)
+
         state.reset_state_for_dev()
-        state.set_db_path(str(db_path))
+        state.set_db_path(str(runtime_db_path))
         state.startup_init_state()
 
         imported_partial = False
@@ -317,6 +356,7 @@ def load_game(*, slot_id: str, strict: bool = True, expected_save_version: Optio
             if not isinstance(payload, dict):
                 raise SaveError("state.partial.json is invalid")
             filtered = {k: v for k, v in payload.items() if k not in _DB_SSOT_KEYS}
+            _coerce_snapshot_season(filtered)
             state.import_save_state_snapshot(filtered)
             imported_partial = True
 
@@ -337,7 +377,8 @@ def load_game(*, slot_id: str, strict: bool = True, expected_save_version: Optio
             "strict": bool(strict),
             "integrity_issues": verify.get("issues") or [],
             "imported_partial_state": imported_partial,
-            "db_path": str(db_path),
+            "db_path": str(runtime_db_path),
+            "slot_db_path": str(slot_db_path),
         }
 
 
