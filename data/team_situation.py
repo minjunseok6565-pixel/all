@@ -40,11 +40,28 @@ from league_repo import LeagueRepo
 from derived_formulas import compute_derived
 from team_utils import get_conference_standings
 from config import ALL_TEAM_IDS
-from trades.rules.rule_player_meta import build_rule_players_meta
-from trades.rules.policies.player_ban_policy import (
-    compute_aggregation_banned_until,
-    compute_recent_signing_banned_until,
-)
+
+def _load_trade_rule_helpers():
+    """Lazy-load trade-rule helpers to avoid import cycles at module import time.
+
+    `data.team_situation` is used by draft/trade modules, while the `trades`
+    package `__init__` eagerly imports generation code that may import this
+    module again. Importing `trades.rules.*` at top-level here can therefore
+    trigger a circular import (`partially initialized module`).
+
+    Load these helpers only inside runtime code paths that actually need them.
+    """
+    from trades.rules.rule_player_meta import build_rule_players_meta
+    from trades.rules.policies.player_ban_policy import (
+        compute_aggregation_banned_until,
+        compute_recent_signing_banned_until,
+    )
+
+    return (
+        build_rule_players_meta,
+        compute_recent_signing_banned_until,
+        compute_aggregation_banned_until,
+    )
 
 logger = logging.getLogger(__name__)
 _BAN_SAMPLE_LIMIT = 8
@@ -234,6 +251,12 @@ def build_team_situation_context(
 
                 # Build a league-wide "ban index" once (SSOT-backed) so evaluating 30 teams stays cheap.
                 try:
+                    (
+                        build_rule_players_meta,
+                        compute_recent_signing_banned_until,
+                        compute_aggregation_banned_until,
+                    ) = _load_trade_rule_helpers()
+
                     # Prefer explicit season_year from league snapshots; fallback to infer from current date.
                     season_year: Optional[int] = None
                     raw_sy = (league_ctx.get("season_year") or (workflow_state.get("league", {}) or {}).get("season_year"))
@@ -2387,5 +2410,3 @@ def _build_reasons(
         r.append(f"우선 니즈: {top_str}.")
 
     return r[:12]
-
-

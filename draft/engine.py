@@ -20,7 +20,15 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from .finalize import finalize_draft_year, infer_db_path_from_state, infer_draft_year_from_state
+from .finalize import (
+    build_turns_from_plan,
+    finalize_draft_year,
+    has_order_plan,
+    infer_db_path_from_state,
+    infer_draft_year_from_state,
+    load_order_plan,
+    require_order_plan_settled,
+)
 from .types import DraftOrderPlan, DraftTurn, TeamId, norm_team_id
 from .pool import DraftPool, load_pool_from_db
 from .session import DraftSession, DraftPick
@@ -207,19 +215,28 @@ def prepare_bundle_from_state(
     dbp = str(db_path) if db_path is not None else infer_db_path_from_state(state_snapshot)
     dy = int(draft_year) if draft_year is not None else infer_draft_year_from_state(state_snapshot)
 
-    finalized = finalize_draft_year(
-        state_snapshot,
-        db_path=dbp,
-        draft_year=dy,
-        rng_seed=int(rng_seed),
-        tie_break_seed=tie_break_seed,
-        use_lottery=bool(use_lottery),
-        settle_db=bool(settle_db),
-    )
+    # SSOT: if a persisted order plan already exists for this draft year,
+    # bundle/session must use that plan to stay consistent with run_lottery/run_settlement
+    # and downstream apply_selections() validation.
+    if has_order_plan(dbp, dy):
+        plan = load_order_plan(dbp, dy)
+        require_order_plan_settled(plan, where="prepare_bundle_from_state")
+        turns = list(build_turns_from_plan(db_path=dbp, plan=plan, turn_attr_settled=True) or [])
+        settlement_events: List[Dict[str, Any]] = []
+    else:
+        finalized = finalize_draft_year(
+            state_snapshot,
+            db_path=dbp,
+            draft_year=dy,
+            rng_seed=int(rng_seed),
+            tie_break_seed=tie_break_seed,
+            use_lottery=bool(use_lottery),
+            settle_db=bool(settle_db),
+        )
 
-    plan: DraftOrderPlan = finalized["plan"]
-    turns: List[DraftTurn] = list(finalized["turns"])
-    settlement_events = list(finalized.get("settlement_events") or [])
+        plan = finalized["plan"]
+        turns = list(finalized["turns"])
+        settlement_events = list(finalized.get("settlement_events") or [])
 
     # Pool + session
     # NOTE: resume/idempotency is handled after pool/session creation by consulting
