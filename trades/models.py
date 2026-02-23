@@ -223,6 +223,19 @@ def parse_deal(payload: Dict[str, Any]) -> Deal:
     normalized_legs_raw = {
         _normalize_team_id(k, context="deal.legs key"): v for k, v in legs_raw.items()
     }
+
+    extra_leg_teams = sorted(set(normalized_legs_raw.keys()) - set(teams))
+    if extra_leg_teams:
+        raise TradeError(
+            DEAL_INVALIDATED,
+            "Deal legs contain teams not listed in deal.teams",
+            {
+                "extra_leg_teams": extra_leg_teams,
+                "teams": teams,
+                "legs_keys": sorted(normalized_legs_raw.keys()),
+            },
+        )
+
     legs: Dict[str, List[Asset]] = {}
     for team_id in teams:
         if team_id not in normalized_legs_raw:
