@@ -59,6 +59,7 @@ def prepare_game_readiness(
     away_team_id: str,
     home_tactics: Optional[Mapping[str, Any]] = None,
     away_tactics: Optional[Mapping[str, Any]] = None,
+    unavailable_pids_by_team: Optional[Mapping[str, set[str]]] = None,
 ) -> PreparedGameReadiness:
     """Prepare readiness state for a game.
 
@@ -94,11 +95,43 @@ def prepare_game_readiness(
     # Involved players: active rosters for both teams.
     home_roster = repo.get_team_roster(hid)
     away_roster = repo.get_team_roster(aid)
-    home_pids = [str(r.get("player_id")) for r in (home_roster or []) if r.get("player_id")]
-    away_pids = [str(r.get("player_id")) for r in (away_roster or []) if r.get("player_id")]
+    home_pids = [
+        str(schema.normalize_player_id(r.get("player_id"), strict=False))
+        for r in (home_roster or [])
+        if r.get("player_id")
+    ]
+    away_pids = [
+        str(schema.normalize_player_id(r.get("player_id"), strict=False))
+        for r in (away_roster or [])
+        if r.get("player_id")
+    ]
 
     # De-duplicate while preserving order.
     all_pids = list(dict.fromkeys(home_pids + away_pids))
+
+    # Optional: injury-derived OUT/unavailable PID hint (game-date availability).
+    #
+    # SSOT: injury status lives in the injury subsystem. This is only a read-only
+    # hint passed down by the caller (typically league_sim after injury.prepare).
+    out_pids: set[str] = set()
+    if unavailable_pids_by_team:
+        try:
+            for raw_tid, raw_pids in (unavailable_pids_by_team or {}).items():
+                try:
+                    tid = str(schema.normalize_team_id(raw_tid, strict=False)).upper()
+                except Exception:
+                    tid = str(raw_tid or "").upper()
+                if tid not in (hid, aid):
+                    continue
+                for raw_pid in (raw_pids or []):
+                    try:
+                        pid = str(schema.normalize_player_id(raw_pid, strict=False))
+                    except Exception:
+                        pid = str(raw_pid).strip()
+                    if pid:
+                        out_pids.add(pid)
+        except Exception:
+            out_pids = set()
 
     sharpness_pre_by_pid: Dict[str, float] = {}
     attrs_mods_by_pid: Dict[str, Dict[str, float]] = {}
@@ -114,7 +147,18 @@ def prepare_game_readiness(
             row = st_by_pid.get(pid) or {}
             sharp0 = float(row.get("sharpness", r_cfg.SHARPNESS_DEFAULT) or r_cfg.SHARPNESS_DEFAULT)
             days = r_f.days_since(last_date_iso=row.get("last_date"), on_date=gdate)
-            sharp_pre = r_f.decay_sharpness_linear(sharp0, days=days)
+            # Faster sharpness decay for players who are OUT on game_date (injury hint).
+            if pid in out_pids:
+                try:
+                    decay_out = float(getattr(r_cfg, "SHARPNESS_DECAY_PER_DAY_OUT"))
+                except Exception:
+                    decay_out = None
+                if decay_out is not None:
+                    sharp_pre = r_f.decay_sharpness_linear(sharp0, days=days, decay_per_day=decay_out)
+                else:
+                    sharp_pre = r_f.decay_sharpness_linear(sharp0, days=days)
+            else:
+                sharp_pre = r_f.decay_sharpness_linear(sharp0, days=days)
             sharpness_pre_by_pid[pid] = float(sharp_pre)
 
             mods = r_f.sharpness_attr_mods(sharp_pre)

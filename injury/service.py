@@ -936,20 +936,33 @@ def prepare_game_injuries(
         practice_session_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         def _get_practice_session(team_id: str, *, date_iso: str) -> Dict[str, Any]:
-            key = (str(team_id).upper(), str(date_iso)[:10])
+            day_iso = str(date_iso)[:10]
+            key = (str(team_id).upper(), day_iso)
             cached = practice_session_cache.get(key)
             if cached is not None:
                 return cached
 
             tid = str(team_id).upper()
             if tid == hid:
-                roster_pids = home_roster_pids
+                roster_raw = home_roster_pids
                 fb_off, fb_def = home_off_scheme, home_def_scheme
             else:
-                roster_pids = away_roster_pids
+                roster_raw = away_roster_pids
                 fb_off, fb_def = away_off_scheme, away_def_scheme
 
-            day_iso = str(date_iso)[:10]
+            # Exclude players who are already OUT on this day from scrimmage participant autofill.
+            # SSOT: OUT status is derived from injury.state via status_for_date.
+            roster_pids: List[str] = []
+            for pid in roster_raw:
+                st = states.get(str(pid))
+                if isinstance(st, dict):
+                    try:
+                        if status_for_date(st, on_date_iso=day_iso) == STATUS_OUT:
+                            continue
+                    except Exception:
+                        pass
+                roster_pids.append(str(pid))
+
             try:
                 d2g = int((gdate - _date_from_iso(day_iso)).days)
                 if d2g < 0:
