@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import game_time
+import schema
 from league_repo import LeagueRepo
 from readiness import config as r_cfg
 from readiness import formulas as r_f
@@ -35,6 +36,7 @@ def apply_practice_before_game(
     away_team_id: str,
     home_tactics: Optional[Mapping[str, Any]] = None,
     away_tactics: Optional[Mapping[str, Any]] = None,
+    unavailable_pids_by_team: Optional[Mapping[str, set[str]]] = None,
 ) -> None:
     """Between-game practice hook invoked by the simulation pipeline.
 
@@ -54,8 +56,19 @@ def apply_practice_before_game(
         d_iso = game_time.require_date_iso(game_date_iso, field="game_date_iso")
         gdate = _dt.date.fromisoformat(d_iso)
         sy = int(season_year)
-        hid = str(home_team_id).upper()
-        aid = str(away_team_id).upper()
+        hid = str(schema.normalize_team_id(home_team_id, strict=True)).upper()
+        aid = str(schema.normalize_team_id(away_team_id, strict=True)).upper()
+
+        out_map = unavailable_pids_by_team or {}
+
+        def _safe_pid_set(v: Any) -> set[str]:
+            try:
+                return {str(x) for x in (v or []) if str(x)}
+            except Exception:
+                return set()
+
+        home_out = _safe_pid_set(out_map.get(hid))
+        away_out = _safe_pid_set(out_map.get(aid))
     except Exception:
         logger.warning("PRACTICE_APPLY_INVALID_INPUTS", exc_info=True)
         return
@@ -71,6 +84,7 @@ def apply_practice_before_game(
                     game_date=gdate,
                     game_date_iso=d_iso,
                     raw_tactics=home_tactics,
+                    unavailable_pids=home_out,
                 )
             except Exception:
                 logger.warning("PRACTICE_APPLY_TEAM_FAILED team=%s date=%s", hid, d_iso, exc_info=True)
@@ -84,6 +98,7 @@ def apply_practice_before_game(
                     game_date=gdate,
                     game_date_iso=d_iso,
                     raw_tactics=away_tactics,
+                    unavailable_pids=away_out,
                 )
             except Exception:
                 logger.warning("PRACTICE_APPLY_TEAM_FAILED team=%s date=%s", aid, d_iso, exc_info=True)
@@ -102,6 +117,7 @@ def _apply_team_practice_to_readiness_ssot(
     game_date: _dt.date,
     game_date_iso: str,
     raw_tactics: Optional[Mapping[str, Any]],
+    unavailable_pids: Optional[set[str]] = None,
 ) -> None:
     """Apply between-game practice sessions to readiness SSOT for one team.
 
@@ -136,12 +152,31 @@ def _apply_team_practice_to_readiness_ssot(
 
     roster_pids: list[str] = []
     for row in roster_rows or []:
-        pid = str((row or {}).get("player_id") or "")
+        raw_pid = (row or {}).get("player_id")
+        if not raw_pid:
+            continue
+        try:
+            pid = str(schema.normalize_player_id(raw_pid, strict=False))
+        except Exception:
+            pid = str(raw_pid).strip()
         if pid:
             roster_pids.append(pid)
 
     if not roster_pids:
         return
+
+
+    # Normalize unavailable (OUT) pid set for membership checks.
+    unavailable_set: set[str] = set()
+    for raw_pid in (unavailable_pids or set()):
+        try:
+            pid = str(schema.normalize_player_id(raw_pid, strict=False))
+        except Exception:
+            pid = str(raw_pid).strip()
+        if pid:
+            unavailable_set.add(pid)
+
+    eligible_roster_pids = [pid for pid in roster_pids if pid not in unavailable_set]
 
     # Load readiness SSOT (sharpness) for roster players.
     sharp_rows = r_repo.get_player_sharpness_states(cur, roster_pids, season_year=sy)
@@ -181,6 +216,15 @@ def _apply_team_practice_to_readiness_ssot(
 
     # In-memory sharpness state (always kept for entire roster).
     s_default = float(getattr(r_cfg, "SHARPNESS_DEFAULT", 50.0) or 50.0)
+
+    # Faster decay for OUT players (injury inactive).
+    try:
+        s_decay_out = float(getattr(r_cfg, "SHARPNESS_DECAY_PER_DAY_OUT"))
+    except Exception:
+        try:
+            s_decay_out = float(getattr(r_cfg, "SHARPNESS_DECAY_PER_DAY", 1.0) or 1.0)
+        except Exception:
+            s_decay_out = 1.0
     sharp_val: Dict[str, float] = {}
     sharp_last: Dict[str, _dt.date] = {}
 
@@ -241,7 +285,7 @@ def _apply_team_practice_to_readiness_ssot(
                 date_iso=day_iso,
                 fallback_off_scheme=eff_off or None,
                 fallback_def_scheme=eff_def or None,
-                roster_pids=roster_pids,
+                roster_pids=eligible_roster_pids,
                 days_to_next_game=d2g,
                 now_iso=game_time.utc_like_from_date_iso(day_iso, field="date_iso"),
             )
@@ -260,21 +304,25 @@ def _apply_team_practice_to_readiness_ssot(
             last_dt = sharp_last.get(pid, anchor)
             if last_dt >= day:
                 continue
+            is_out = pid in unavailable_set
 
-            eff_typ = str(p_types.effective_type_for_pid(sess, pid) or "").upper()
+            # OUT players should not benefit from tactics/scrimmage sharpness boosts.
+            # We treat them as RECOVERY (or REST on pure rest days) for practice effects.
+            if is_out:
+                eff_typ = "REST" if typ == "REST" else "RECOVERY"
+            else:
+                eff_typ = str(p_types.effective_type_for_pid(sess, pid) or "").upper()
+
             try:
                 delta = float(p_cfg.SHARPNESS_DELTA.get(eff_typ, 0.0) or 0.0)
             except Exception:
                 delta = 0.0
 
             s0 = float(sharp_val.get(pid, s_default))
-            try:
-                gap_days = int((day - last_dt).days)
-            except Exception:
-                gap_days = 1
-            if gap_days <= 0:
-                gap_days = 1
-            s1 = r_f.decay_sharpness_linear(s0, days=gap_days)
+            if is_out:
+                s1 = r_f.decay_sharpness_linear(s0, days=1, decay_per_day=s_decay_out)
+            else:
+                s1 = r_f.decay_sharpness_linear(s0, days=1)
             sharp_val[pid] = float(r_f.clamp100(s1 + delta))
             sharp_last[pid] = day
             touched_pids.add(pid)
@@ -691,7 +739,24 @@ def resolve_practice_session(
     raw, is_user_set = p_repo.get_team_practice_session(cur, team_id=tid, season_year=sy, date_iso=d)
     if raw is not None:
         # Stored session wins, even if not user-set.
-        return p_types.normalize_session(raw)
+        sess = p_types.normalize_session(raw)
+
+        # Commercial safety: if SCRIMMAGE, clamp stored participant_pids to the provided roster.
+        # This prevents OUT/traded players from occupying participant slots when callers
+        # provide a filtered/eligible roster_pids list.
+        if roster and str(sess.get("type") or "").upper() == "SCRIMMAGE":
+            try:
+                roster_set = set(roster)
+                existing = sess.get("participant_pids") or []
+                if isinstance(existing, list):
+                    sess["participant_pids"] = [str(x) for x in existing if str(x) in roster_set][:p_cfg.SCRIMMAGE_MAX_PLAYERS]
+                else:
+                    sess["participant_pids"] = []
+            except Exception:
+                # Best effort only.
+                pass
+
+        return sess
 
     # Plan policy (AUTO/MANUAL).
     plan_raw = p_repo.get_team_practice_plan(cur, team_id=tid, season_year=sy)
