@@ -90,3 +90,23 @@ FAMILIARITY_GAIN: dict[str, float] = {
     "RECOVERY": 0.0,
     "REST": 0.0,
 }
+# ---------------------------------------------------------------------------
+# AUTO AI heuristics (used by practice.ai + practice.service hint builder)
+# ---------------------------------------------------------------------------
+
+# If we know we're close to a game (days_to_next_game <= threshold), AUTO should
+# prefer recovery/rest to avoid unrealistic fatigue spikes.
+AI_RECOVERY_D2G_THRESHOLD: int = 1
+
+# If familiarity for a main scheme is below this threshold, AUTO may select
+# tactics install sessions to build scheme execution.
+AI_LOW_FAMILIARITY_THRESHOLD: float = 55.0
+
+# Players below this sharpness threshold are considered "out of rhythm".
+AI_LOW_SHARPNESS_THRESHOLD: float = 45.0
+
+# If enough players are out of rhythm and we have time, AUTO may schedule a scrimmage.
+AI_LOW_SHARPNESS_COUNT_TRIGGER: int = 4
+
+# Require at least this many days before the next game to consider SCRIMMAGE.
+AI_SCRIMMAGE_MIN_D2G: int = 2

@@ -233,6 +233,7 @@ def _apply_team_practice_to_readiness_ssot(
 
         # Resolve practice session deterministically. This may persist an AUTO session if missing.
         try:
+            d2g = int((game_date - day).days)
             sess = resolve_practice_session(
                 cur,
                 team_id=tid,
@@ -241,7 +242,7 @@ def _apply_team_practice_to_readiness_ssot(
                 fallback_off_scheme=eff_off or None,
                 fallback_def_scheme=eff_def or None,
                 roster_pids=roster_pids,
-                sharpness_by_pid=sharp_val,  # used only for SCRIMMAGE participant autofill ranking
+                days_to_next_game=d2g,
                 now_iso=game_time.utc_like_from_date_iso(day_iso, field="date_iso"),
             )
         except Exception:
@@ -479,7 +480,17 @@ def _autofill_scrimmage_participants(
         session["participant_pids"] = [str(x) for x in existing][:p_cfg.SCRIMMAGE_MAX_PLAYERS]
         return session
 
-    roster = [str(pid) for pid in (roster_pids or []) if str(pid)]
+    # Dedupe roster IDs (order-preserving) and strip whitespace.
+    roster: list[str] = []
+    _seen: set[str] = set()
+    for pid in roster_pids or []:
+        s = str(pid).strip()
+        if not s:
+            continue
+        if s in _seen:
+            continue
+        _seen.add(s)
+        roster.append(s)
     if not roster:
         session["participant_pids"] = []
         return session
@@ -525,6 +536,112 @@ def _finalize_session_fields(
     return session
 
 
+
+
+
+def _build_auto_hints_from_readiness_ssot(
+    cur: sqlite3.Cursor,
+    *,
+    team_id: str,
+    season_year: int,
+    date_iso: str,
+    roster_pids: list[str],
+    fallback_off_scheme: Optional[str],
+    fallback_def_scheme: Optional[str],
+) -> Tuple[Optional[float], Optional[float], int, Dict[str, float]]:
+    """Build AUTO AI hints from readiness SSOT as-of one date.
+
+    Returns (off_fam, def_fam, low_sharp_count, sharpness_by_pid_decayed).
+
+    - Values are computed as-of date_iso by applying readiness.formulas decay
+      from each SSOT row's last_date.
+    - No writes. SSOT-safe.
+    """
+    d = game_time.require_date_iso(date_iso, field="date_iso")
+    tid = str(team_id).upper()
+    sy = int(season_year)
+
+    try:
+        target_date = _dt.date.fromisoformat(d)
+    except Exception:
+        # Fail-soft: treat as no decay gap.
+        target_date = _dt.date.fromisoformat(str(d)[:10])
+
+    # Dedupe roster IDs (order-preserving) and strip whitespace.
+    roster: list[str] = []
+    seen: set[str] = set()
+    for pid in roster_pids or []:
+        s = str(pid).strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        roster.append(s)
+
+    # --- Sharpness map + low_sharp_count ---
+    s_default = float(getattr(r_cfg, "SHARPNESS_DEFAULT", 50.0) or 50.0)
+    sharp_rows = r_repo.get_player_sharpness_states(cur, roster, season_year=sy) if roster else {}
+
+    sharp_map: Dict[str, float] = {}
+    for pid in roster:
+        row = sharp_rows.get(pid)
+        if row is None:
+            s0 = s_default
+            gap_days = 0
+        else:
+            try:
+                s0 = float((row or {}).get("sharpness", s_default))
+            except Exception:
+                s0 = s_default
+            last_dt = r_f.parse_date_iso((row or {}).get("last_date"))
+            gap_days = int((target_date - last_dt).days) if last_dt is not None else 0
+            if gap_days < 0:
+                gap_days = 0
+        sharp_map[pid] = float(r_f.decay_sharpness_linear(s0, days=gap_days))
+
+    low_thr = float(getattr(p_cfg, "AI_LOW_SHARPNESS_THRESHOLD", 45.0) or 45.0)
+    low_sharp_count = sum(1 for v in sharp_map.values() if float(v) < low_thr)
+
+    # --- Scheme familiarity (main schemes only) ---
+    f_default = float(getattr(r_cfg, "FAMILIARITY_DEFAULT", 50.0) or 50.0)
+    schemes: list[r_repo.SchemeKey] = []
+    off_key = str(fallback_off_scheme or "").strip()
+    def_key = str(fallback_def_scheme or "").strip()
+    if off_key:
+        schemes.append(("offense", off_key))
+    if def_key:
+        schemes.append(("defense", def_key))
+
+    fam_rows = (
+        r_repo.get_team_scheme_familiarity_states(cur, team_id=tid, season_year=sy, schemes=schemes)
+        if schemes
+        else {}
+    )
+
+    off_fam: Optional[float] = None
+    def_fam: Optional[float] = None
+    for st, sk in schemes:
+        row = fam_rows.get((st, sk))
+        if row is None:
+            v0 = f_default
+            gap_days = 0
+        else:
+            try:
+                v0 = float((row or {}).get("value", f_default))
+            except Exception:
+                v0 = f_default
+            last_dt = r_f.parse_date_iso((row or {}).get("last_date"))
+            gap_days = int((target_date - last_dt).days) if last_dt is not None else 0
+            if gap_days < 0:
+                gap_days = 0
+        decayed = float(r_f.decay_familiarity_exp(v0, days=gap_days))
+        if st == "offense":
+            off_fam = decayed
+        elif st == "defense":
+            def_fam = decayed
+
+    return (off_fam, def_fam, int(low_sharp_count), sharp_map)
 def resolve_practice_session(
     cur: sqlite3.Cursor,
     *,
@@ -559,7 +676,17 @@ def resolve_practice_session(
     d = game_time.require_date_iso(date_iso, field="date_iso")
     tid = str(team_id).upper()
     sy = int(season_year)
-    roster = [str(pid) for pid in (roster_pids or []) if str(pid)]
+    # Dedupe roster IDs (order-preserving) and strip whitespace.
+    roster: list[str] = []
+    _seen: set[str] = set()
+    for pid in roster_pids or []:
+        s = str(pid).strip()
+        if not s:
+            continue
+        if s in _seen:
+            continue
+        _seen.add(s)
+        roster.append(s)
 
     raw, is_user_set = p_repo.get_team_practice_session(cur, team_id=tid, season_year=sy, date_iso=d)
     if raw is not None:
@@ -575,15 +702,58 @@ def resolve_practice_session(
 
     mode = str(plan.get("mode") or "AUTO").upper()
 
+    # In AUTO mode, if AI hints are missing, build them from readiness SSOT.
+    sharp_map_for_finalize: Optional[Mapping[str, float]] = sharpness_by_pid
+    ai_off_fam = off_fam
+    ai_def_fam = def_fam
+    ai_low_sharp_count = low_sharp_count
+
     # Generate a raw session.
     try:
         if mode == "AUTO":
+            if (
+                ai_off_fam is None
+                or ai_def_fam is None
+                or ai_low_sharp_count is None
+                or sharp_map_for_finalize is None
+            ):
+                try:
+                    comp_off, comp_def, comp_lows, comp_sharp = _build_auto_hints_from_readiness_ssot(
+                        cur,
+                        team_id=tid,
+                        season_year=sy,
+                        date_iso=d,
+                        roster_pids=roster,
+                        fallback_off_scheme=fallback_off_scheme,
+                        fallback_def_scheme=fallback_def_scheme,
+                    )
+                except Exception:
+                    logger.warning(
+                        "PRACTICE_AUTO_HINTS_BUILD_FAILED team=%s date=%s",
+                        tid,
+                        d,
+                        exc_info=True,
+                    )
+                    comp_off, comp_def, comp_lows, comp_sharp = (None, None, 0, {})
+
+                if ai_off_fam is None:
+                    ai_off_fam = comp_off
+                if ai_def_fam is None:
+                    ai_def_fam = comp_def
+                if ai_low_sharp_count is None:
+                    try:
+                        ai_low_sharp_count = int(comp_lows)
+                    except Exception:
+                        ai_low_sharp_count = 0
+                if sharp_map_for_finalize is None:
+                    sharp_map_for_finalize = comp_sharp
+
             raw_sess = p_ai.choose_session_for_date(
                 date_iso=d,
                 days_to_next_game=days_to_next_game,
-                off_fam=off_fam,
-                def_fam=def_fam,
-                low_sharp_count=low_sharp_count,
+                off_fam=ai_off_fam,
+                def_fam=ai_def_fam,
+                low_sharp_count=ai_low_sharp_count,
                 fallback_off_scheme=fallback_off_scheme,
                 fallback_def_scheme=fallback_def_scheme,
             )
@@ -607,7 +777,7 @@ def resolve_practice_session(
         fallback_off_scheme=fallback_off_scheme,
         fallback_def_scheme=fallback_def_scheme,
         roster_pids=roster,
-        sharpness_by_pid=sharpness_by_pid,
+        sharpness_by_pid=sharp_map_for_finalize,
     )
     sess = p_types.normalize_session(sess)
 
