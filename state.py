@@ -521,6 +521,32 @@ def ingest_game_result(
         home_score = int(final[home_id])
         away_score = int(final[away_id])
 
+        # Fail-fast 1) duplicate ingest guard (phase-local container key is the SSOT keyspace)
+        if game_id in container["game_results"]:
+            raise ValueError(f"duplicate ingest: game_id already exists in phase container: {game_id!r}")
+
+        # Fail-fast 2) master_schedule must contain the game_id and fixed home/away/date must match.
+        ms = state["league"]["master_schedule"]
+        by_id = ms.get("by_id") if isinstance(ms, dict) else None
+        sched = by_id.get(game_id) if isinstance(by_id, dict) else None
+        if not isinstance(sched, dict):
+            raise ValueError(f"ingest rejected: game_id not found in master_schedule.by_id: {game_id!r}")
+
+        sched_home = str(sched.get("home_team_id") or "")
+        sched_away = str(sched.get("away_team_id") or "")
+        sched_date = str(sched.get("date") or "")[:10]
+        ingest_date = str(game_date_str)[:10]
+        if sched_home != home_id or sched_away != away_id:
+            raise ValueError(
+                f"ingest rejected: home/away mismatch with schedule for game_id={game_id!r} "
+                f"(schedule home={sched_home!r} away={sched_away!r}, ingest home={home_id!r} away={away_id!r})"
+            )
+        if sched_date and sched_date != ingest_date:
+            raise ValueError(
+                f"ingest rejected: date mismatch with schedule for game_id={game_id!r} "
+                f"(schedule date={sched_date!r}, ingest date={ingest_date!r})"
+            )
+
         # Compute next turn early, but only apply after fail-fast checks above.
         next_turn = int(state.get("turn", 0) or 0) + 1
         state["turn"] = next_turn
@@ -554,7 +580,6 @@ def ingest_game_result(
                 raise ValueError(f"GameResultV2 invalid: teams.{tid}.players must be list")
             state_results._accumulate_player_rows(rows, season_player_stats)
 
-        ms = state["league"]["master_schedule"]
         state_schedule.mark_master_schedule_game_final(
             ms,
             game_id=game_id,
