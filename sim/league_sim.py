@@ -72,6 +72,7 @@ def _run_match(
                 away_team_id=str(away_team_id),
                 home_tactics=home_tactics,
                 away_tactics=away_tactics,
+                unavailable_pids_by_team=unavailable_by_team,
             )
             unavailable_by_team = dict(prepared_inj.unavailable_pids_by_team or {})
             attrs_mods_by_pid = prepared_inj.attrs_mods_by_pid
