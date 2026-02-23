@@ -723,6 +723,8 @@ class LeagueService:
                     year_i,
                     rnd_i,
                     str(swap.get("owner_team") or "").upper(),
+                    str(swap.get("originator_team") or "").upper() if swap.get("originator_team") else None,
+                    int(swap.get("transfer_count") or 0),
                     1 if swap.get("active", True) else 0,
                     str(swap.get("created_by_deal_id") or "") if swap.get("created_by_deal_id") is not None else None,
                     str(swap.get("created_at") or now),
@@ -733,14 +735,20 @@ class LeagueService:
             return
         cur.executemany(
             """
-            INSERT INTO swap_rights(swap_id, pick_id_a, pick_id_b, year, round, owner_team, active, created_by_deal_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO swap_rights(
+                swap_id, pick_id_a, pick_id_b, year, round, owner_team,
+                originator_team, transfer_count,
+                active, created_by_deal_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(swap_id) DO UPDATE SET
                 pick_id_a=excluded.pick_id_a,
                 pick_id_b=excluded.pick_id_b,
                 year=excluded.year,
                 round=excluded.round,
                 owner_team=excluded.owner_team,
+                originator_team=excluded.originator_team,
+                transfer_count=excluded.transfer_count,
                 active=excluded.active,
                 created_by_deal_id=excluded.created_by_deal_id,
                 updated_at=excluded.updated_at;
@@ -1242,8 +1250,38 @@ class LeagueService:
                 swap_round = int(info.get("round"))
 
                 if swap_exists:
+                    swap_row = cur.execute(
+                        "SELECT owner_team, originator_team, transfer_count, year, round FROM swap_rights WHERE swap_id=?;",
+                        (str(swap_id),),
+                    ).fetchone()
+                    if not swap_row:
+                        raise TradeError(
+                            SWAP_INVALID,
+                            "Swap right not found during transfer",
+                            {"swap_id": str(swap_id)},
+                        )
+                    originator_team = str(swap_row["originator_team"] or "").upper() if swap_row["originator_team"] else ""
+                    current_owner = str(swap_row["owner_team"] or "").upper()
+                    transfer_count = int(swap_row["transfer_count"] or 0)
+                    if originator_team and current_owner != originator_team:
+                        raise TradeError(
+                            SWAP_INVALID,
+                            "Swap resale is not allowed",
+                            {
+                                "swap_id": str(swap_id),
+                                "originator_team": originator_team,
+                                "owner_team": current_owner,
+                                "transfer_count": transfer_count,
+                            },
+                        )
+                    if transfer_count >= 1:
+                        raise TradeError(
+                            SWAP_INVALID,
+                            "Swap resale is not allowed",
+                            {"swap_id": str(swap_id), "transfer_count": transfer_count},
+                        )
                     cur.execute(
-                        "UPDATE swap_rights SET owner_team=?, updated_at=? WHERE swap_id=?;",
+                        "UPDATE swap_rights SET owner_team=?, transfer_count=1, updated_at=? WHERE swap_id=?;",
                         (str(to_team_u).upper(), now, str(swap_id)),
                     )
                 else:
@@ -1254,15 +1292,18 @@ class LeagueService:
                         """
                         INSERT INTO swap_rights(
                             swap_id, pick_id_a, pick_id_b, year, round,
-                            owner_team, active, created_by_deal_id, created_at, updated_at
+                            owner_team, originator_team, transfer_count,
+                            active, created_by_deal_id, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
                         ON CONFLICT(swap_id) DO UPDATE SET
                             pick_id_a=excluded.pick_id_a,
                             pick_id_b=excluded.pick_id_b,
                             year=excluded.year,
                             round=excluded.round,
                             owner_team=excluded.owner_team,
+                            originator_team=excluded.originator_team,
+                            transfer_count=excluded.transfer_count,
                             active=excluded.active,
                             created_by_deal_id=excluded.created_by_deal_id,
                             updated_at=excluded.updated_at;
@@ -1274,6 +1315,7 @@ class LeagueService:
                             int(swap_year),
                             int(swap_round),
                             str(to_team_u).upper(),
+                            str(from_team_u).upper(),
                             str(deal_id),
                             str(trade_date_iso),
                             now,
@@ -1415,7 +1457,7 @@ class LeagueService:
             # Load swaps for draft_year (we only need those for settlement)
             swap_rows = cur.execute(
                 """
-                SELECT swap_id, pick_id_a, pick_id_b, year, round, owner_team, active, created_by_deal_id, created_at
+                SELECT swap_id, pick_id_a, pick_id_b, year, round, owner_team, originator_team, transfer_count, active, created_by_deal_id, created_at
                 FROM swap_rights
                 WHERE year=?;
                 """,
@@ -1429,6 +1471,8 @@ class LeagueService:
                     "year": int(r["year"]) if r["year"] is not None else None,
                     "round": int(r["round"]) if r["round"] is not None else None,
                     "owner_team": str(r["owner_team"]).upper(),
+                    "originator_team": str(r["originator_team"]).upper() if r["originator_team"] else None,
+                    "transfer_count": int(r["transfer_count"] or 0),
                     "active": bool(int(r["active"]) if r["active"] is not None else 0),
                     "created_by_deal_id": r["created_by_deal_id"],
                     "created_at": r["created_at"],

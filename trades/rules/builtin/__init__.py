@@ -12,6 +12,7 @@ from .return_to_trading_team_rule import ReturnToTradingTeamRule
 from .roster_limit_rule import RosterLimitRule
 from .salary_matching_rule import SalaryMatchingRule
 from .swap_uniqueness_rule import SwapUniquenessRule
+from .swap_year_round_capacity_rule import SwapYearRoundCapacityRule
 from .team_legs_rule import TeamLegsRule
 
 BUILTIN_RULES = [
@@ -21,6 +22,7 @@ BUILTIN_RULES = [
     DuplicateAssetRule(),
     PickProtectionSchemaRule(),
     SwapUniquenessRule(),
+    SwapYearRoundCapacityRule(),
     OwnershipRule(),
     RosterLimitRule(),
     PlayerEligibilityRule(),

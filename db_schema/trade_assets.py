@@ -42,6 +42,8 @@ def ddl(*, now: str, schema_version: str) -> str:
                     year INTEGER,
                     round INTEGER,
                     owner_team TEXT NOT NULL,
+                    originator_team TEXT,
+                    transfer_count INTEGER NOT NULL DEFAULT 0,
                     active INTEGER NOT NULL DEFAULT 1,
                     created_by_deal_id TEXT,
                     created_at TEXT,
@@ -77,5 +79,13 @@ def migrate(cur: sqlite3.Cursor, *, ensure_columns: EnsureColumnsFn) -> None:
             "trade_lock_eval_seasons": "INTEGER NOT NULL DEFAULT 0",
             "trade_lock_below_count": "INTEGER NOT NULL DEFAULT 0",
             "trade_lock_escalated": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    ensure_columns(
+        cur,
+        "swap_rights",
+        {
+            "originator_team": "TEXT",
+            "transfer_count": "INTEGER NOT NULL DEFAULT 0",
         },
     )

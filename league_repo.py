@@ -426,6 +426,8 @@ class LeagueRepo:
                     int(swap.get("year") or 0) if str(swap.get("year") or "").isdigit() else None,
                     int(swap.get("round") or 0) if str(swap.get("round") or "").isdigit() else None,
                     str(swap.get("owner_team") or "").upper(),
+                    str(swap.get("originator_team") or "").upper() if swap.get("originator_team") else None,
+                    int(swap.get("transfer_count") or 0),
                     1 if swap.get("active", True) else 0,
                     str(swap.get("created_by_deal_id") or "") if swap.get("created_by_deal_id") is not None else None,
                     str(swap.get("created_at") or now),
@@ -435,14 +437,20 @@ class LeagueRepo:
         with self.transaction() as cur:
             cur.executemany(
                 """
-                INSERT INTO swap_rights(swap_id, pick_id_a, pick_id_b, year, round, owner_team, active, created_by_deal_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO swap_rights(
+                    swap_id, pick_id_a, pick_id_b, year, round, owner_team,
+                    originator_team, transfer_count,
+                    active, created_by_deal_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(swap_id) DO UPDATE SET
                     pick_id_a=excluded.pick_id_a,
                     pick_id_b=excluded.pick_id_b,
                     year=excluded.year,
                     round=excluded.round,
                     owner_team=excluded.owner_team,
+                    originator_team=excluded.originator_team,
+                    transfer_count=excluded.transfer_count,
                     active=excluded.active,
                     created_by_deal_id=excluded.created_by_deal_id,
                     updated_at=excluded.updated_at;
@@ -595,7 +603,8 @@ class LeagueRepo:
             """
             SELECT
                 swap_id, pick_id_a, pick_id_b, year, round,
-                owner_team, active, created_by_deal_id, created_at
+                owner_team, originator_team, transfer_count,
+                active, created_by_deal_id, created_at
             FROM swap_rights;
             """
         ).fetchall()
@@ -608,6 +617,8 @@ class LeagueRepo:
                 "year": int(r["year"]) if r["year"] is not None else None,
                 "round": int(r["round"]) if r["round"] is not None else None,
                 "owner_team": str(r["owner_team"]).upper(),
+                "originator_team": str(r["originator_team"]).upper() if r["originator_team"] else None,
+                "transfer_count": int(r["transfer_count"] or 0),
                 "active": bool(int(r["active"]) if r["active"] is not None else 1),
                 "created_by_deal_id": str(r["created_by_deal_id"]) if r["created_by_deal_id"] else None,
                 "created_at": str(r["created_at"]) if r["created_at"] else None,
