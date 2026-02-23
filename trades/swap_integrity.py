@@ -181,6 +181,24 @@ def _validate_swap_core(
                 "Swap right not owned by team",
                 {**details, "owner_team": owner},
             )
+
+        originator = _team_u(_mget(swap_record, "originator_team"))
+        transfer_count = _coerce_int(_mget(swap_record, "transfer_count")) or 0
+        if not originator:
+            originator = owner
+        if owner != originator:
+            raise TradeError(
+                SWAP_INVALID,
+                "Swap resale is not allowed",
+                {**details, "owner_team": owner, "originator_team": originator, "transfer_count": transfer_count},
+            )
+        if transfer_count >= 1:
+            raise TradeError(
+                SWAP_INVALID,
+                "Swap resale is not allowed",
+                {**details, "owner_team": owner, "originator_team": originator, "transfer_count": transfer_count},
+            )
+
         return {"year": year_a, "round": round_a, "swap_exists": True}
 
     # No existing record: creation gate must be satisfied.
@@ -242,7 +260,7 @@ def validate_swap_asset_in_cur(
         (str(pick_id_b),),
     ).fetchone()
     swap_row = cur.execute(
-        "SELECT swap_id, pick_id_a, pick_id_b, year, round, owner_team, active FROM swap_rights WHERE swap_id=?;",
+        "SELECT swap_id, pick_id_a, pick_id_b, year, round, owner_team, originator_team, transfer_count, active FROM swap_rights WHERE swap_id=?;",
         (str(swap_id),),
     ).fetchone()
 
