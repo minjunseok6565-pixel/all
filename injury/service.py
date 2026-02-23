@@ -949,14 +949,23 @@ def prepare_game_injuries(
                 roster_pids = away_roster_pids
                 fb_off, fb_def = away_off_scheme, away_def_scheme
 
+            day_iso = str(date_iso)[:10]
+            try:
+                d2g = int((gdate - _date_from_iso(day_iso)).days)
+                if d2g < 0:
+                    d2g = 0
+            except Exception:
+                d2g = None
+
             sess = resolve_practice_session(
                 cur,
                 team_id=tid,
                 season_year=int(season_year),
-                date_iso=str(date_iso)[:10],
+                date_iso=day_iso,
                 fallback_off_scheme=fb_off or None,
                 fallback_def_scheme=fb_def or None,
                 roster_pids=roster_pids,
+                days_to_next_game=d2g,
                 now_iso=now_iso,
             )
             practice_session_cache[key] = sess

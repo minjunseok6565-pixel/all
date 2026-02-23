@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import game_time
+import schema
 from league_repo import LeagueRepo
 from matchengine_v3.models import Player, TeamState
 from matchengine_v3.sim_fatigue import _fatigue_archetype_for_pid, _get_offense_role_by_pid
@@ -305,6 +306,36 @@ def prepare_game_fatigue(
     away_pids = [str(p.pid) for p in getattr(away, "lineup", []) if getattr(p, "pid", None)]
     all_pids = list(dict.fromkeys(home_pids + away_pids))
 
+    # Team roster PID lists (stable order) for practice-session participant autofill and AUTO hints.
+    try:
+        home_roster = repo.get_team_roster(home_tid) or []
+    except Exception:
+        home_roster = []
+    try:
+        away_roster = repo.get_team_roster(away_tid) or []
+    except Exception:
+        away_roster = []
+
+    home_roster_pids: list[str] = []
+    for r in home_roster:
+        if not isinstance(r, Mapping):
+            continue
+        pid_raw = r.get("player_id")
+        if not pid_raw:
+            continue
+        home_roster_pids.append(str(schema.normalize_player_id(pid_raw, strict=False)))
+    home_roster_pids = list(dict.fromkeys(home_roster_pids))
+
+    away_roster_pids: list[str] = []
+    for r in away_roster:
+        if not isinstance(r, Mapping):
+            continue
+        pid_raw = r.get("player_id")
+        if not pid_raw:
+            continue
+        away_roster_pids.append(str(schema.normalize_player_id(pid_raw, strict=False)))
+    away_roster_pids = list(dict.fromkeys(away_roster_pids))
+
     # Practice fallback schemes for AUTO sessions (best-effort).
     home_off_scheme = str(getattr(getattr(home, "tactics", None), "offense_scheme", "") or "")
     home_def_scheme = str(getattr(getattr(home, "tactics", None), "defense_scheme", "") or "")
@@ -330,27 +361,40 @@ def prepare_game_fatigue(
         practice_session_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         def _get_practice_session(team_id: str, *, date_iso: str) -> Dict[str, Any]:
-            key = (str(team_id).upper(), str(date_iso)[:10])
+            day_iso = str(date_iso)[:10]
+            key = (str(team_id).upper(), day_iso)
             cached = practice_session_cache.get(key)
             if cached is not None:
                 return cached
 
             tid = str(team_id).upper()
             if tid == home_tid:
-                roster_pids = home_pids
+                roster_pids = home_roster_pids
                 fb_off, fb_def = home_off_scheme, home_def_scheme
             else:
-                roster_pids = away_pids
+                roster_pids = away_roster_pids
                 fb_off, fb_def = away_off_scheme, away_def_scheme
+
+            d2g = None
+            day_dt = _parse_date_iso(day_iso)
+            if day_dt is not None:
+                try:
+                    d2g_val = int((gdate - day_dt).days)
+                    if d2g_val < 0:
+                        d2g_val = 0
+                    d2g = int(d2g_val)
+                except Exception:
+                    d2g = None
 
             sess = resolve_practice_session(
                 cur,
                 team_id=tid,
                 season_year=int(season_year),
-                date_iso=str(date_iso)[:10],
+                date_iso=day_iso,
                 fallback_off_scheme=fb_off or None,
                 fallback_def_scheme=fb_def or None,
                 roster_pids=list(roster_pids),
+                days_to_next_game=d2g,
                 now_iso=now_iso,
             )
             practice_session_cache[key] = sess
