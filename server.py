@@ -49,6 +49,7 @@ from trades.validator import validate_deal
 from trades.apply import apply_deal_to_db
 from trades import agreements
 from trades import negotiation_store
+from save_service import SaveError, create_new_game, save_game
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,22 @@ class PostseasonSetupRequest(BaseModel):
 
 class EmptyRequest(BaseModel):
     pass
+
+
+
+
+class GameNewRequest(BaseModel):
+    slot_name: str
+    slot_id: Optional[str] = None
+    user_team_id: Optional[str] = None
+    season_year: Optional[int] = None
+    overwrite_if_exists: bool = False
+
+
+class GameSaveRequest(BaseModel):
+    slot_id: str
+    save_name: Optional[str] = None
+    note: Optional[str] = None
 
 
 class OffseasonContractsProcessRequest(BaseModel):
@@ -3726,6 +3743,34 @@ async def state_summary():
         "workflow_state": workflow_state,
         "db_snapshot": db_snapshot,
     }
+
+
+@app.post("/api/game/new")
+async def api_game_new(req: GameNewRequest):
+    try:
+        return create_new_game(
+            slot_name=req.slot_name,
+            slot_id=req.slot_id,
+            season_year=req.season_year,
+            user_team_id=req.user_team_id,
+            overwrite_if_exists=bool(req.overwrite_if_exists),
+        )
+    except SaveError as exc:
+        msg = str(exc)
+        status = 409 if "already exists" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create new game: {exc}")
+
+
+@app.post("/api/game/save")
+async def api_game_save(req: GameSaveRequest):
+    try:
+        return save_game(slot_id=req.slot_id, save_name=req.save_name, note=req.note)
+    except SaveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save game: {exc}")
 
 
 @app.get("/api/debug/schedule-summary")
