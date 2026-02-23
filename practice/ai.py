@@ -11,6 +11,8 @@ If inputs are missing or invalid, the AI must fall back to safe defaults.
 
 from typing import Any, Dict, Optional
 
+from . import config as p_cfg
+
 
 def choose_session_for_date(
     *,
@@ -56,18 +58,18 @@ def choose_session_for_date(
         lows = None
 
     # 1) Close to a game => recovery to avoid fatigue spikes.
-    if d2g is not None and d2g <= 1:
+    if d2g is not None and d2g <= p_cfg.AI_RECOVERY_D2G_THRESHOLD:
         return {"type": "RECOVERY"}
 
     # 2) If we know familiarity and one side is low, install tactics.
     if off is not None and de is not None:
-        if off < 55.0 and off <= de:
+        if off < p_cfg.AI_LOW_FAMILIARITY_THRESHOLD and off <= de:
             return {"type": "OFF_TACTICS", "offense_scheme_key": fallback_off_scheme}
-        if de < 55.0 and de < off:
+        if de < p_cfg.AI_LOW_FAMILIARITY_THRESHOLD and de < off:
             return {"type": "DEF_TACTICS", "defense_scheme_key": fallback_def_scheme}
 
     # 3) If many players are out of rhythm and we have time, run a scrimmage.
-    if lows is not None and lows >= 4 and (d2g is None or d2g >= 2):
+    if lows is not None and lows >= p_cfg.AI_LOW_SHARPNESS_COUNT_TRIGGER and (d2g is None or d2g >= p_cfg.AI_SCRIMMAGE_MIN_D2G):
         return {"type": "SCRIMMAGE"}
 
     # 4) Default: film/workthrough.
