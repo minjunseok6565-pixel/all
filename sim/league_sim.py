@@ -124,6 +124,7 @@ def _run_match(
                 away_team_id=str(away_team_id),
                 home_tactics=home_tactics,
                 away_tactics=away_tactics,
+                unavailable_pids_by_team=unavailable_by_team,
             )
         except Exception:
             logger.warning(
