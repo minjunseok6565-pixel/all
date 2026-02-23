@@ -9,14 +9,44 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable
 
-from . import core, training, fatigue, injury, readiness, practice, agency, trade_assets, draft, gm, college, scouting
+from . import (
+    core,
+    training,
+    fatigue,
+    injury,
+    readiness,
+    practice,
+    team_strategy,
+    agency,
+    trade_assets,
+    draft,
+    gm,
+    college,
+    scouting,
+)
 from .registry import EnsureColumnsFn, apply_all
 
 
 # Order matters:
 # - core must come first (players table is referenced by other modules)
 # - training references core.players
-DEFAULT_MODULES = (core, training, fatigue, injury, readiness, practice, agency, trade_assets, draft, gm, college, scouting)
+# - readiness/practice/team_strategy should remain together with player-state systems.
+# - team_strategy is independent (no FK), but we keep it near core-level SSOT.
+DEFAULT_MODULES = (
+    core,
+    training,
+    fatigue,
+    injury,
+    readiness,
+    practice,
+    team_strategy,
+    agency,
+    trade_assets,
+    draft,
+    gm,
+    college,
+    scouting,
+)
 
 
 def apply_schema(

@@ -1115,6 +1115,66 @@ class LeagueRepo:
                 "free_agents": self.list_free_agents(source="roster"),
             }
 
+
+    # ------------------------
+    # Team Strategy (SSOT)
+    # ------------------------
+
+    def get_team_strategy_map(self, *, season_year: int) -> Dict[str, str]:
+        """Return mapping team_id -> strategy for the given season_year."""
+        sy = int(season_year)
+        rows = self._conn.execute(
+            "SELECT team_id, strategy FROM team_strategy WHERE season_year=?;",
+            (sy,),
+        ).fetchall()
+        out: Dict[str, str] = {}
+        for r in rows:
+            tid = str(r["team_id"] or "").upper()
+            if not tid:
+                continue
+            out[tid] = str(r["strategy"] or "BALANCED").upper()
+        return out
+
+    def get_team_strategy(
+        self,
+        team_id: str,
+        *,
+        season_year: int,
+        default: str = "BALANCED",
+    ) -> str:
+        """Get strategy for (team_id, season_year), or default if missing."""
+        tid = normalize_team_id(team_id, strict=False)
+        sy = int(season_year)
+        row = self._conn.execute(
+            "SELECT strategy FROM team_strategy WHERE team_id=? AND season_year=?;",
+            (tid, sy),
+        ).fetchone()
+        if row:
+            return str(row["strategy"] or default).upper()
+        return str(default).upper()
+
+    def upsert_team_strategy(self, team_id: str, *, season_year: int, strategy: str) -> None:
+        """Insert or update a team's declared strategy for a season."""
+        tid = normalize_team_id(team_id, strict=False)
+        sy = int(season_year)
+        strat = str(strategy or "").upper().strip()
+        allowed = {"WIN_NOW", "BALANCED", "DEVELOP", "REBUILD"}
+        if strat not in allowed:
+            raise ValueError(f"Invalid strategy: {strategy}. Allowed: {sorted(allowed)}")
+
+        now = _utc_now_iso()
+        with self.transaction() as cur:
+            cur.execute(
+                """
+                INSERT INTO team_strategy(team_id, season_year, strategy, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(team_id, season_year) DO UPDATE SET
+                    strategy=excluded.strategy,
+                    updated_at=excluded.updated_at;
+                """,
+                (tid, sy, strat, now, now),
+            )
+
     # ------------------------
     # GM Profiles (AI)
     # ------------------------

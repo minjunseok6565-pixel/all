@@ -40,12 +40,48 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     minutes_expected_mpg REAL NOT NULL DEFAULT 0.0,
                     minutes_actual_mpg REAL NOT NULL DEFAULT 0.0,
 
+                    -- v1 axes
                     minutes_frustration REAL NOT NULL DEFAULT 0.0
                         CHECK(minutes_frustration >= 0.0 AND minutes_frustration <= 1.0),
                     team_frustration REAL NOT NULL DEFAULT 0.0
                         CHECK(team_frustration >= 0.0 AND team_frustration <= 1.0),
                     trust REAL NOT NULL DEFAULT 0.5
                         CHECK(trust >= 0.0 AND trust <= 1.0),
+
+                    -- v2 axes (additional; unused by v1 tick but persisted for v2+)
+                    role_frustration REAL NOT NULL DEFAULT 0.0
+                        CHECK(role_frustration >= 0.0 AND role_frustration <= 1.0),
+                    contract_frustration REAL NOT NULL DEFAULT 0.0
+                        CHECK(contract_frustration >= 0.0 AND contract_frustration <= 1.0),
+                    health_frustration REAL NOT NULL DEFAULT 0.0
+                        CHECK(health_frustration >= 0.0 AND health_frustration <= 1.0),
+                    chemistry_frustration REAL NOT NULL DEFAULT 0.0
+                        CHECK(chemistry_frustration >= 0.0 AND chemistry_frustration <= 1.0),
+                    usage_frustration REAL NOT NULL DEFAULT 0.0
+                        CHECK(usage_frustration >= 0.0 AND usage_frustration <= 1.0),
+
+                    -- v2 monthly role evidence cache (derived; used for UI/explainability)
+                    starts_rate REAL NOT NULL DEFAULT 0.0
+                        CHECK(starts_rate >= 0.0 AND starts_rate <= 1.0),
+                    closes_rate REAL NOT NULL DEFAULT 0.0
+                        CHECK(closes_rate >= 0.0 AND closes_rate <= 1.0),
+                    usage_share REAL NOT NULL DEFAULT 0.0
+                        CHECK(usage_share >= 0.0 AND usage_share <= 1.0),
+
+                    -- v3: self expectations (player self-perception; optional)
+                    self_expected_mpg REAL,
+                    self_expected_starts_rate REAL
+                        CHECK(self_expected_starts_rate IS NULL OR (self_expected_starts_rate >= 0.0 AND self_expected_starts_rate <= 1.0)),
+                    self_expected_closes_rate REAL
+                        CHECK(self_expected_closes_rate IS NULL OR (self_expected_closes_rate >= 0.0 AND self_expected_closes_rate <= 1.0)),
+
+                    -- v3: dynamic stances (short-to-mid-term attitude; 0..1)
+                    stance_skepticism REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_skepticism >= 0.0 AND stance_skepticism <= 1.0),
+                    stance_resentment REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_resentment >= 0.0 AND stance_resentment <= 1.0),
+                    stance_hardball REAL NOT NULL DEFAULT 0.0
+                        CHECK(stance_hardball >= 0.0 AND stance_hardball <= 1.0),
 
                     trade_request_level INTEGER NOT NULL DEFAULT 0
                         CHECK(trade_request_level IN (0,1,2)),
@@ -54,6 +90,23 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     cooldown_trade_until TEXT,
                     cooldown_help_until TEXT,
                     cooldown_contract_until TEXT,
+
+                    -- v2 cooldowns
+                    cooldown_role_until TEXT,
+                    cooldown_health_until TEXT,
+                    cooldown_chemistry_until TEXT,
+
+                    -- v2 escalation stages (0..4)
+                    escalation_role INTEGER NOT NULL DEFAULT 0
+                        CHECK(escalation_role >= 0 AND escalation_role <= 4),
+                    escalation_contract INTEGER NOT NULL DEFAULT 0
+                        CHECK(escalation_contract >= 0 AND escalation_contract <= 4),
+                    escalation_team INTEGER NOT NULL DEFAULT 0
+                        CHECK(escalation_team >= 0 AND escalation_team <= 4),
+                    escalation_health INTEGER NOT NULL DEFAULT 0
+                        CHECK(escalation_health >= 0 AND escalation_health <= 4),
+                    escalation_chemistry INTEGER NOT NULL DEFAULT 0
+                        CHECK(escalation_chemistry >= 0 AND escalation_chemistry <= 4),
 
                     last_processed_month TEXT,
 
@@ -136,8 +189,8 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     source_event_id TEXT,
                     response_id TEXT,
 
-                    promise_type TEXT NOT NULL
-                        CHECK(promise_type IN ('MINUTES','HELP','SHOP_TRADE','ROLE')),
+                    -- NOTE: promise_type CHECK constraint intentionally removed for v2 development.
+                    promise_type TEXT NOT NULL,
 
                     status TEXT NOT NULL DEFAULT 'ACTIVE'
                         CHECK(status IN ('ACTIVE','FULFILLED','BROKEN','EXPIRED','CANCELLED')),
@@ -164,3 +217,28 @@ def ddl(*, now: str, schema_version: str) -> str:  # noqa: ARG001
                     ON player_agency_promises(status, due_month);
 
 """
+
+
+def migrate(cur, *, ensure_columns) -> None:
+    """Post-DDL migrations (additive columns).
+
+    NOTE: This project intentionally keeps agency schema migrations additive
+    (no destructive changes) to preserve commercial robustness.
+
+    The `ensure_columns` helper matches LeagueRepo._ensure_table_columns.
+    """
+    ensure_columns(
+        cur,
+        "player_agency_state",
+        {
+            # v3: self expectations
+            "self_expected_mpg": "REAL",
+            "self_expected_starts_rate": "REAL",
+            "self_expected_closes_rate": "REAL",
+
+            # v3: dynamic stances
+            "stance_skepticism": "REAL NOT NULL DEFAULT 0.0",
+            "stance_resentment": "REAL NOT NULL DEFAULT 0.0",
+            "stance_hardball": "REAL NOT NULL DEFAULT 0.0",
+        },
+    )

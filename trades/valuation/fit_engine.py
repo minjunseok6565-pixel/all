@@ -76,23 +76,41 @@ class FitEngineConfig:
     fit_below_threshold_floor: float = 0.35
     fit_below_threshold_strength: float = 2.0  # threshold 아래면 더 빠르게 할인
 
-    # --- Supply extraction hooks (확장성)
-    # 프로젝트에서 실제 attrs_json 키가 확정되면 여기를 SSOT로 튜닝.
+    # --- Supply extraction hooks (heuristic fallback when role_fit is absent)
+    # These keys MUST match the SSOT key names stored in `players.attrs_json`.
+    # See: derived_formulas.COL.values(), ratings_2k.REQUIRED_2K_KEYS, training/mapping.CATEGORY_KEYS.
     attr_keys_spacing: Tuple[str, ...] = (
-        "ThreePoint", "Three-Point Shot", "3PT", "CatchShoot", "SpotUp",
+        "Three-Point Shot",
     )
     attr_keys_rim_pressure: Tuple[str, ...] = (
-        "DrivingLayup", "CloseShot", "Finishing", "RimAttack", "DrawFoul",
+        "Layup",
+        "Driving Dunk",
+        "Standing Dunk",
+        "Draw Foul",
+        "Close Shot",
     )
     attr_keys_primary_initiator: Tuple[str, ...] = (
-        "BallHandle", "PassAccuracy", "Playmaking", "SpeedWithBall",
+        "Ball Handle",
+        "Pass Accuracy",
+        "Pass Vision",
+        "Pass IQ",
+        "Speed with Ball",
     )
     attr_keys_shot_creation: Tuple[str, ...] = (
-        "ShotIQ", "ShotCreating", "PullUp", "Isolation", "MidRange",
+        "Ball Handle",
+        "Speed with Ball",
+        "Mid-Range Shot",
     )
     attr_keys_defense: Tuple[str, ...] = (
-        "PerimeterDefense", "InteriorDefense", "Steal", "Block", "DefIQ",
+        "Perimeter Defense",
+        "Interior Defense",
+        "Help Defense IQ",
+        "Pass Perception",
+        "Steal",
+        "Block",
+        "Defensive Consistency",
     )
+
 
     # attrs scale handling
     attr_scale_max: float = 99.0  # 2K-like scale fallback

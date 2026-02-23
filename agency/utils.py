@@ -47,6 +47,23 @@ def safe_float(x: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def safe_float_opt(x: Any) -> Optional[float]:
+    """Return float(x) if possible, else None.
+
+    Unlike safe_float(), this helper preserves *missing* values (None/empty).
+    It is intended for parsing optional targets in payloads/JSON.
+    """
+    try:
+        if x is None:
+            return None
+        if isinstance(x, str) and not x.strip():
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+
 def safe_int(x: Any, default: int = 0) -> int:
     try:
         if x is None:

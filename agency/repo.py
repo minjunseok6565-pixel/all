@@ -18,7 +18,7 @@ Dates are stored as ISO strings.
 import sqlite3
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from .utils import json_dumps, json_loads, norm_date_iso, norm_month_key, safe_float, safe_int
+from .utils import clamp01, json_dumps, json_loads, norm_date_iso, norm_month_key, safe_float, safe_float_opt, safe_int
 
 
 def _uniq_str_ids(ids: list[str]) -> list[str]:
@@ -64,11 +64,41 @@ def get_player_agency_states(
             minutes_frustration,
             team_frustration,
             trust,
+
+            role_frustration,
+            contract_frustration,
+            health_frustration,
+            chemistry_frustration,
+            usage_frustration,
+
+            starts_rate,
+            closes_rate,
+            usage_share,
+
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            stance_skepticism,
+            stance_resentment,
+            stance_hardball,
+
             trade_request_level,
+
             cooldown_minutes_until,
             cooldown_trade_until,
             cooldown_help_until,
             cooldown_contract_until,
+
+            cooldown_role_until,
+            cooldown_health_until,
+            cooldown_chemistry_until,
+
+            escalation_role,
+            escalation_contract,
+            escalation_team,
+            escalation_health,
+            escalation_chemistry,
+
             last_processed_month,
             context_json
         FROM player_agency_state
@@ -91,13 +121,40 @@ def get_player_agency_states(
             "minutes_frustration": safe_float(r[7], 0.0),
             "team_frustration": safe_float(r[8], 0.0),
             "trust": safe_float(r[9], 0.5),
-            "trade_request_level": safe_int(r[10], 0),
-            "cooldown_minutes_until": norm_date_iso(r[11]),
-            "cooldown_trade_until": norm_date_iso(r[12]),
-            "cooldown_help_until": norm_date_iso(r[13]),
-            "cooldown_contract_until": norm_date_iso(r[14]),
-            "last_processed_month": norm_month_key(r[15]),
-            "context": json_loads(r[16], default={}) or {},
+            "role_frustration": safe_float(r[10], 0.0),
+            "contract_frustration": safe_float(r[11], 0.0),
+            "health_frustration": safe_float(r[12], 0.0),
+            "chemistry_frustration": safe_float(r[13], 0.0),
+            "usage_frustration": safe_float(r[14], 0.0),
+            "starts_rate": safe_float(r[15], 0.0),
+            "closes_rate": safe_float(r[16], 0.0),
+            "usage_share": safe_float(r[17], 0.0),
+
+            # v3: self expectations (optional)
+            "self_expected_mpg": safe_float_opt(r[18]),
+            "self_expected_starts_rate": safe_float_opt(r[19]),
+            "self_expected_closes_rate": safe_float_opt(r[20]),
+
+            # v3: dynamic stances (0..1)
+            "stance_skepticism": float(clamp01(safe_float(r[21], 0.0))),
+            "stance_resentment": float(clamp01(safe_float(r[22], 0.0))),
+            "stance_hardball": float(clamp01(safe_float(r[23], 0.0))),
+
+            "trade_request_level": safe_int(r[24], 0),
+            "cooldown_minutes_until": norm_date_iso(r[25]),
+            "cooldown_trade_until": norm_date_iso(r[26]),
+            "cooldown_help_until": norm_date_iso(r[27]),
+            "cooldown_contract_until": norm_date_iso(r[28]),
+            "cooldown_role_until": norm_date_iso(r[29]),
+            "cooldown_health_until": norm_date_iso(r[30]),
+            "cooldown_chemistry_until": norm_date_iso(r[31]),
+            "escalation_role": safe_int(r[32], 0),
+            "escalation_contract": safe_int(r[33], 0),
+            "escalation_team": safe_int(r[34], 0),
+            "escalation_health": safe_int(r[35], 0),
+            "escalation_chemistry": safe_int(r[36], 0),
+            "last_processed_month": norm_month_key(r[37]),
+            "context": json_loads(r[38], default={}) or {},
         }
 
     return out
@@ -135,14 +192,43 @@ def upsert_player_agency_states(
                 continue
 
             role_bucket = str(st.get("role_bucket") or "UNKNOWN")
-            leverage = float(safe_float(st.get("leverage"), 0.0))
+            leverage = float(clamp01(st.get("leverage")))
 
-            exp_mpg = float(safe_float(st.get("minutes_expected_mpg"), 0.0))
-            act_mpg = float(safe_float(st.get("minutes_actual_mpg"), 0.0))
+            exp_mpg = float(max(0.0, safe_float(st.get("minutes_expected_mpg"), 0.0)))
+            act_mpg = float(max(0.0, safe_float(st.get("minutes_actual_mpg"), 0.0)))
 
-            minutes_fr = float(safe_float(st.get("minutes_frustration"), 0.0))
-            team_fr = float(safe_float(st.get("team_frustration"), 0.0))
-            trust = float(safe_float(st.get("trust"), 0.5))
+            minutes_fr = float(clamp01(st.get("minutes_frustration")))
+            team_fr = float(clamp01(st.get("team_frustration")))
+            trust = float(clamp01(st.get("trust")))
+
+            # v2 axis persistence (tick v1 ignores these but we keep them for v2+)
+            role_fr = float(clamp01(st.get("role_frustration")))
+            contract_fr = float(clamp01(st.get("contract_frustration")))
+            health_fr = float(clamp01(st.get("health_frustration")))
+            chemistry_fr = float(clamp01(st.get("chemistry_frustration")))
+            usage_fr = float(clamp01(st.get("usage_frustration")))
+
+            starts_rate = float(clamp01(st.get("starts_rate")))
+            closes_rate = float(clamp01(st.get("closes_rate")))
+            usage_share = float(clamp01(st.get("usage_share")))
+
+            # v3: self expectations (optional)
+            self_exp_mpg = safe_float_opt(st.get("self_expected_mpg"))
+            if self_exp_mpg is not None:
+                self_exp_mpg = float(max(0.0, self_exp_mpg))
+
+            self_exp_starts = safe_float_opt(st.get("self_expected_starts_rate"))
+            if self_exp_starts is not None:
+                self_exp_starts = float(clamp01(self_exp_starts))
+
+            self_exp_closes = safe_float_opt(st.get("self_expected_closes_rate"))
+            if self_exp_closes is not None:
+                self_exp_closes = float(clamp01(self_exp_closes))
+
+            # v3: dynamic stances (0..1)
+            stance_skepticism = float(clamp01(st.get("stance_skepticism")))
+            stance_resentment = float(clamp01(st.get("stance_resentment")))
+            stance_hardball = float(clamp01(st.get("stance_hardball")))
 
             tr_level = safe_int(st.get("trade_request_level"), 0)
 
@@ -150,6 +236,24 @@ def upsert_player_agency_states(
             cd_trade = norm_date_iso(st.get("cooldown_trade_until"))
             cd_help = norm_date_iso(st.get("cooldown_help_until"))
             cd_contract = norm_date_iso(st.get("cooldown_contract_until"))
+
+            cd_role = norm_date_iso(st.get("cooldown_role_until"))
+            cd_health = norm_date_iso(st.get("cooldown_health_until"))
+            cd_chem = norm_date_iso(st.get("cooldown_chemistry_until"))
+
+            def _clamp_stage(x: Any) -> int:
+                v = safe_int(x, 0)
+                if v < 0:
+                    return 0
+                if v > 4:
+                    return 4
+                return int(v)
+
+            esc_role = _clamp_stage(st.get("escalation_role"))
+            esc_contract = _clamp_stage(st.get("escalation_contract"))
+            esc_team = _clamp_stage(st.get("escalation_team"))
+            esc_health = _clamp_stage(st.get("escalation_health"))
+            esc_chem = _clamp_stage(st.get("escalation_chemistry"))
 
             last_month = norm_month_key(st.get("last_processed_month"))
 
@@ -172,11 +276,35 @@ def upsert_player_agency_states(
                 float(minutes_fr),
                 float(team_fr),
                 float(trust),
+                float(role_fr),
+                float(contract_fr),
+                float(health_fr),
+                float(chemistry_fr),
+                float(usage_fr),
+                float(starts_rate),
+                float(closes_rate),
+                float(usage_share),
+
+                self_exp_mpg,
+                self_exp_starts,
+                self_exp_closes,
+                float(stance_skepticism),
+                float(stance_resentment),
+                float(stance_hardball),
+
                 int(tr_level),
                 cd_minutes,
                 cd_trade,
                 cd_help,
                 cd_contract,
+                cd_role,
+                cd_health,
+                cd_chem,
+                int(esc_role),
+                int(esc_contract),
+                int(esc_team),
+                int(esc_health),
+                int(esc_chem),
                 last_month,
                 json_dumps(dict(context)),
                 str(now),
@@ -200,17 +328,41 @@ def upsert_player_agency_states(
             minutes_frustration,
             team_frustration,
             trust,
+            role_frustration,
+            contract_frustration,
+            health_frustration,
+            chemistry_frustration,
+            usage_frustration,
+            starts_rate,
+            closes_rate,
+            usage_share,
+
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            stance_skepticism,
+            stance_resentment,
+            stance_hardball,
+
             trade_request_level,
             cooldown_minutes_until,
             cooldown_trade_until,
             cooldown_help_until,
             cooldown_contract_until,
+            cooldown_role_until,
+            cooldown_health_until,
+            cooldown_chemistry_until,
+            escalation_role,
+            escalation_contract,
+            escalation_team,
+            escalation_health,
+            escalation_chemistry,
             last_processed_month,
             context_json,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(player_id) DO UPDATE SET
             team_id=excluded.team_id,
             season_year=excluded.season_year,
@@ -221,11 +373,35 @@ def upsert_player_agency_states(
             minutes_frustration=excluded.minutes_frustration,
             team_frustration=excluded.team_frustration,
             trust=excluded.trust,
+            role_frustration=excluded.role_frustration,
+            contract_frustration=excluded.contract_frustration,
+            health_frustration=excluded.health_frustration,
+            chemistry_frustration=excluded.chemistry_frustration,
+            usage_frustration=excluded.usage_frustration,
+            starts_rate=excluded.starts_rate,
+            closes_rate=excluded.closes_rate,
+            usage_share=excluded.usage_share,
+
+            self_expected_mpg=excluded.self_expected_mpg,
+            self_expected_starts_rate=excluded.self_expected_starts_rate,
+            self_expected_closes_rate=excluded.self_expected_closes_rate,
+            stance_skepticism=excluded.stance_skepticism,
+            stance_resentment=excluded.stance_resentment,
+            stance_hardball=excluded.stance_hardball,
+
             trade_request_level=excluded.trade_request_level,
             cooldown_minutes_until=excluded.cooldown_minutes_until,
             cooldown_trade_until=excluded.cooldown_trade_until,
             cooldown_help_until=excluded.cooldown_help_until,
             cooldown_contract_until=excluded.cooldown_contract_until,
+            cooldown_role_until=excluded.cooldown_role_until,
+            cooldown_health_until=excluded.cooldown_health_until,
+            cooldown_chemistry_until=excluded.cooldown_chemistry_until,
+            escalation_role=excluded.escalation_role,
+            escalation_contract=excluded.escalation_contract,
+            escalation_team=excluded.escalation_team,
+            escalation_health=excluded.escalation_health,
+            escalation_chemistry=excluded.escalation_chemistry,
             last_processed_month=excluded.last_processed_month,
             context_json=excluded.context_json,
             updated_at=excluded.updated_at;
