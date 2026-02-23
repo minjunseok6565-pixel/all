@@ -958,7 +958,11 @@ def _eval_help(
             axis=offer.axis,
             due_month=offer.due_month,
             target_value=None,
-            target_json={"offer_need_tags": list(counter_tags), "ask_need_tags": list(ask_tags)},
+            target_json={
+                "offer_need_tags": list(counter_tags),
+                "ask_need_tags": list(ask_tags),
+                "need_tags": list(counter_tags),
+            },
         )
         return Decision(
             verdict="COUNTER",
