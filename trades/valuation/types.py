@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from dataclasses import dataclass, field, is_dataclass, fields
 from enum import Enum
 from typing import (
@@ -476,4 +479,28 @@ def stable_asset_key_from_models(asset: Asset) -> str:
     - valuation layer에서 이 함수를 SSOT로 사용하면 로그/캐시 키가 일관됨.
     """
     return asset_key(asset)
+
+
+def pick_protection_signature(protection: Optional[Dict[str, Any]]) -> str:
+    """Return a stable signature for a pick protection dict.
+
+    - Used ONLY for valuation cache keys (not SSOT asset identity).
+    - Must be deterministic and MUST NOT raise.
+    - None/empty -> "" (treat as unprotected).
+    """
+    if not protection:
+        return ""
+
+    try:
+        blob = json.dumps(
+            protection,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+    except Exception:
+        blob = str(protection)
+
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 

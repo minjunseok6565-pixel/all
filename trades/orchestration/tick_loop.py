@@ -26,8 +26,9 @@ from .market_state import (
 from .actor_selection import select_trade_actors
 from .promotion import promote_and_commit, compute_deal_key
 from .telemetry import build_tick_summary_payload, emit_tick_summary_event
+from .locks import trade_exec_serial_lock
 from . import policy
-from ..trade_rules import parse_trade_deadline
+from ..trade_rules import parse_trade_deadline, is_trade_window_open, offseason_trade_reopen_date
 
 
 def _allow_state_mutation(current_date_override: Optional[date]) -> bool:
@@ -53,6 +54,67 @@ def _stable_seed_int(*parts: str) -> int:
 
 
 def run_trade_orchestration_tick(
+    *,
+    current_date: Optional[date] = None,
+    db_path: Optional[str] = None,
+    user_controlled_team_ids: Optional[Sequence[str]] = None,
+    user_team_id: Optional[str] = None,
+    config: Optional[OrchestrationConfig] = None,
+    generator: Optional[DealGenerator] = None,
+    validate_integrity: bool = False,
+    dry_run: bool = False,
+) -> TickReport:
+    """
+    Entry point for GM trade-orchestration ticks.
+
+    Single-process safety: serialize tick execution with user trade commits
+    (trades.apply.apply_deal_to_db) so that derived market/memory state does not
+    suffer lost updates and tick-time constraints remain consistent.
+    """
+    cfg = config or OrchestrationConfig()
+
+    # When disabled, return the normal report without taking the global serial lock.
+    if not bool(cfg.enabled):
+        return _run_trade_orchestration_tick_impl(
+            current_date=current_date,
+            db_path=db_path,
+            user_controlled_team_ids=user_controlled_team_ids,
+            user_team_id=user_team_id,
+            config=cfg,
+            generator=generator,
+            validate_integrity=validate_integrity,
+            dry_run=dry_run,
+        )
+
+    allow_mut = _allow_state_mutation(current_date)
+    if allow_mut and not dry_run:
+        today = current_date or state.get_current_date_as_date()
+        today_iso = today.isoformat()
+        with trade_exec_serial_lock(reason=f"GM_TICK:{today_iso}"):
+            return _run_trade_orchestration_tick_impl(
+                current_date=current_date,
+                db_path=db_path,
+                user_controlled_team_ids=user_controlled_team_ids,
+                user_team_id=user_team_id,
+                config=cfg,
+                generator=generator,
+                validate_integrity=validate_integrity,
+                dry_run=dry_run,
+            )
+
+    return _run_trade_orchestration_tick_impl(
+        current_date=current_date,
+        db_path=db_path,
+        user_controlled_team_ids=user_controlled_team_ids,
+        user_team_id=user_team_id,
+        config=cfg,
+        generator=generator,
+        validate_integrity=validate_integrity,
+        dry_run=dry_run,
+    )
+
+
+def _run_trade_orchestration_tick_impl(
     *,
     current_date: Optional[date] = None,
     db_path: Optional[str] = None,
@@ -194,7 +256,7 @@ def run_trade_orchestration_tick(
             db_path=resolved_db_path,
             validate_integrity=bool(validate_integrity),
         ) as tick_ctx:
-            # trade_deadline hard stop (SSOT: trades.trade_rules.parse_trade_deadline)
+            # trade_deadline hard stop (SSOT: trades.trade_rules.is_trade_window_open)
             try:
                 league = (tick_ctx.rule_tick_ctx.ctx_state_base or {}).get("league", {})
                 tr = (league or {}).get("trade_rules", {}) if isinstance(league, dict) else {}
@@ -207,10 +269,12 @@ def run_trade_orchestration_tick(
                         report.skip_reason = "DEADLINE_PARSE_ERROR"
                         report.meta["trade_deadline_raw"] = repr(deadline_raw)
                         return report
-                    if d is not None and today > d:
+                    if d is not None and not is_trade_window_open(current_date=today, trade_deadline=d):
+                        reopen = offseason_trade_reopen_date(d)
                         report.skipped = True
                         report.skip_reason = "DEADLINE_PASSED"
                         report.meta["trade_deadline"] = d.isoformat()
+                        report.meta["trade_reopens"] = reopen.isoformat()
                         return report
             except Exception:
                 report.skipped = True

@@ -101,15 +101,20 @@ def _round_to_unit(value: float, unit: int) -> int:
     return int(round(float(value) / float(u))) * u
 
 
-def _cap_for_season_year(season_year: int) -> int:
+def _cap_for_season_year(season_year: int, *, cap_model: Optional["CapModel"] = None) -> int:
     """Return salary cap for season_year using CapModel SSOT.
 
     NOTE:
-    - draft/apply.py currently does not receive league.trade_rules.
-      So we use CapModel.defaults() (config defaults) as the single official
-      implementation, rather than duplicating formulas here.
+    - Prefer an injected cap_model (constructed from SSOT: league.trade_rules).
+    - Fall back to CapModel.defaults() only when cap_model is not provided (e.g.,
+      offline/unit-test usage).
     """
     y = int(season_year)
+    if cap_model is not None:
+        try:
+            return int(cap_model.salary_cap_for_season(y))
+        except Exception:
+            pass
     if _CAP_MODEL is not None:
         try:
             return int(_CAP_MODEL.salary_cap_for_season(y))
@@ -119,8 +124,8 @@ def _cap_for_season_year(season_year: int) -> int:
     return _round_to_unit(float(CAP_BASE_SALARY_CAP), int(CAP_ROUND_UNIT))
 
 
-def _min0_salary_for_season_year(season_year: int) -> int:
-    cap = _cap_for_season_year(int(season_year))
+def _min0_salary_for_season_year(season_year: int, *, cap_model: Optional["CapModel"] = None) -> int:
+    cap = _cap_for_season_year(int(season_year), cap_model=cap_model)
     return _round_to_unit(float(cap) * float(SRPE_MIN0_CAP_RATIO), int(CAP_ROUND_UNIT))
 
 
@@ -142,8 +147,8 @@ def _srpe_template_for_pick(*, draft_year: int, overall_no: int, player_id: str)
     return "2+1"
 
 
-def _srpe_first_year_salary(*, draft_year: int, overall_no: int) -> int:
-    min0 = _min0_salary_for_season_year(int(draft_year))
+def _srpe_first_year_salary(*, draft_year: int, overall_no: int, cap_model: Optional["CapModel"] = None) -> int:
+    min0 = _min0_salary_for_season_year(int(draft_year), cap_model=cap_model)
     # linear premium: 31 -> SRPE_MAX_MULT, 60 -> SRPE_MIN_MULT
     t = (int(overall_no) - 31) / 29.0
     t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
@@ -156,10 +161,11 @@ def _build_second_round_exception_terms(
     draft_year: int,
     overall_no: int,
     player_id: str,
+    cap_model: Optional["CapModel"] = None,
 ) -> tuple[int, Dict[int, int], List[Dict[str, Any]], Dict[str, Any]]:
     template = _srpe_template_for_pick(draft_year=int(draft_year), overall_no=int(overall_no), player_id=str(player_id))
     years = 4 if template == "3+1" else 3
-    y1 = _srpe_first_year_salary(draft_year=int(draft_year), overall_no=int(overall_no))
+    y1 = _srpe_first_year_salary(draft_year=int(draft_year), overall_no=int(overall_no), cap_model=cap_model)
     salary_by_year: Dict[int, int] = {}
     for i in range(int(years)):
         salary_by_year[int(draft_year) + i] = _round_to_unit(float(y1) * (1.0 + float(SRPE_ANNUAL_RAISE) * i), int(CAP_ROUND_UNIT))
@@ -221,6 +227,7 @@ def apply_pick_to_db(
     turn: DraftTurn,
     prospect: Prospect,
     draft_year: int,
+    cap_model: Optional["CapModel"] = None,
     contract_policy: Optional[RookieContractPolicy] = None,
     contract_years: int = 4,
     tx_date_iso: Optional[str] = None,
@@ -252,6 +259,7 @@ def apply_pick_to_db(
             draft_year=dy,
             overall_no=int(turn.overall_no),
             player_id=str(prospect.temp_id),
+            cap_model=cap_model,
         )
     else:
         years_i = max(1, int(contract_years))

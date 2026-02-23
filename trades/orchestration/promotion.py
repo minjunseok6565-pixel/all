@@ -29,6 +29,7 @@ from .market_state import (
     record_market_event,
     get_rel_meta_date_iso,
     touch_thread,
+    apply_trade_executed_effects,
 )
 
 
@@ -873,50 +874,73 @@ def promote_and_commit(
             exec_deal_id = deal_key
             try:
                 exec_deal_id = deal_execution_id(prop.deal, trade_date=today)
-                ev = league_service.execute_trade(canonicalize_deal(prop.deal), source="AI_GM_ORCHESTRATION", trade_date=today, deal_id=exec_deal_id)
-                result.executed_trade_events.append(ev)
-                ai_ai_committed += 1
-                team_trade_counts_today[t1] = int(team_trade_counts_today.get(t1, 0) or 0) + 1
-                team_trade_counts_today[t2] = int(team_trade_counts_today.get(t2, 0) or 0) + 1
-                if bool(getattr(config, "refresh_ui_cache_after_execute", True)):
-                    moved_ids = _extract_moved_player_ids(ev or {})
-                    if moved_ids:
-                        try:
-                            ui_cache_refresh_players(moved_ids)
-                            result.ui_cache_refreshed_players += len(moved_ids)
-                        except Exception as exc:
-                            result.ui_cache_refresh_failures += 1
-                            result.errors.append({"type": "UI_CACHE_REFRESH_FAILED", "deal_id": deal_key, "exec_deal_id": exec_deal_id, "num_players": len(moved_ids), "exc": type(exc).__name__})
-                p1 = _effective_pressure(t1)
-                p2 = _effective_pressure(t2)
-                try:
-                    d1 = int(policy.cooldown_days_after_executed_trade(p1, float(rush_s), config=config))
-                except Exception:
-                    d1 = int(config.cooldown_days_after_executed_trade)
-                try:
-                    d2 = int(policy.cooldown_days_after_executed_trade(p2, float(rush_s), config=config))
-                except Exception:
-                    d2 = int(config.cooldown_days_after_executed_trade)
-                add_team_cooldown(
-                    trade_market,
-                    team_id=t1,
-                    today=today,
-                    days=int(d1),
-                    reason="TRADE_EXECUTED",
-                    meta={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "other": t2, "effective_pressure": float(p1 or 0.0), "rush_scalar": float(rush_s or 0.0)},
+                ev = league_service.execute_trade(
+                    canonicalize_deal(prop.deal),
+                    source="AI_GM_ORCHESTRATION",
+                    trade_date=today,
+                    deal_id=exec_deal_id,
                 )
-                add_team_cooldown(
-                    trade_market,
-                    team_id=t2,
-                    today=today,
-                    days=int(d2),
-                    reason="TRADE_EXECUTED",
-                    meta={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "other": t1, "effective_pressure": float(p2 or 0.0), "rush_scalar": float(rush_s or 0.0)},
-                )
-                record_market_event(trade_market, today=today, event_type="TRADE_EXECUTED", payload={"deal_id": deal_key, "exec_deal_id": exec_deal_id, "buyer_id": t1, "seller_id": t2, "score": float(score or 0.0)})
-                bump_relationship(trade_memory, team_a=t1, team_b=t2, today=today, patch={"counts": {"trade_executed": 1}, "meta": {"last_deal_id": deal_key, "last_exec_deal_id": exec_deal_id}})
             except Exception as exc:
-                result.errors.append({"type": "AI_AI_EXECUTE_FAILED", "deal_id": deal_key, "exec_deal_id": exec_deal_id, "exc": type(exc).__name__})
+                result.errors.append(
+                    {
+                        "type": "AI_AI_EXECUTE_FAILED",
+                        "deal_id": deal_key,
+                        "exec_deal_id": exec_deal_id,
+                        "exc": type(exc).__name__,
+                    }
+                )
+                continue
+
+            result.executed_trade_events.append(ev)
+            ai_ai_committed += 1
+            team_trade_counts_today[t1] = int(team_trade_counts_today.get(t1, 0) or 0) + 1
+            team_trade_counts_today[t2] = int(team_trade_counts_today.get(t2, 0) or 0) + 1
+
+            # UI cache refresh (best-effort)
+            if bool(getattr(config, "refresh_ui_cache_after_execute", True)):
+                moved_ids = _extract_moved_player_ids(ev or {})
+                if moved_ids:
+                    try:
+                        ui_cache_refresh_players(moved_ids)
+                        result.ui_cache_refreshed_players += len(moved_ids)
+                    except Exception as exc:
+                        result.ui_cache_refresh_failures += 1
+                        result.errors.append(
+                            {
+                                "type": "UI_CACHE_REFRESH_FAILED",
+                                "deal_id": deal_key,
+                                "exec_deal_id": exec_deal_id,
+                                "num_players": len(moved_ids),
+                                "exc": type(exc).__name__,
+                            }
+                        )
+
+            # Project executed-trade effects into market/memory via SSOT projector.
+            p1 = _effective_pressure(t1)
+            p2 = _effective_pressure(t2)
+            eff_map = {t1: float(p1 or 0.0), t2: float(p2 or 0.0)}
+            try:
+                apply_trade_executed_effects(
+                    transaction=ev,
+                    trade_market=trade_market,
+                    trade_memory=trade_memory,
+                    today=today,
+                    config=config,
+                    score=float(score or 0.0),
+                    effective_pressure_by_team=eff_map,
+                    rush_scalar=float(rush_s or 0.0),
+                    buyer_id=t1,
+                    seller_id=t2,
+                )
+            except Exception as exc:
+                result.errors.append(
+                    {
+                        "type": "MARKET_SYNC_FAILED",
+                        "deal_id": deal_key,
+                        "exec_deal_id": exec_deal_id,
+                        "exc": type(exc).__name__,
+                    }
+                )
         else:
             ai_ai_committed += 1
             team_trade_counts_today[t1] = int(team_trade_counts_today.get(t1, 0) or 0) + 1

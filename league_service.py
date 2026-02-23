@@ -24,6 +24,8 @@ from datetime import date
 from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
+from cap_model import CapModel
+
 logger = logging.getLogger(__name__)
 _WARN_COUNTS: Dict[str, int] = {}
 
@@ -89,6 +91,26 @@ def _current_season_year_ssot() -> int:
         return int(y)
     except Exception as exc:
         raise RuntimeError("season_year SSOT unavailable: state.get_league_context_snapshot()['season_year'] required") from exc
+
+
+def _trade_rules_ssot() -> Mapping[str, Any]:
+    """Authoritative trade_rules source for commands: use state league context snapshot.
+
+    This intentionally fails fast if state is unavailable/missing trade_rules,
+    to avoid mixed definitions (config defaults vs state league rules).
+    """
+    try:
+        import state  # local import to avoid import cycles at module import time
+
+        snap = state.get_league_context_snapshot()
+        tr = snap.get("trade_rules")
+        if tr is None:
+            raise KeyError("trade_rules missing in league context snapshot")
+        if not isinstance(tr, Mapping):
+            raise TypeError("trade_rules is not a mapping")
+        return tr
+    except Exception as exc:
+        raise RuntimeError("trade_rules SSOT unavailable: state.get_league_context_snapshot()['trade_rules'] required") from exc
 
 
 def _infer_season_year_from_date(d: date) -> int:
@@ -253,6 +275,21 @@ def _extract_team_ids_from_deal(deal: Any) -> List[str]:
 
     return []
 
+@dataclass
+class CapViolationError(Exception):
+    """Raised when a cap rule is violated.
+
+    This is intended to be translated at the API layer into a 409 (conflict) rather
+    than a 500, because it represents a valid rule-based rejection.
+    """
+
+    code: str
+    message: str
+    details: Optional[Any] = None
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.code}: {self.message}"
+
 
 @dataclass(frozen=True)
 class ServiceEvent:
@@ -353,6 +390,80 @@ class LeagueService:
                 _warn_limited("SALARY_FOR_SEASON_COERCE_FAILED", f"season_year={season_year!r} value={v!r}")
                 return None
         return None
+
+    
+    def _compute_team_payroll_for_season_in_cur(self, cur, team_id: str, season_year: int) -> int:
+        """Compute team payroll for a specific season inside an existing cursor.
+
+        Policy (v1, defensive):
+        - Prefer SSOT contract salary_by_year for the given season when available.
+        - Fall back to roster.salary_amount when contract data is missing/unreadable.
+
+        This keeps FA cap enforcement consistent with existing DB state while
+        remaining resilient to partial/legacy data.
+        """
+        tid = self._norm_team_id(team_id, strict=False)
+        sy = int(season_year)
+        total = 0
+
+        try:
+            rows = cur.execute(
+                """
+                SELECT player_id, salary_amount
+                FROM roster
+                WHERE team_id=? AND status='active';
+                """,
+                (tid,),
+            ).fetchall()
+        except Exception as e:
+            _warn_limited("PAYROLL_ROSTER_QUERY_FAILED", f"team_id={tid!r} exc_type={type(e).__name__}", limit=3)
+            return 0
+
+        for r in list(rows or []):
+            try:
+                pid = str(r["player_id"])  # type: ignore[index]
+                roster_salary_raw = r["salary_amount"]  # type: ignore[index]
+            except Exception:
+                pid = str(r[0])
+                roster_salary_raw = r[1] if len(r) > 1 else 0
+
+            salary_i: Optional[int] = None
+
+            # Try SSOT contract salary first (active_contracts -> contracts.salary_by_season_json).
+            cid: Optional[str] = None
+            try:
+                row_c = cur.execute(
+                    "SELECT contract_id FROM active_contracts WHERE player_id=? LIMIT 1;",
+                    (pid,),
+                ).fetchone()
+                if row_c:
+                    try:
+                        cid = str(row_c["contract_id"])  # type: ignore[index]
+                    except Exception:
+                        cid = str(row_c[0])
+            except Exception as e:
+                _warn_limited("PAYROLL_ACTIVE_CONTRACT_LOOKUP_FAILED", f"player_id={pid!r} exc_type={type(e).__name__}", limit=3)
+                cid = None
+
+            if cid:
+                try:
+                    contract = self._load_contract_row_in_cur(cur, cid)
+                    if str(contract.get("team_id") or "").upper() == tid:
+                        s = self._salary_for_season(contract, sy)
+                        if s is not None:
+                            salary_i = int(s)
+                except Exception as e:
+                    _warn_limited("PAYROLL_CONTRACT_LOAD_FAILED", f"player_id={pid!r} contract_id={cid!r} exc_type={type(e).__name__}", limit=3)
+
+            if salary_i is None:
+                try:
+                    salary_i = int(float(roster_salary_raw)) if roster_salary_raw is not None else 0
+                except Exception:
+                    salary_i = 0
+
+            total += int(salary_i or 0)
+
+        return int(total)
 
     def _tx_exists_by_deal_id(self, cur, deal_id: str) -> bool:
         if not deal_id:
@@ -1177,6 +1288,19 @@ class LeagueService:
                 ).fetchone()
                 if not pick_row:
                     raise TradeError(PICK_NOT_OWNED, "Pick not found", {"pick_id": pick_id, "team_id": from_team_u})
+
+                # Safety: never allow moving a pick that has already been applied in the draft.
+                used = cur.execute(
+                    "SELECT 1 FROM draft_results WHERE pick_id=? LIMIT 1;",
+                    (str(pick_id),),
+                ).fetchone()
+                if used:
+                    raise TradeError(
+                        PICK_NOT_OWNED,
+                        "Pick already used in draft",
+                        {"pick_id": pick_id, "team_id": from_team_u, "reason": "pick_already_used"},
+                    )
+                    
                 current_owner = str(pick_row["owner_team"]).upper()
                 if current_owner != from_team_u:
                     raise TradeError(
@@ -1424,6 +1548,47 @@ class LeagueService:
                 team_option_last_year=team_option_last_year_b,
                 context="sign_free_agent",
             )
+
+            # -----------------------------------------------------------------
+            # (v1) Cap enforcement (FA signings only)
+            # -----------------------------------------------------------------
+            try:
+                cap_model = CapModel.from_trade_rules(_trade_rules_ssot(), current_season_year=int(season_year_i))
+                salary_cap = int(cap_model.salary_cap_for_season(int(start_season_year)))
+            except Exception as exc:
+                raise RuntimeError(
+                    "CapModel SSOT unavailable for FA signing: state.trade_rules + CapModel required"
+                ) from exc
+
+            first_year_salary_raw = salary_norm.get(str(int(start_season_year)))
+            try:
+                first_year_salary_i = int(float(first_year_salary_raw)) if first_year_salary_raw is not None else 0
+            except Exception:
+                first_year_salary_i = 0
+
+            payroll_before = self._compute_team_payroll_for_season_in_cur(cur, team_norm, int(start_season_year))
+            payroll_after = int(payroll_before) + int(first_year_salary_i)
+
+            if payroll_after > int(salary_cap):
+                cap_space_before = int(salary_cap) - int(payroll_before)
+                cap_over_by = int(payroll_after) - int(salary_cap)
+                raise CapViolationError(
+                    code="CAP_NO_SPACE_FOR_FA_SIGNING",
+                    message=(
+                        f"Insufficient cap space to sign free agent for start_season_year={int(start_season_year)}"
+                    ),
+                    details={
+                        "team_id": team_norm,
+                        "player_id": pid,
+                        "start_season_year": int(start_season_year),
+                        "salary_cap": int(salary_cap),
+                        "payroll_before": int(payroll_before),
+                        "first_year_salary": int(first_year_salary_i),
+                        "payroll_after": int(payroll_after),
+                        "cap_space_before": int(cap_space_before),
+                        "cap_over_by": int(cap_over_by),
+                    },
+                )
 
             contract_id = str(new_contract_id())
             contract = make_contract_record(

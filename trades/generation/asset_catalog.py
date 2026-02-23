@@ -899,6 +899,10 @@ def build_trade_asset_catalog(
                 continue
             pid = str(pick_id)
 
+            # SSOT: trade-locked picks (draft_picks.trade_locked) are not tradable assets.
+            if bool(pick_state.get("trade_locked")):
+                continue
+
             lock = _lock_info_for_asset_key(
                 asset_key_value=_asset_key(PickAsset(kind="pick", pick_id=pid)),
                 asset_locks=asset_locks,
@@ -915,6 +919,11 @@ def build_trade_asset_catalog(
 
             within_max = bool(int(snap_pick.year) <= int(draft_year) + int(max_pick_years_ahead))
             if not within_max:
+                continue
+
+            # Never offer already-past picks as trade candidates.
+            # (Used picks should be filtered out at the snapshot layer, but keep generation fail-closed.)
+            if int(snap_pick.year) < int(draft_year):
                 continue
 
             market = _market_summary_for_pick(

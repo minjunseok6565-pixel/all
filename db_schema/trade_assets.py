@@ -1,20 +1,16 @@
 # db_schema/trade_assets.py
-"""SQLite SSOT schema: trade-asset tables.
-
-This module contains only DDL for:
-- draft_picks
-- swap_rights
-- fixed_assets
-
-NOTE: Pure refactor split from league_repo.py (no functional changes).
-"""
+"""SQLite SSOT schema: trade-asset tables."""
 
 from __future__ import annotations
+
+import sqlite3
+from typing import Callable, Mapping
+
+EnsureColumnsFn = Callable[[sqlite3.Cursor, str, Mapping[str, str]], None]
 
 
 def ddl(*, now: str, schema_version: str) -> str:
     """Return DDL SQL for trade-asset tables."""
-    # now/schema_version are kept in the signature for uniformity across modules.
     _ = (now, schema_version)
     return """
 
@@ -26,6 +22,12 @@ def ddl(*, now: str, schema_version: str) -> str:
                     original_team TEXT NOT NULL,
                     owner_team TEXT NOT NULL,
                     protection_json TEXT,
+                    trade_locked INTEGER NOT NULL DEFAULT 0,
+                    trade_lock_reason TEXT,
+                    trade_lock_start_season_year INTEGER,
+                    trade_lock_eval_seasons INTEGER NOT NULL DEFAULT 0,
+                    trade_lock_below_count INTEGER NOT NULL DEFAULT 0,
+                    trade_lock_escalated INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -62,3 +64,18 @@ def ddl(*, now: str, schema_version: str) -> str:
                 );
                 CREATE INDEX IF NOT EXISTS idx_fixed_assets_owner ON fixed_assets(owner_team);
 """
+
+
+def migrate(cur: sqlite3.Cursor, *, ensure_columns: EnsureColumnsFn) -> None:
+    ensure_columns(
+        cur,
+        "draft_picks",
+        {
+            "trade_locked": "INTEGER NOT NULL DEFAULT 0",
+            "trade_lock_reason": "TEXT",
+            "trade_lock_start_season_year": "INTEGER",
+            "trade_lock_eval_seasons": "INTEGER NOT NULL DEFAULT 0",
+            "trade_lock_below_count": "INTEGER NOT NULL DEFAULT 0",
+            "trade_lock_escalated": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )

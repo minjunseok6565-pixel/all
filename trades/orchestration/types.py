@@ -127,6 +127,10 @@ class OrchestrationConfig:
     # --- trade_market.events 보관량 제한
     max_market_events_kept: int = 200
 
+    # --- executed trade projection idempotency guard (state bloat 방지)
+    # trade_market["applied_exec_deal_ids"] 보관량 제한
+    max_applied_exec_deal_ids_kept: int = 500
+
     # --- Market realism: rumors / threads (v1)
     # 상업용 안전성 원칙:
     # - 루머는 "고득점 + office gate 통과" 딜만 기록(버그성/극단 딜 노출 방지)
@@ -261,6 +265,7 @@ class CleanupReport:
     removed_threads_expired: int = 0
     pruned_threads_limit: int = 0
     pruned_events: int = 0
+    pruned_applied_exec_deal_ids: int = 0
 
 
 @dataclass(slots=True)

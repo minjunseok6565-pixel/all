@@ -62,7 +62,41 @@ class PickRulesRule:
                             "reason": "missing_pick",
                         },
                     )
+
+                # SSOT: DB-level pick trade lock (e.g., second apron frozen pick).
+                if bool(pick.get("trade_locked")):
+                    raise TradeError(
+                        DEAL_INVALIDATED,
+                        "Pick is trade-locked",
+                        {
+                            "rule": self.rule_id,
+                            "pick_id": asset.pick_id,
+                            "reason": "pick_trade_locked",
+                            "trade_lock_reason": pick.get("trade_lock_reason"),
+                            "trade_lock_start_season_year": pick.get("trade_lock_start_season_year"),
+                            "trade_lock_eval_seasons": pick.get("trade_lock_eval_seasons"),
+                            "trade_lock_below_count": pick.get("trade_lock_below_count"),
+                            "trade_lock_escalated": pick.get("trade_lock_escalated"),
+                            "owner_team": pick.get("owner_team"),
+                            "original_team": pick.get("original_team"),
+                            "year": pick.get("year"),
+                            "round": pick.get("round"),
+                        },
+                    )
+                
                 pick_year = int(pick.get("year") or 0)
+                if pick_year < current_draft_year:
+                    raise TradeError(
+                        DEAL_INVALIDATED,
+                        "Pick is in the past",
+                        {
+                            "rule": self.rule_id,
+                            "pick_id": asset.pick_id,
+                            "reason": "pick_in_past",
+                            "year": pick_year,
+                            "current_draft_year": current_draft_year,
+                        },
+                    )
                 if pick_year > current_draft_year + max_pick_years_ahead:
                     raise TradeError(
                         DEAL_INVALIDATED,

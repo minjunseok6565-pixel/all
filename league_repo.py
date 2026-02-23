@@ -505,7 +505,7 @@ class LeagueRepo:
             raise ImportError("trades.protection is required") from exc
         rows = cur.execute(
             """
-            SELECT pick_id, year, round, original_team, owner_team, protection_json
+            SELECT pick_id, year, round, original_team, owner_team, protection_json, trade_locked, trade_lock_reason, trade_lock_start_season_year, trade_lock_eval_seasons, trade_lock_below_count, trade_lock_escalated
             FROM draft_picks;
             """
         ).fetchall()
@@ -525,6 +525,67 @@ class LeagueRepo:
                 "original_team": str(r["original_team"]).upper(),
                 "owner_team": str(r["owner_team"]).upper(),
                 "protection": protection,
+                "trade_locked": bool(int(r["trade_locked"]) if r["trade_locked"] is not None else 0),
+                "trade_lock_reason": str(r["trade_lock_reason"]) if r["trade_lock_reason"] else None,
+                "trade_lock_start_season_year": int(r["trade_lock_start_season_year"]) if r["trade_lock_start_season_year"] is not None else None,
+                "trade_lock_eval_seasons": int(r["trade_lock_eval_seasons"] or 0),
+                "trade_lock_below_count": int(r["trade_lock_below_count"] or 0),
+                "trade_lock_escalated": bool(int(r["trade_lock_escalated"]) if r["trade_lock_escalated"] is not None else 0),
+            }
+            out[pick["pick_id"]] = pick
+        return out
+
+    def _read_tradable_draft_picks_map(self, cur: sqlite3.Cursor) -> Dict[str, Dict[str, Any]]:
+        """Read only *tradable* (unused) draft picks.
+
+        SSOT:
+        - `draft_results` is the SSOT for applied picks (idempotent/resumable draft execution).
+        - A pick is tradable iff it exists in `draft_picks` AND has no row in `draft_results`.
+
+        This keeps historical picks in `draft_picks` for auditing, while ensuring the trade
+        system never treats already-used picks as assets.
+        """
+        # SSOT: ensure protection is canonical on reads.
+        try:
+            from trades.protection import normalize_protection_optional
+            from trades.errors import TradeError as _TradeError
+        except Exception as exc:  # pragma: no cover
+            raise ImportError("trades.protection is required") from exc
+
+        rows = cur.execute(
+            """
+            SELECT
+                p.pick_id, p.year, p.round, p.original_team, p.owner_team, p.protection_json,
+                p.trade_locked, p.trade_lock_reason, p.trade_lock_start_season_year,
+                p.trade_lock_eval_seasons, p.trade_lock_below_count, p.trade_lock_escalated
+            FROM draft_picks p
+            LEFT JOIN draft_results r ON r.pick_id = p.pick_id
+            WHERE r.pick_id IS NULL;
+            """
+        ).fetchall()
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            protection_raw = _json_loads(r["protection_json"], None)
+            try:
+                protection = normalize_protection_optional(protection_raw, pick_id=str(r["pick_id"]))
+            except _TradeError as exc:
+                raise ValueError(
+                    f"draft_picks.protection_json invalid schema (pick_id={r['pick_id']}): {exc}"
+                ) from exc
+            pick = {
+                "pick_id": str(r["pick_id"]),
+                "year": int(r["year"]),
+                "round": int(r["round"]),
+                "original_team": str(r["original_team"]).upper(),
+                "owner_team": str(r["owner_team"]).upper(),
+                "protection": protection,
+                "trade_locked": bool(int(r["trade_locked"]) if r["trade_locked"] is not None else 0),
+                "trade_lock_reason": str(r["trade_lock_reason"]) if r["trade_lock_reason"] else None,
+                "trade_lock_start_season_year": int(r["trade_lock_start_season_year"]) if r["trade_lock_start_season_year"] is not None else None,
+                "trade_lock_eval_seasons": int(r["trade_lock_eval_seasons"] or 0),
+                "trade_lock_below_count": int(r["trade_lock_below_count"] or 0),
+                "trade_lock_escalated": bool(int(r["trade_lock_escalated"]) if r["trade_lock_escalated"] is not None else 0),
             }
             out[pick["pick_id"]] = pick
         return out
@@ -599,7 +660,7 @@ class LeagueRepo:
         """
         with self.transaction() as cur:
             return {
-                "draft_picks": self._read_draft_picks_map(cur),
+                "draft_picks": self._read_tradable_draft_picks_map(cur),
                 "swap_rights": self._read_swap_rights_map(cur),
                 "fixed_assets": self._read_fixed_assets_map(cur),
             }

@@ -9,6 +9,8 @@ from schema import normalize_player_id, normalize_team_id
 from .errors import APPLY_FAILED, TradeError
 from .models import Deal, PlayerAsset, resolve_asset_receiver
 
+from .orchestration.locks import trade_exec_serial_lock
+
 
 @dataclass(frozen=True)
 class _PlayerMove:
@@ -124,8 +126,46 @@ def apply_deal_to_db(
                 "player_moves": [m.__dict__ for m in player_moves],
             }
 
-        with _open_service(db_path) as svc:
-            return svc.execute_trade(deal, source=source, trade_date=trade_date, deal_id=deal_id)
+        # Serialize against the trade-orchestration tick to avoid lost updates in
+        # trade_market/trade_memory (derived state) and to keep trade constraints
+        # consistent while a tick is running (single-process).
+        with trade_exec_serial_lock(reason=f"APPLY_TRADE:{source}:{deal_id or ''}"):
+            with _open_service(db_path) as svc:
+                tx = svc.execute_trade(deal, source=source, trade_date=trade_date, deal_id=deal_id)
+
+            # Project the committed trade (DB SSOT) into trade_market/trade_memory.
+            # IMPORTANT:
+            # - DB commit is the SSOT; market/memory are derived state.
+            # - Projection failures must NOT fail the trade (otherwise the user sees an error
+            #   while the DB has already changed).
+            try:
+                from .orchestration.market_state import apply_trade_executed_effects_to_state
+
+                today_arg = None
+                try:
+                    from datetime import date as _date
+
+                    if isinstance(trade_date, _date):
+                        today_arg = trade_date
+                except Exception:
+                    today_arg = None
+
+                sync_report = apply_trade_executed_effects_to_state(
+                    transaction=tx,
+                    today=today_arg,
+                )
+                if isinstance(tx, dict):
+                    tx["market_sync"] = sync_report
+            except Exception as exc:
+                if isinstance(tx, dict):
+                    tx["market_sync"] = {
+                        "applied": False,
+                        "exec_deal_id": tx.get("deal_id"),
+                        "error": str(exc),
+                        "exc": type(exc).__name__,
+                    }
+
+            return tx
     except TradeError:
         raise
     except Exception as exc:
