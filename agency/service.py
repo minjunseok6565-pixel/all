@@ -27,7 +27,7 @@ from .expectations import compute_expectations_for_league
 from .locker_room import build_locker_room_meeting_event, compute_contagion_deltas, compute_team_temperature
 from .behavior_profile import compute_behavior_profile
 from .stance import apply_stance_deltas, stance_deltas_on_promise_outcome
-from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, evaluate_promise
+from .promises import DEFAULT_PROMISE_CONFIG, PromiseEvaluationContext, add_months, due_month_from_now, evaluate_promise
 from .expectations_month import compute_month_expectations
 from .month_context import (
     PlayerMonthSplit,
@@ -40,13 +40,15 @@ from .repo import (
     get_player_agency_states,
     insert_agency_events,
     list_active_promises_due,
+    table_exists,
     update_promises,
     upsert_player_agency_states,
 )
 from .team_transition import apply_team_transition
 from .tick import apply_monthly_player_tick
+from .responses import DEFAULT_RESPONSE_CONFIG, apply_user_response
 from .types import MonthlyPlayerInputs
-from .utils import clamp01, date_add_days, extract_mental_from_attrs, json_loads, make_event_id, norm_date_iso, safe_float, safe_int
+from .utils import clamp01, date_add_days, extract_mental_from_attrs, json_dumps, json_loads, make_event_id, norm_date_iso, norm_month_key, safe_float, safe_int
 
 
 logger = logging.getLogger(__name__)
@@ -1819,6 +1821,385 @@ def apply_monthly_agency_tick(
                         if "need_tag" not in pl and tags:
                             pl["need_tag"] = str(tags[0])
 
+            # ------------------------------------------------------------------
+            # Auto-expire unresponded PROMISE_NEGOTIATION threads (monthly sweep)
+            # ------------------------------------------------------------------
+            negotiation_expire_stats: Dict[str, Any] = {
+                'scanned': 0,
+                'expired': 0,
+                'auto_ended': 0,
+                'skipped_not_expired': 0,
+                'skipped_already_resolved': 0,
+                'skipped_missing_state': 0,
+                'skipped_team_mismatch': 0,
+                'marker_only_closed': 0,
+                'errors': 0,
+            }
+
+            neg_et = str(cfg.event_types.get('promise_negotiation') or 'PROMISE_NEGOTIATION').upper()
+            now_date = str(now_iso)[:10]
+            now_mk = due_month_from_now(now_date, 0)
+
+            try:
+                expire_months = int(getattr(cfg.negotiation, 'expire_months', 1))
+            except Exception:
+                expire_months = 1
+            if expire_months <= 0:
+                expire_months = 1
+
+            response_table_ok = table_exists(cur, 'agency_event_responses')
+
+            last_date = '0000-00-00'
+            last_created = ''
+            batch = 256
+
+            while True:
+                if response_table_ok:
+                    rows_n = cur.execute(
+                        """
+                        SELECT
+                            e.event_id,
+                            e.player_id,
+                            e.team_id,
+                            e.season_year,
+                            e.date,
+                            e.event_type,
+                            e.severity,
+                            e.payload_json,
+                            e.created_at
+                        FROM agency_events e
+                        LEFT JOIN agency_event_responses r
+                            ON r.source_event_id = e.event_id
+                        WHERE e.event_type = ?
+                          AND e.season_year = ?
+                          AND r.source_event_id IS NULL
+                          AND (e.date > ? OR (e.date = ? AND e.created_at > ?))
+                        ORDER BY e.date ASC, e.created_at ASC
+                        LIMIT ?;
+                        """,
+                        (neg_et, int(sy), last_date, last_date, last_created, batch),
+                    ).fetchall()
+                else:
+                    rows_n = cur.execute(
+                        """
+                        SELECT
+                            event_id,
+                            player_id,
+                            team_id,
+                            season_year,
+                            date,
+                            event_type,
+                            severity,
+                            payload_json,
+                            created_at
+                        FROM agency_events
+                        WHERE event_type = ?
+                          AND season_year = ?
+                          AND (date > ? OR (date = ? AND created_at > ?))
+                        ORDER BY date ASC, created_at ASC
+                        LIMIT ?;
+                        """,
+                        (neg_et, int(sy), last_date, last_date, last_created, batch),
+                    ).fetchall()
+
+                if not rows_n:
+                    break
+
+                for row_n in rows_n:
+                    negotiation_expire_stats['scanned'] = int(negotiation_expire_stats['scanned']) + 1
+
+                    source_event_id = str(row_n[0] or '')
+                    pid = str(row_n[1] or '')
+                    tid = str(row_n[2] or '').upper()
+                    sy_ev = safe_int(row_n[3], 0)
+                    date_ev = norm_date_iso(row_n[4]) or str(row_n[4] or '')[:10]
+                    sev_ev = float(clamp01(safe_float(row_n[6], 0.5)))
+                    payload_ev = json_loads(row_n[7], default={}) or {}
+
+                    # Determine expires_month: payload preferred, else event date + expire_months.
+                    expires_month = norm_month_key(payload_ev.get('expires_month'))
+                    if not expires_month and date_ev and len(str(date_ev)) >= 7:
+                        expires_month = add_months(str(date_ev)[:7], int(expire_months))
+
+                    if not expires_month or not now_mk or str(now_mk) <= str(expires_month):
+                        negotiation_expire_stats['skipped_not_expired'] = int(negotiation_expire_stats['skipped_not_expired']) + 1
+                        continue
+
+                    negotiation_expire_stats['expired'] = int(negotiation_expire_stats['expired']) + 1
+
+                    # Idempotency: if deterministic response event already exists, skip.
+                    response_event_id = make_event_id('agency', 'response', source_event_id)
+                    already = cur.execute(
+                        'SELECT 1 FROM agency_events WHERE event_id=? LIMIT 1;',
+                        (response_event_id,),
+                    ).fetchone()
+                    if already:
+                        negotiation_expire_stats['skipped_already_resolved'] = int(negotiation_expire_stats['skipped_already_resolved']) + 1
+                        continue
+
+                    response_id = make_event_id('agency_resp', source_event_id)
+                    resp_payload = {
+                        'auto': True,
+                        'auto_reason': 'NEGOTIATION_EXPIRED',
+                        'source': 'MONTHLY_TICK',
+                        'expires_month': str(expires_month),
+                        'now_month': str(now_mk),
+                    }
+
+                    st = states_final.get(pid)
+                    if not st and pid:
+                        # Best-effort load to apply END_TALKS penalties even for stale/edge cases.
+                        st_loaded = get_player_agency_states(cur, [pid]).get(pid)
+                        if st_loaded:
+                            st = dict(st_loaded)
+                            states_final[pid] = st
+
+
+                    # If the player has moved teams since this negotiation event,
+                    # close the thread but do NOT apply END_TALKS penalties onto the new-team state.
+                    if st:
+                        st_tid = str(st.get('team_id') or '').upper()
+                        if st_tid and st_tid != tid:
+                            negotiation_expire_stats['skipped_team_mismatch'] = int(negotiation_expire_stats['skipped_team_mismatch']) + 1
+
+                            if response_table_ok and pid and tid:
+                                cur.execute(
+                                    """
+                                    INSERT OR IGNORE INTO agency_event_responses(
+                                        response_id,
+                                        source_event_id,
+                                        player_id,
+                                        team_id,
+                                        season_year,
+                                        response_type,
+                                        response_payload_json,
+                                        created_at
+                                    )
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                                    """,
+                                    (
+                                        response_id,
+                                        source_event_id,
+                                        pid,
+                                        tid,
+                                        int(sy_ev) if sy_ev > 0 else int(sy),
+                                        'END_TALKS',
+                                        json_dumps(dict(resp_payload)),
+                                        str(now_iso),
+                                    ),
+                                )
+
+                            events.append(
+                                {
+                                    'event_id': response_event_id,
+                                    'player_id': pid,
+                                    'team_id': tid,
+                                    'season_year': int(sy_ev) if sy_ev > 0 else int(sy),
+                                    'date': now_date,
+                                    'event_type': 'USER_RESPONSE',
+                                    'severity': 0.35,
+                                    'payload': {
+                                        'source_event_id': source_event_id,
+                                        'source_event_type': neg_et,
+                                        'response_id': response_id,
+                                        'response_type': 'END_TALKS',
+                                        'response_payload': dict(resp_payload),
+                                        'tone': 'FIRM',
+                                        'player_reply': 'We\'re done here.',
+                                        'reasons': [
+                                            {
+                                                'code': 'NEGOTIATION_EXPIRED_AUTO_END',
+                                                'evidence': {
+                                                    'expires_month': str(expires_month),
+                                                    'now_month': str(now_mk),
+                                                    'thread_id': payload_ev.get('thread_id'),
+                                                },
+                                            },
+                                            {
+                                                'code': 'AUTO_EXPIRE_TEAM_MISMATCH',
+                                                'evidence': {
+                                                    'event_team_id': tid,
+                                                    'state_team_id': st_tid,
+                                                },
+                                            },
+                                        ],
+                                        'state_updates': {},
+                                        'bulk_state_deltas': {},
+                                        'bulk_skipped_player_ids': [],
+                                        'meta': {'auto_expire': {'team_mismatch': True, 'state_team_id': st_tid}},
+                                    },
+                                }
+                            )
+
+                            negotiation_expire_stats['marker_only_closed'] = int(negotiation_expire_stats['marker_only_closed']) + 1
+                            continue
+
+                    if not st:
+                        negotiation_expire_stats['skipped_missing_state'] = int(negotiation_expire_stats['skipped_missing_state']) + 1
+
+                        # Persist response marker (optional) and close the thread at the event layer.
+                        if response_table_ok and pid and tid:
+                            cur.execute(
+                                """
+                                INSERT OR IGNORE INTO agency_event_responses(
+                                    response_id,
+                                    source_event_id,
+                                    player_id,
+                                    team_id,
+                                    season_year,
+                                    response_type,
+                                    response_payload_json,
+                                    created_at
+                                )
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                                """,
+                                (
+                                    response_id,
+                                    source_event_id,
+                                    pid,
+                                    tid,
+                                    int(sy_ev) if sy_ev > 0 else int(sy),
+                                    'END_TALKS',
+                                    json_dumps(dict(resp_payload)),
+                                    str(now_iso),
+                                ),
+                            )
+
+                        events.append(
+                            {
+                                'event_id': response_event_id,
+                                'player_id': pid,
+                                'team_id': tid,
+                                'season_year': int(sy_ev) if sy_ev > 0 else int(sy),
+                                'date': now_date,
+                                'event_type': 'USER_RESPONSE',
+                                'severity': 0.6,
+                                'payload': {
+                                    'source_event_id': source_event_id,
+                                    'source_event_type': neg_et,
+                                    'response_id': response_id,
+                                    'response_type': 'END_TALKS',
+                                    'response_payload': dict(resp_payload),
+                                    'tone': 'FIRM',
+                                    'player_reply': 'You waited too long. We\'re done.',
+                                    'reasons': [
+                                        {
+                                            'code': 'NEGOTIATION_EXPIRED_AUTO_END',
+                                            'evidence': {
+                                                'expires_month': str(expires_month),
+                                                'now_month': str(now_mk),
+                                                'thread_id': payload_ev.get('thread_id'),
+                                            },
+                                        },
+                                        {'code': 'AUTO_EXPIRE_MISSING_STATE'},
+                                    ],
+                                    'state_updates': {},
+                                    'bulk_state_deltas': {},
+                                    'bulk_skipped_player_ids': [],
+                                    'meta': {'auto_expire': {'state_missing': True}},
+                                },
+                            }
+                        )
+                        negotiation_expire_stats['marker_only_closed'] = int(negotiation_expire_stats['marker_only_closed']) + 1
+                        continue
+
+                    # Apply END_TALKS using the same pure logic as normal responses.
+                    ev = {
+                        'event_id': source_event_id,
+                        'player_id': pid,
+                        'team_id': tid,
+                        'season_year': int(sy_ev) if sy_ev > 0 else int(st.get('season_year') or sy),
+                        'date': date_ev or now_date,
+                        'event_type': neg_et,
+                        'severity': sev_ev,
+                        'payload': dict(payload_ev) if isinstance(payload_ev, dict) else {},
+                    }
+
+                    try:
+                        outcome = apply_user_response(
+                            event=ev,
+                            state=st,
+                            mental=mental_by_pid.get(pid) or {},
+                            response_type='END_TALKS',
+                            response_payload=resp_payload,
+                            now_date_iso=now_date,
+                            cfg=cfg,
+                            rcfg=DEFAULT_RESPONSE_CONFIG,
+                        )
+                    except Exception:
+                        negotiation_expire_stats['errors'] = int(negotiation_expire_stats['errors']) + 1
+                        continue
+
+                    if not outcome.ok:
+                        negotiation_expire_stats['errors'] = int(negotiation_expire_stats['errors']) + 1
+                        continue
+
+                    for k, v in (outcome.state_updates or {}).items():
+                        st[k] = v
+
+                    # Persist response marker (optional).
+                    if response_table_ok and pid and tid:
+                        cur.execute(
+                            """
+                            INSERT OR IGNORE INTO agency_event_responses(
+                                response_id,
+                                source_event_id,
+                                player_id,
+                                team_id,
+                                season_year,
+                                response_type,
+                                response_payload_json,
+                                created_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                            """,
+                            (
+                                response_id,
+                                source_event_id,
+                                pid,
+                                tid,
+                                int(ev['season_year']),
+                                str(outcome.response_type),
+                                json_dumps(dict(resp_payload)),
+                                str(now_iso),
+                            ),
+                        )
+
+                    trust_delta = safe_float((outcome.meta or {}).get('deltas', {}).get('trust'), 0.0)
+                    sev_resp = float(clamp01(abs(trust_delta) * 4.0))
+
+                    events.append(
+                        {
+                            'event_id': response_event_id,
+                            'player_id': pid,
+                            'team_id': tid,
+                            'season_year': int(ev['season_year']),
+                            'date': now_date,
+                            'event_type': 'USER_RESPONSE',
+                            'severity': sev_resp,
+                            'payload': {
+                                'source_event_id': source_event_id,
+                                'source_event_type': neg_et,
+                                'response_id': response_id,
+                                'response_type': str(outcome.response_type),
+                                'response_payload': dict(resp_payload),
+                                'tone': outcome.tone,
+                                'player_reply': outcome.player_reply,
+                                'reasons': outcome.reasons,
+                                'state_updates': outcome.state_updates,
+                                'bulk_state_deltas': outcome.bulk_state_deltas,
+                                'bulk_skipped_player_ids': [],
+                                'meta': outcome.meta,
+                            },
+                        }
+                    )
+
+                    negotiation_expire_stats['auto_ended'] = int(negotiation_expire_stats['auto_ended']) + 1
+
+                # Advance cursor.
+                last_date = str(rows_n[-1][4] or last_date)
+                last_created = str(rows_n[-1][8] or last_created)
+
             upsert_player_agency_states(cur, states_final, now=str(now_iso))
             insert_agency_events(cur, events, now=str(now_iso))
             cur.execute(
@@ -1841,4 +2222,5 @@ def apply_monthly_agency_tick(
             },
             "promise_stats": promise_stats,
             "locker_room_stats": locker_room_stats,
+            "negotiation_expire_stats": negotiation_expire_stats,
         }
