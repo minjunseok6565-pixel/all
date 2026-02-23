@@ -612,6 +612,14 @@ async def api_get_team_practice_session(
     d = game_time.require_date_iso(date_iso, field="date_iso")
     now_iso = game_time.utc_like_from_date_iso(d, field="date_iso")
 
+    # Schedule-context hint for AUTO practice AI (best-effort).
+    d2g: Optional[int] = None
+    try:
+        d2g = state.get_days_to_next_game(team_id=tid, date_iso=d)
+    except Exception:
+        logger.exception("state.get_days_to_next_game failed (practice session). team=%s date=%s", tid, d)
+        d2g = None
+
     # Best-effort fallback schemes from coach presets.
     fb_off = None
     fb_def = None
@@ -650,6 +658,7 @@ async def api_get_team_practice_session(
                     fallback_off_scheme=fb_off,
                     fallback_def_scheme=fb_def,
                     roster_pids=roster_pids,
+                    days_to_next_game=d2g,
                     now_iso=now_iso,
                 )
                 is_user_set = False

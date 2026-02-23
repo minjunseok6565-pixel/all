@@ -44,6 +44,7 @@ __all__ = [
     "ensure_schedule_for_active_season",
     "start_new_season",
     "get_schedule_summary",
+    "get_days_to_next_game",
     "get_active_season_id",
     "set_active_season_id",
     "ingest_game_result",
@@ -1109,6 +1110,36 @@ def get_schedule_summary() -> dict:
     def _impl(v: Mapping[str, Any]) -> dict:
         ms_plain = _to_plain(v["league"]["master_schedule"])
         return state_schedule.get_schedule_summary(ms_plain)
+
+    return _read_state(_impl)
+
+
+def get_days_to_next_game(*, team_id: str, date_iso: str) -> int | None:
+    """Return days until the next scheduled game for team_id as of date_iso.
+
+    Semantics:
+      - include_today=True: if the team plays on date_iso, returns 0.
+      - Returns None if no next game is found in the active season schedule.
+
+    This is a derived read helper. SSOT remains in state['league']['master_schedule'].
+    """
+    from state_modules import state_schedule
+
+    ensure_schedule_for_active_season(force=False)
+
+    tid = str(team_id).upper()
+    d = str(date_iso)[:10]
+    try:
+        date.fromisoformat(d)
+    except Exception as exc:
+        raise ValueError(f"Invalid date_iso: {date_iso!r}") from exc
+
+    def _impl(v: Mapping[str, Any]) -> int | None:
+        league = v.get("league")
+        if not isinstance(league, Mapping):
+            return None
+        ms_plain = _to_plain(league.get("master_schedule") or {})
+        return state_schedule.days_to_next_game(ms_plain, team_id=tid, date_iso=d, include_today=True)
 
     return _read_state(_impl)
 
