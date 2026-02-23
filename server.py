@@ -49,7 +49,14 @@ from trades.validator import validate_deal
 from trades.apply import apply_deal_to_db
 from trades import agreements
 from trades import negotiation_store
-from save_service import SaveError, create_new_game, save_game
+from save_service import (
+    SaveError,
+    create_new_game,
+    get_save_slot_detail,
+    list_save_slots,
+    load_game,
+    save_game,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +193,12 @@ class GameSaveRequest(BaseModel):
     slot_id: str
     save_name: Optional[str] = None
     note: Optional[str] = None
+
+
+class GameLoadRequest(BaseModel):
+    slot_id: str
+    strict: bool = True
+    expected_save_version: Optional[int] = None
 
 
 class OffseasonContractsProcessRequest(BaseModel):
@@ -3771,6 +3784,44 @@ async def api_game_save(req: GameSaveRequest):
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save game: {exc}")
+
+
+@app.get("/api/game/saves")
+async def api_game_saves():
+    try:
+        return list_save_slots()
+    except SaveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list saves: {exc}")
+
+
+@app.get("/api/game/saves/{slot_id}")
+async def api_game_save_detail(slot_id: str, strict: bool = False):
+    try:
+        return get_save_slot_detail(slot_id=slot_id, strict=bool(strict))
+    except SaveError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to get save detail: {exc}")
+
+
+@app.post("/api/game/load")
+async def api_game_load(req: GameLoadRequest):
+    try:
+        return load_game(
+            slot_id=req.slot_id,
+            strict=bool(req.strict),
+            expected_save_version=req.expected_save_version,
+        )
+    except SaveError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 409 if "mismatch" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load game: {exc}")
 
 
 @app.get("/api/debug/schedule-summary")
