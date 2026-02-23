@@ -34,6 +34,11 @@ SHARPNESS_DEFAULT: float = 50.0
 # Linear decay per day without game involvement.
 SHARPNESS_DECAY_PER_DAY: float = 1.0
 
+# Linear decay per day when player is OUT (injury inactive).
+# This is used by practice/readiness callers to apply a faster decay without
+# duplicating math SSOT (see readiness.formulas.decay_sharpness_linear).
+SHARPNESS_DECAY_PER_DAY_OUT: float = 2.0
+
 # Game gain shaping (minutes -> gain).
 SHARPNESS_GAIN_MINUTES_REF: float = 36.0
 SHARPNESS_GAIN_MINUTES_EXP: float = 0.70
