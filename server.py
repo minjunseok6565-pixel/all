@@ -1560,6 +1560,7 @@ async def api_enter_offseason(req: EmptyRequest):
         "steps": [
             "/api/offseason/college/finalize",
             "/api/offseason/contracts/process",
+            "/api/offseason/retirement/process",
             "/api/offseason/training/apply-growth",
             "/api/offseason/draft/lottery",
             "/api/offseason/draft/settle",
@@ -1693,6 +1694,77 @@ async def api_offseason_contracts_process(req: OffseasonContractsProcessRequest)
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/offseason/retirement/preview")
+async def api_offseason_retirement_preview(req: EmptyRequest):
+    """오프시즌 은퇴 결정 미리보기(확정 전)."""
+    _ = req
+    league_ctx = state.get_league_context_snapshot() or {}
+    try:
+        from_year = int(league_ctx.get("season_year") or 0)
+    except Exception:
+        from_year = 0
+    if from_year <= 0:
+        raise HTTPException(status_code=500, detail="Invalid season_year in state.")
+    to_year = int(from_year) + 1
+
+    try:
+        in_game_date = state.get_current_date_as_date().isoformat()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read in-game date from state: {e}")
+
+    try:
+        from retirement.service import preview_offseason_retirement
+
+        out = preview_offseason_retirement(
+            db_path=str(state.get_db_path()),
+            season_year=int(to_year),
+            decision_date_iso=str(in_game_date),
+        )
+        return out
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/offseason/retirement/process")
+async def api_offseason_retirement_process(req: EmptyRequest):
+    """오프시즌 은퇴 확정 처리(해당 시즌 1회, idempotent)."""
+    _ = req
+    league_ctx = state.get_league_context_snapshot() or {}
+    try:
+        from_year = int(league_ctx.get("season_year") or 0)
+    except Exception:
+        from_year = 0
+    if from_year <= 0:
+        raise HTTPException(status_code=500, detail="Invalid season_year in state.")
+    to_year = int(from_year) + 1
+
+    try:
+        in_game_date = state.get_current_date_as_date().isoformat()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read in-game date from state: {e}")
+
+    try:
+        from retirement.service import process_offseason_retirement
+
+        out = process_offseason_retirement(
+            db_path=str(state.get_db_path()),
+            season_year=int(to_year),
+            decision_date_iso=str(in_game_date),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"offseason retirement failed: {e}")
+
+    # Best-effort UI cache rebuild.
+    try:
+        ui_cache_rebuild_all()
+    except Exception:
+        pass
+
+    return out
 
 
 @app.post("/api/offseason/training/apply-growth")
@@ -2592,6 +2664,23 @@ async def api_offseason_draft_apply(req: EmptyRequest):
                     "code": "CONTRACTS_OFFSEASON_NOT_PROCESSED",
                     "message": "Run /api/offseason/contracts/process (and decide TEAM options if required) before draft apply.",
                     "required_meta_key": str(required_meta_key),
+                    "season_year": int(to_year),
+                },
+            )
+
+        # Hard gate: retirement offseason processing should be completed before draft apply.
+        retirement_meta_key = f"retirement_processed_{to_year}"
+        with LeagueRepo(db_path) as _repo:
+            _repo.init_db()
+            row = _repo._conn.execute("SELECT value FROM meta WHERE key=?;", (retirement_meta_key,)).fetchone()
+            retirement_ok = bool(row is not None and str(row["value"]) == "1")
+        if not retirement_ok:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RETIREMENT_OFFSEASON_NOT_PROCESSED",
+                    "message": "Run /api/offseason/retirement/process before draft apply.",
+                    "required_meta_key": str(retirement_meta_key),
                     "season_year": int(to_year),
                 },
             )
