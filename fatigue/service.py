@@ -369,10 +369,10 @@ def prepare_game_fatigue(
 
             tid = str(team_id).upper()
             if tid == home_tid:
-                roster_pids = home_roster_pids
+                roster_pids = home_roster_pids or home_pids
                 fb_off, fb_def = home_off_scheme, home_def_scheme
             else:
-                roster_pids = away_roster_pids
+                roster_pids = away_roster_pids or away_pids
                 fb_off, fb_def = away_off_scheme, away_def_scheme
 
             d2g = None
@@ -553,6 +553,29 @@ def finalize_game_fatigue(
     all_pids = [str(p.pid) for p in (list(getattr(home, "lineup", []) or []) + list(getattr(away, "lineup", []) or [])) if getattr(p, "pid", None)]
     with repo.transaction() as cur:
         age_by_pid = _bulk_load_ages(cur, all_pids)
+
+        # Use full team rosters (active) for practice-session participant autofill / filtering.
+        # This avoids persisting auto SCRIMMAGE participants based on only the current lineup subset.
+        try:
+            home_roster_rows = repo.get_team_roster(home_tid)
+        except Exception:
+            home_roster_rows = []
+        try:
+            away_roster_rows = repo.get_team_roster(away_tid)
+        except Exception:
+            away_roster_rows = []
+
+        home_roster_pids = [
+            str(schema.normalize_player_id(r.get("player_id"), strict=False))
+            for r in (home_roster_rows or [])
+            if r.get("player_id")
+        ]
+        away_roster_pids = [
+            str(schema.normalize_player_id(r.get("player_id"), strict=False))
+            for r in (away_roster_rows or [])
+            if r.get("player_id")
+        ]
+
 
     def _age_for_player(p: Player) -> int:
         pid = str(getattr(p, "pid", "") or "")
