@@ -319,10 +319,17 @@ def _apply_team_practice_to_readiness_ssot(
                 delta = 0.0
 
             s0 = float(sharp_val.get(pid, s_default))
+            try:
+                gap_days = int((day - last_dt).days)
+            except Exception:
+                gap_days = 1
+            if gap_days <= 0:
+                gap_days = 1
+
             if is_out:
-                s1 = r_f.decay_sharpness_linear(s0, days=1, decay_per_day=s_decay_out)
+                s1 = r_f.decay_sharpness_linear(s0, days=gap_days, decay_per_day=s_decay_out)
             else:
-                s1 = r_f.decay_sharpness_linear(s0, days=1)
+                s1 = r_f.decay_sharpness_linear(s0, days=gap_days)
             sharp_val[pid] = float(r_f.clamp100(s1 + delta))
             sharp_last[pid] = day
             touched_pids.add(pid)
