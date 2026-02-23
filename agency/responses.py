@@ -365,8 +365,44 @@ def apply_user_response(
         expires_month = str(ep.get("expires_month") or "")
 
         now_mk = due_month_from_now(now_d, 0)
-        if expires_month and now_mk > expires_month:
-            return ResponseOutcome(ok=False, error=f"Negotiation thread expired ({expires_month}).", state_updates={})
+
+        # Expired negotiation threads should auto-resolve as END_TALKS (no error).
+        # This avoids UI dead-ends and allows monthly tick to sweep unresponded threads.
+        expired = bool(_is_valid_month_key(expires_month) and now_mk > expires_month)
+        if expired:
+            original_rt = rt
+            rt = "END_TALKS"
+
+            reasons.append(
+                {
+                    "code": "NEGOTIATION_EXPIRED_AUTO_END",
+                    "evidence": {
+                        "expires_month": str(expires_month),
+                        "now_month": str(now_mk),
+                        "user_response_type": str(original_rt),
+                        "thread_id": thread_id,
+                        "round_index": int(round_index),
+                        "max_rounds": int(max_rounds),
+                    },
+                }
+            )
+
+            negotiation_meta.update(
+                {
+                    "expired": True,
+                    "expires_month": str(expires_month),
+                    "now_month": str(now_mk),
+                    "user_response_type": str(original_rt),
+                    "applied_response_type": "END_TALKS",
+                    "thread_id": thread_id,
+                    "round_index": int(round_index),
+                    "max_rounds": int(max_rounds),
+                }
+            )
+
+            # Slightly different tone for timeouts vs explicit walkouts.
+            tone_override = "FIRM"
+            reply_override = "You waited too long. We're done."
 
         if rt == "ACCEPT_COUNTER":
             counter = decision_dict.get("counter_offer") if isinstance(decision_dict.get("counter_offer"), dict) else None
