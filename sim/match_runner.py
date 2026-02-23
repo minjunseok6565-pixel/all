@@ -27,6 +27,7 @@ from datetime import date
 from typing import Any, Dict, Optional
 
 import fatigue
+import readiness
 from league_repo import LeagueRepo
 from matchengine_v2_adapter import adapt_matchengine_result_to_v2, build_context_from_team_ids
 from matchengine_v3.sim_game import simulate_game
@@ -155,39 +156,118 @@ def run_simulated_game(
     rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
 
     with _repo_ctx() as repo:
-        # Ensure schema is applied (idempotent). Guarantees fatigue tables exist.
+        # Ensure schema is applied (idempotent). Guarantees fatigue/readiness tables exist.
         repo.init_db()
 
-        home = build_team_state_from_db(repo=repo, team_id=str(home_team_id).upper(), tactics=home_tactics)
-        away = build_team_state_from_db(repo=repo, team_id=str(away_team_id).upper(), tactics=away_tactics)
-
-        prepared = None
+        season_year = None
         try:
             season_year = fatigue.season_year_from_season_id(str(getattr(context, "season_id", "") or ""))
-            prepared = fatigue.prepare_game_fatigue(
-                repo,
-                game_date_iso=game_date_str,
-                season_year=int(season_year),
-                home=home,
-                away=away,
-            )
         except Exception:
+            # Season parsing failures must never crash games.
             logger.warning(
-                "FATIGUE_PREPARE_FAILED phase=%s date=%s home=%s away=%s",
+                "SEASON_YEAR_PARSE_FAILED phase=%s date=%s season_id=%s",
                 str(phase),
                 game_date_str,
-                str(home_team_id),
-                str(away_team_id),
+                str(getattr(context, "season_id", "") or ""),
                 exc_info=True,
             )
+            season_year = None
+
+        # ------------------------------------------------------------
+        # Readiness: prepare between-game readiness (player sharpness + scheme familiarity)
+        # - must run BEFORE building TeamState so roster_adapter can apply readiness mods
+        # ------------------------------------------------------------
+        prepared_ready = None
+        attrs_mods_by_pid = None
+        if season_year is not None:
+            try:
+                prepared_ready = readiness.prepare_game_readiness(
+                    repo,
+                    game_date_iso=game_date_str,
+                    season_year=int(season_year),
+                    home_team_id=str(home_team_id).upper(),
+                    away_team_id=str(away_team_id).upper(),
+                    home_tactics=home_tactics,
+                    away_tactics=away_tactics,
+                )
+                attrs_mods_by_pid = prepared_ready.attrs_mods_by_pid
+            except Exception:
+                logger.warning(
+                    "READINESS_PREPARE_FAILED phase=%s date=%s home=%s away=%s",
+                    str(phase),
+                    game_date_str,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+                prepared_ready = None
+                attrs_mods_by_pid = None
+
+        home = build_team_state_from_db(
+            repo=repo,
+            team_id=str(home_team_id).upper(),
+            tactics=home_tactics,
+            attrs_mods_by_pid=attrs_mods_by_pid,
+        )
+        away = build_team_state_from_db(
+            repo=repo,
+            team_id=str(away_team_id).upper(),
+            tactics=away_tactics,
+            attrs_mods_by_pid=attrs_mods_by_pid,
+        )
+
+        # ------------------------------------------------------------
+        # Readiness: apply familiarity-derived multipliers to TeamState.tactics (in-memory only)
+        # ------------------------------------------------------------
+        if prepared_ready is not None:
+            try:
+                mult_h = prepared_ready.tactics_mult_by_team.get(prepared_ready.home_team_id)
+                if mult_h is not None:
+                    readiness.apply_readiness_to_team_state(home, mult_h)
+
+                mult_a = prepared_ready.tactics_mult_by_team.get(prepared_ready.away_team_id)
+                if mult_a is not None:
+                    readiness.apply_readiness_to_team_state(away, mult_a)
+            except Exception:
+                logger.warning(
+                    "READINESS_APPLY_FAILED phase=%s date=%s home=%s away=%s",
+                    str(phase),
+                    game_date_str,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+
+        # ------------------------------------------------------------
+        # Fatigue: prepare between-game condition (start_energy + energy_cap)
+        # ------------------------------------------------------------
+        prepared_fat = None
+        if season_year is not None:
+            try:
+                prepared_fat = fatigue.prepare_game_fatigue(
+                    repo,
+                    game_date_iso=game_date_str,
+                    season_year=int(season_year),
+                    home=home,
+                    away=away,
+                )
+            except Exception:
+                logger.warning(
+                    "FATIGUE_PREPARE_FAILED phase=%s date=%s home=%s away=%s",
+                    str(phase),
+                    game_date_str,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
 
         raw_result = simulate_game(rng, home, away, context=context)
 
-        if prepared is not None:
+        if prepared_fat is not None:
             try:
                 fatigue.finalize_game_fatigue(
                     repo,
-                    prepared=prepared,
+                    prepared=prepared_fat,
                     home=home,
                     away=away,
                     raw_result=raw_result,
@@ -195,6 +275,23 @@ def run_simulated_game(
             except Exception:
                 logger.warning(
                     "FATIGUE_FINALIZE_FAILED phase=%s date=%s home=%s away=%s",
+                    str(phase),
+                    game_date_str,
+                    str(home_team_id),
+                    str(away_team_id),
+                    exc_info=True,
+                )
+
+        if prepared_ready is not None:
+            try:
+                readiness.finalize_game_readiness(
+                    repo,
+                    prepared=prepared_ready,
+                    raw_result=raw_result,
+                )
+            except Exception:
+                logger.warning(
+                    "READINESS_FINALIZE_FAILED phase=%s date=%s home=%s away=%s",
                     str(phase),
                     game_date_str,
                     str(home_team_id),

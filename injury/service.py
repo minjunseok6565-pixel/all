@@ -34,6 +34,11 @@ from league_repo import LeagueRepo
 from matchengine_v3.models import GameState, Player, TeamState
 from ratings_2k import compute_ovr_proxy
 
+from sim.roster_adapter import resolve_effective_schemes
+
+from practice.service import resolve_practice_session
+from practice import types as p_types
+
 import fatigue.config as fat_cfg
 import fatigue.repo as fat_repo
 
@@ -44,6 +49,7 @@ from training.types import intensity_multiplier
 from . import catalog
 from . import config
 from . import repo as inj_repo
+from .status import STATUS_HEALTHY, STATUS_OUT, STATUS_RETURNING, status_for_date
 from .types import InjuryEvent, PreparedGameInjuries
 
 
@@ -113,8 +119,9 @@ def _days_between(a_iso: str, b_iso: str) -> int:
     return (_date_from_iso(b_iso) - _date_from_iso(a_iso)).days
 
 
-# ---------------------------------------------------------------------------
-# Training plan intensity helpers (mirrors fatigue.service)
+# Training intensity helpers
+# - Player plan intensity still exists (growth/training system).
+# - Team *practice* intensity is sourced from practice sessions.
 # ---------------------------------------------------------------------------
 
 
@@ -751,19 +758,6 @@ def _load_recent_counts_by_part(
     return out
 
 
-def _normalize_status_for_date(state: Dict[str, Any], *, on_date_iso: str) -> str:
-    """Normalize OUT/RETURNING/HEALTHY based on date and stored ranges."""
-    date_iso = str(on_date_iso)[:10]
-    out_until = state.get("out_until_date")
-    returning_until = state.get("returning_until_date")
-
-    if out_until and date_iso < str(out_until)[:10]:
-        return "OUT"
-    if returning_until and date_iso < str(returning_until)[:10]:
-        return "RETURNING"
-    return "HEALTHY"
-
-
 def _scaled_returning_debuff(state: Mapping[str, Any], *, on_date_iso: str) -> Dict[str, float]:
     """Return a scaled temporary debuff dict for returning players."""
     temp = state.get("temp_debuff") or {}
@@ -828,6 +822,8 @@ def prepare_game_injuries(
     season_year: int,
     home_team_id: str,
     away_team_id: str,
+    home_tactics: Optional[Mapping[str, Any]] = None,
+    away_tactics: Optional[Mapping[str, Any]] = None,
 ) -> PreparedGameInjuries:
     """Prepare injury availability + returning debuffs for a game.
 
@@ -848,9 +844,32 @@ def prepare_game_injuries(
     hid = str(schema.normalize_team_id(home_team_id)).upper()
     aid = str(schema.normalize_team_id(away_team_id)).upper()
 
+    # Resolve effective schemes for practice-session defaults.
+    # This mirrors readiness.service so CPU coach presets are respected.
+    try:
+        home_off_scheme, home_def_scheme = resolve_effective_schemes(hid, home_tactics)
+    except Exception:
+        home_off_scheme, home_def_scheme = ("", "")
+    try:
+        away_off_scheme, away_def_scheme = resolve_effective_schemes(aid, away_tactics)
+    except Exception:
+        away_off_scheme, away_def_scheme = ("", "")
+
     # Collect roster rows for both teams (active only).
     home_roster = repo.get_team_roster(hid)
     away_roster = repo.get_team_roster(aid)
+
+    # Roster PID lists (stable order) for practice-session participant autofill.
+    home_roster_pids: List[str] = [
+        str(schema.normalize_player_id(r.get("player_id"), strict=False))
+        for r in (home_roster or [])
+        if r.get("player_id")
+    ]
+    away_roster_pids: List[str] = [
+        str(schema.normalize_player_id(r.get("player_id"), strict=False))
+        for r in (away_roster or [])
+        if r.get("player_id")
+    ]
 
     def _meta_from_rows(team_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
@@ -905,16 +924,103 @@ def prepare_game_injuries(
         except Exception:
             fat_states = {}
 
-        # Training plans.
-        team_plan_home = training_repo.get_team_training_plan(cur, team_id=hid, season_year=int(season_year))
-        team_plan_away = training_repo.get_team_training_plan(cur, team_id=aid, season_year=int(season_year))
-        team_int_home = _plan_intensity_mult(team_plan_home)
-        team_int_away = _plan_intensity_mult(team_plan_away)
-
+        # Player training plans (individual intensity is still part of the growth system).
         player_int_cache: Dict[str, float] = {}
         for pid in all_pids:
             plan, _is_user = training_repo.get_player_training_plan(cur, player_id=pid, season_year=int(season_year))
             player_int_cache[pid] = _plan_intensity_mult(plan)
+
+        # Practice session cache for this preparation call.
+        # Keyed by (team_id, date_iso). Prevents repeated DB reads/writes when
+        # looping players across the same day.
+        practice_session_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        def _get_practice_session(team_id: str, *, date_iso: str) -> Dict[str, Any]:
+            day_iso = str(date_iso)[:10]
+            key = (str(team_id).upper(), day_iso)
+            cached = practice_session_cache.get(key)
+            if cached is not None:
+                return cached
+
+            tid = str(team_id).upper()
+            if tid == hid:
+                roster_raw = home_roster_pids
+                fb_off, fb_def = home_off_scheme, home_def_scheme
+            else:
+                roster_raw = away_roster_pids
+                fb_off, fb_def = away_off_scheme, away_def_scheme
+
+            # Exclude players who are already OUT on this day from scrimmage participant autofill.
+            # SSOT: OUT status is derived from injury.state via status_for_date.
+            roster_pids: List[str] = []
+            for pid in roster_raw:
+                st = states.get(str(pid))
+                if isinstance(st, dict):
+                    try:
+                        if status_for_date(st, on_date_iso=day_iso) == STATUS_OUT:
+                            continue
+                    except Exception:
+                        pass
+                roster_pids.append(str(pid))
+
+            try:
+                d2g = int((gdate - _date_from_iso(day_iso)).days)
+                if d2g < 0:
+                    d2g = 0
+            except Exception:
+                d2g = None
+
+            sess = resolve_practice_session(
+                cur,
+                team_id=tid,
+                season_year=int(season_year),
+                date_iso=day_iso,
+                fallback_off_scheme=fb_off or None,
+                fallback_def_scheme=fb_def or None,
+                roster_pids=roster_pids,
+                days_to_next_game=d2g,
+                now_iso=now_iso,
+            )
+            practice_session_cache[key] = sess
+            return sess
+
+        def _effective_team_practice_mult(
+            *,
+            team_id: str,
+            player_id: str,
+            fatigue_last_date: Optional[_dt.date],
+            target_date: _dt.date,
+        ) -> float:
+            """Geometric-mean of per-day practice intensity between fatigue_last_date and target_date.
+
+            This is used as a stable approximation for recovery and wear estimation.
+            """
+            if fatigue_last_date is None:
+                return 1.0
+            dd = (target_date - fatigue_last_date).days
+            if dd <= 1:
+                return 1.0
+
+            # Safety/perf: cap the lookback window so long gaps don't create
+            # huge volumes of auto practice rows.
+            max_off_days = 21
+            if dd > (max_off_days + 1):
+                fatigue_last_date = target_date - _dt.timedelta(days=int(max_off_days + 1))
+                dd = int(max_off_days + 1)
+
+            logs: List[float] = []
+            for step in range(1, dd):
+                day = fatigue_last_date + _dt.timedelta(days=int(step))
+                if day >= target_date:
+                    break
+                day_iso = _date_iso(day)
+                sess = _get_practice_session(str(team_id).upper(), date_iso=day_iso)
+                mult = float(p_types.intensity_for_pid(sess, str(player_id)))
+                logs.append(math.log(max(1e-6, mult)))
+
+            if not logs:
+                return 1.0
+            return float(math.exp(sum(logs) / float(len(logs))))
 
         # Recent injury counts per body part for recurrence bias.
         reinjury_counts_by_pid = _load_recent_counts_by_part(cur, player_ids=all_pids, since_date_iso=since_iso)
@@ -960,11 +1066,8 @@ def prepare_game_injuries(
                 st["last_processed_date"] = gdi
                 continue
 
-            # Determine training intensity multiplier for this player.
             tid = str(meta.get("team_id") or "").upper()
-            team_mult = team_int_home if tid == hid else team_int_away
             player_mult = float(player_int_cache.get(pid, 1.0))
-            intensity_mult = _blended_intensity_mult(team_mult=float(team_mult), player_mult=float(player_mult))
 
             attrs = meta.get("attrs") or {}
             derived = meta.get("derived") or {}
@@ -999,8 +1102,8 @@ def prepare_game_injuries(
                     break
 
                 # If player is already OUT on this day, skip.
-                status_on_day = _normalize_status_for_date(st, on_date_iso=day_iso)
-                if status_on_day == "OUT":
+                status_on_day = status_for_date(st, on_date_iso=day_iso)
+                if status_on_day == STATUS_OUT:
                     continue
 
                 # Team soft-safety: if available players would fall too low, suppress training injuries.
@@ -1011,10 +1114,25 @@ def prepare_game_injuries(
                     if not isinstance(tst, dict):
                         available += 1
                         continue
-                    if _normalize_status_for_date(tst, on_date_iso=day_iso) != "OUT":
+                    if status_for_date(tst, on_date_iso=day_iso) != STATUS_OUT:
                         available += 1
                 if available <= int(config.MIN_AVAILABLE_PLAYERS_SOFT):
                     continue
+
+                # Practice session intensity for this day.
+                # NOTE: Scrimmage can mark *non-participants* as REST.
+                sess_raw = _get_practice_session(tid, date_iso=day_iso)
+                sess = p_types.normalize_session(sess_raw)
+                eff_type = str(sess.get("type") or "").upper()
+                if eff_type == "SCRIMMAGE":
+                    pset = set(sess.get("participant_pids") or [])
+                    if str(pid) not in pset:
+                        eff_type = str(sess.get("non_participant_type") or "RECOVERY").upper()
+                if eff_type == "REST":
+                    continue
+
+                team_mult_day = float(p_types.intensity_for_pid(sess, pid))
+                intensity_mult_day = _blended_intensity_mult(team_mult=team_mult_day, player_mult=float(player_mult))
 
                 # Estimate energy and wear for the day (recovery since last fatigue last_date).
                 try:
@@ -1022,7 +1140,7 @@ def prepare_game_injuries(
                         fatigue_state=fstate,
                         derived=derived,
                         age=age_i,
-                        intensity_mult=float(intensity_mult),
+                        intensity_mult=float(intensity_mult_day),
                         target_date=day,
                     )
                 except Exception:
@@ -1036,7 +1154,7 @@ def prepare_game_injuries(
                     durability=durability,
                     age=age_i,
                     lt_wear=lt_wear_day,
-                    intensity_mult=float(intensity_mult),
+                    intensity_mult=float(intensity_mult_day),
                     reinjury_recent_counts=recent_counts,
                     include_training_mult=True,
                 )
@@ -1118,10 +1236,10 @@ def prepare_game_injuries(
             if not isinstance(st, dict):
                 continue
 
-            status = _normalize_status_for_date(st, on_date_iso=gdi)
+            status = status_for_date(st, on_date_iso=gdi)
             st["status"] = status
 
-            if status == "HEALTHY":
+            if status == STATUS_HEALTHY:
                 # Clear current injury payload; history remains in injury_events.
                 st.update(
                     {
@@ -1136,9 +1254,9 @@ def prepare_game_injuries(
                         "perm_drop": {},
                     }
                 )
-            elif status == "OUT":
+            elif status == STATUS_OUT:
                 unavailable_by_team.setdefault(tid, set()).add(pid)
-            elif status == "RETURNING":
+            elif status == STATUS_RETURNING:
                 mods = _scaled_returning_debuff(st, on_date_iso=gdi)
                 if mods:
                     attrs_mods_by_pid[pid] = mods
@@ -1150,8 +1268,22 @@ def prepare_game_injuries(
                 age_i = int(meta.get("age") or 0)
             except Exception:
                 age_i = 0
-            team_mult = team_int_home if tid == hid else team_int_away
             player_mult = float(player_int_cache.get(pid, 1.0))
+
+            fatigue_last_date = None
+            try:
+                ld = fstate.get("last_date")
+                if ld:
+                    fatigue_last_date = _date_from_iso(str(ld))
+            except Exception:
+                fatigue_last_date = None
+
+            team_mult = _effective_team_practice_mult(
+                team_id=tid,
+                player_id=pid,
+                fatigue_last_date=fatigue_last_date,
+                target_date=gdate,
+            )
             intensity_mult = _blended_intensity_mult(team_mult=float(team_mult), player_mult=float(player_mult))
             try:
                 _energy, lt_wear = estimate_energy_and_wear_for_date(
@@ -1526,4 +1658,3 @@ def finalize_game_injuries(
             inj_repo.upsert_player_injury_states(cur, states, now=now_iso)
         except Exception:
             logger.warning("INJURY_STATE_UPSERT_FAILED", exc_info=True)
-

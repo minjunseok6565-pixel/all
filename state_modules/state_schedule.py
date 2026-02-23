@@ -1354,3 +1354,99 @@ def get_schedule_summary(master_schedule: dict) -> Dict[str, Any]:
         "status_counts": status_counts,
         "teams": team_breakdown,
     }
+
+
+def days_to_next_game(
+    master_schedule: dict,
+    *,
+    team_id: str,
+    date_iso: str,
+    include_today: bool = True,
+) -> Optional[int]:
+    """Return number of days until the team's next non-canceled game.
+
+    PURE helper:
+      - Does not mutate master_schedule.
+      - Prefers by_team/by_id indices when present; otherwise scans games list.
+
+    Args:
+      master_schedule: schedule dict (as stored under league['master_schedule']).
+      team_id: canonical team id.
+      date_iso: ISO date string (YYYY-MM-DD...).
+      include_today: if True, a game on date_iso returns 0; else it must be strictly after.
+
+    Returns:
+      int days until next game, or None if not found.
+    """
+    if not isinstance(master_schedule, dict):
+        return None
+
+    tid = str(team_id).upper()
+    try:
+        base = date.fromisoformat(str(date_iso)[:10])
+    except Exception:
+        return None
+
+    def _accept_delta(delta: int) -> bool:
+        if include_today:
+            return int(delta) >= 0
+        return int(delta) > 0
+
+    best: Optional[int] = None
+
+    by_team = master_schedule.get("by_team")
+    by_id = master_schedule.get("by_id")
+    if isinstance(by_team, dict) and isinstance(by_id, dict):
+        gids = by_team.get(tid)
+        if isinstance(gids, list):
+            for gid in gids:
+                if not isinstance(gid, str):
+                    continue
+                entry = by_id.get(gid)
+                if not isinstance(entry, dict):
+                    continue
+                status = str(entry.get("status") or "").lower()
+                if status == "canceled":
+                    continue
+                ds = entry.get("date")
+                if not ds:
+                    continue
+                try:
+                    gd = date.fromisoformat(str(ds)[:10])
+                except Exception:
+                    continue
+                delta = int((gd - base).days)
+                if not _accept_delta(delta):
+                    continue
+                if best is None or int(delta) < int(best):
+                    best = int(delta)
+        if best is not None:
+            return int(best)
+
+    games = master_schedule.get("games") or []
+    if not isinstance(games, list):
+        games = []
+    for entry in games:
+        if not isinstance(entry, dict):
+            continue
+        h = str(entry.get("home_team_id") or "").upper()
+        a = str(entry.get("away_team_id") or "").upper()
+        if tid not in (h, a):
+            continue
+        status = str(entry.get("status") or "").lower()
+        if status == "canceled":
+            continue
+        ds = entry.get("date")
+        if not ds:
+            continue
+        try:
+            gd = date.fromisoformat(str(ds)[:10])
+        except Exception:
+            continue
+        delta = int((gd - base).days)
+        if not _accept_delta(delta):
+            continue
+        if best is None or int(delta) < int(best):
+            best = int(delta)
+
+    return int(best) if best is not None else None

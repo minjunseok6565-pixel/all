@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import game_time
+import schema
 from league_repo import LeagueRepo
 from matchengine_v3.models import Player, TeamState
 from matchengine_v3.sim_fatigue import _fatigue_archetype_for_pid, _get_offense_role_by_pid
+from practice.service import resolve_practice_session
+from practice import types as p_types
 from training import config as training_config
 from training import repo as training_repo
 from training.types import intensity_multiplier
@@ -303,15 +306,50 @@ def prepare_game_fatigue(
     away_pids = [str(p.pid) for p in getattr(away, "lineup", []) if getattr(p, "pid", None)]
     all_pids = list(dict.fromkeys(home_pids + away_pids))
 
+    # Team roster PID lists (stable order) for practice-session participant autofill and AUTO hints.
+    try:
+        home_roster = repo.get_team_roster(home_tid) or []
+    except Exception:
+        home_roster = []
+    try:
+        away_roster = repo.get_team_roster(away_tid) or []
+    except Exception:
+        away_roster = []
+
+    home_roster_pids: list[str] = []
+    for r in home_roster:
+        if not isinstance(r, Mapping):
+            continue
+        pid_raw = r.get("player_id")
+        if not pid_raw:
+            continue
+        home_roster_pids.append(str(schema.normalize_player_id(pid_raw, strict=False)))
+    home_roster_pids = list(dict.fromkeys(home_roster_pids))
+
+    away_roster_pids: list[str] = []
+    for r in away_roster:
+        if not isinstance(r, Mapping):
+            continue
+        pid_raw = r.get("player_id")
+        if not pid_raw:
+            continue
+        away_roster_pids.append(str(schema.normalize_player_id(pid_raw, strict=False)))
+    away_roster_pids = list(dict.fromkeys(away_roster_pids))
+
+    # Practice fallback schemes for AUTO sessions (best-effort).
+    home_off_scheme = str(getattr(getattr(home, "tactics", None), "offense_scheme", "") or "")
+    home_def_scheme = str(getattr(getattr(home, "tactics", None), "defense_scheme", "") or "")
+    away_off_scheme = str(getattr(getattr(away, "tactics", None), "offense_scheme", "") or "")
+    away_def_scheme = str(getattr(getattr(away, "tactics", None), "defense_scheme", "") or "")
+
+    now_iso = game_time.utc_like_from_date_iso(gdi, field="game_date_iso")
+
+    # Precompute effective team practice intensity per player (between last_date and game_date).
+    team_practice_mult_by_pid: Dict[str, float] = {}
+
     with repo.transaction() as cur:
         state_by_pid = fat_repo.get_player_fatigue_states(cur, all_pids)
         age_by_pid = _bulk_load_ages(cur, all_pids)
-
-        # Team plan intensity (one query per team).
-        team_plan_home = training_repo.get_team_training_plan(cur, team_id=home_tid, season_year=int(season_year))
-        team_plan_away = training_repo.get_team_training_plan(cur, team_id=away_tid, season_year=int(season_year))
-        team_int_home = _plan_intensity_mult(team_plan_home)
-        team_int_away = _plan_intensity_mult(team_plan_away)
 
         # Player plan cache for involved players (query-per-player, small N).
         player_int_cache: Dict[str, float] = {}
@@ -319,7 +357,86 @@ def prepare_game_fatigue(
             plan, _is_user = training_repo.get_player_training_plan(cur, player_id=pid, season_year=int(season_year))
             player_int_cache[pid] = _plan_intensity_mult(plan)
 
-    def _prepare_player(p: Player, *, team_mult: float) -> PreparedPlayerFatigue:
+        # Practice session cache within this transaction.
+        practice_session_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        def _get_practice_session(team_id: str, *, date_iso: str) -> Dict[str, Any]:
+            day_iso = str(date_iso)[:10]
+            key = (str(team_id).upper(), day_iso)
+            cached = practice_session_cache.get(key)
+            if cached is not None:
+                return cached
+
+            tid = str(team_id).upper()
+            if tid == home_tid:
+                roster_pids = home_roster_pids or home_pids
+                fb_off, fb_def = home_off_scheme, home_def_scheme
+            else:
+                roster_pids = away_roster_pids or away_pids
+                fb_off, fb_def = away_off_scheme, away_def_scheme
+
+            d2g = None
+            day_dt = _parse_date_iso(day_iso)
+            if day_dt is not None:
+                try:
+                    d2g_val = int((gdate - day_dt).days)
+                    if d2g_val < 0:
+                        d2g_val = 0
+                    d2g = int(d2g_val)
+                except Exception:
+                    d2g = None
+
+            sess = resolve_practice_session(
+                cur,
+                team_id=tid,
+                season_year=int(season_year),
+                date_iso=day_iso,
+                fallback_off_scheme=fb_off or None,
+                fallback_def_scheme=fb_def or None,
+                roster_pids=list(roster_pids),
+                days_to_next_game=d2g,
+                now_iso=now_iso,
+            )
+            practice_session_cache[key] = sess
+            return sess
+
+        def _effective_team_practice_mult(*, team_id: str, player_id: str, last_date: Optional[_dt.date]) -> float:
+            if last_date is None:
+                return 1.0
+            dd = (gdate - last_date).days
+            if dd <= 1:
+                return 1.0
+
+            # Safety/perf: ignore extremely old last_date to avoid generating
+            # hundreds of practice rows on long breaks (offseason, etc.).
+            # Only the most recent window matters for recovery feel.
+            max_off_days = 21
+            if dd > (max_off_days + 1):
+                last_date = gdate - _dt.timedelta(days=int(max_off_days + 1))
+                dd = int(max_off_days + 1)
+            logs: list[float] = []
+            for step in range(1, dd):
+                day = last_date + _dt.timedelta(days=int(step))
+                if day >= gdate:
+                    break
+                sess = _get_practice_session(str(team_id).upper(), date_iso=day.isoformat())
+                mult = float(p_types.intensity_for_pid(sess, str(player_id)))
+                logs.append(math.log(max(1e-6, mult)))
+            if not logs:
+                return 1.0
+            return float(math.exp(sum(logs) / float(len(logs))))
+
+        # Compute per-player team practice multiplier for this game.
+        for pid in all_pids:
+            row = state_by_pid.get(str(pid)) or {}
+            last_date = _parse_date_iso(row.get("last_date"))
+            if str(pid) in home_pids:
+                team_id = home_tid
+            else:
+                team_id = away_tid
+            team_practice_mult_by_pid[str(pid)] = _effective_team_practice_mult(team_id=team_id, player_id=str(pid), last_date=last_date)
+
+    def _prepare_player(p: Player) -> PreparedPlayerFatigue:
         pid = str(getattr(p, "pid", "") or "")
         row = state_by_pid.get(pid) or {}
         st0 = float(row.get("st", 0.0) or 0.0)
@@ -337,7 +454,8 @@ def prepare_game_fatigue(
         if age <= 0:
             age = int(age_by_pid.get(pid, 0) or 0)
 
-        # Training intensity multiplier (blend team and player plan).
+        # Training intensity multiplier (blend team practice and player plan).
+        team_mult = float(team_practice_mult_by_pid.get(pid, 1.0) or 1.0)
         player_mult = float(player_int_cache.get(pid, 1.0))
         intensity_mult = _blended_intensity_mult(team_mult=float(team_mult), player_mult=float(player_mult))
 
@@ -374,13 +492,13 @@ def prepare_game_fatigue(
         pid = str(getattr(p, "pid", "") or "")
         if not pid:
             continue
-        home_by_pid[pid] = _prepare_player(p, team_mult=team_int_home)
+        home_by_pid[pid] = _prepare_player(p)
 
     for p in getattr(away, "lineup", []) or []:
         pid = str(getattr(p, "pid", "") or "")
         if not pid:
             continue
-        away_by_pid[pid] = _prepare_player(p, team_mult=team_int_away)
+        away_by_pid[pid] = _prepare_player(p)
 
     return PreparedGameFatigue(
         game_date_iso=gdi,
@@ -435,6 +553,7 @@ def finalize_game_fatigue(
     all_pids = [str(p.pid) for p in (list(getattr(home, "lineup", []) or []) + list(getattr(away, "lineup", []) or [])) if getattr(p, "pid", None)]
     with repo.transaction() as cur:
         age_by_pid = _bulk_load_ages(cur, all_pids)
+
 
     def _age_for_player(p: Player) -> int:
         pid = str(getattr(p, "pid", "") or "")
