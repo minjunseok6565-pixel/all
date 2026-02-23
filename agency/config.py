@@ -279,6 +279,101 @@ class EventConfig:
 
 
 # ---------------------------------------------------------------------------
+# FM-style negotiation / credibility / stances
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SelfExpectationsConfig:
+    """How player self expectations drift away from team expectations.
+
+    These values drive the *persistent* self_expected_* fields stored in
+    player_agency_state.
+    """
+
+    mpg_delta_scale: float = 0.30
+    rate_delta_scale: float = 0.22
+
+    drift_up: float = 0.18
+    drift_down: float = 0.10
+
+    down_sticky_ego: float = 0.55
+    down_sticky_ambition: float = 0.35
+
+    min_self_mpg_floor: float = 6.0
+    max_self_mpg_ceiling: float = 40.0
+
+
+@dataclass(frozen=True, slots=True)
+class CredibilityConfig:
+    """How promise credibility is computed from trust + history."""
+
+    recent_window: int = 6
+
+    broken_total_w: float = 0.10
+    broken_type_w: float = 0.18
+
+    fulfilled_total_w: float = 0.05
+    fulfilled_type_w: float = 0.08
+
+    recent_broken_w: float = 0.10
+    recent_fulfilled_w: float = 0.06
+
+    # If credibility is below this, even a "good" offer may counter instead of accept.
+    min_accept_cred: float = 0.20
+
+
+@dataclass(frozen=True, slots=True)
+class NegotiationConfig:
+    """Offer evaluation thresholds for ACCEPT/COUNTER/REJECT."""
+
+    max_rounds_base: int = 2
+    expire_months: int = 1
+
+    # MINUTES
+    minutes_tol_base: float = 2.0
+    minutes_tol_max: float = 6.0
+    minutes_insult_extra: float = 3.0
+    minutes_cred_bump_max: float = 4.0
+
+    # ROLE (rates)
+    role_tol_base: float = 0.10
+    role_tol_max: float = 0.30
+    role_insult_extra: float = 0.18
+    role_cred_bump_max: float = 0.20
+
+    # HELP (need tag matching)
+    help_accept_min_match: int = 2
+    help_counter_min_match: int = 1
+    help_reject_min_match: int = 0
+
+    # EXTENSION_TALKS
+    ext_due_by_years_left: Dict[int, int] = field(default_factory=lambda: {0: 1, 1: 2, 2: 3})
+    ext_tol_months: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class StanceConfig:
+    """How dynamic stances change and decay over time."""
+
+    skepticism_gain_broken: float = 0.10
+    resentment_gain_broken: float = 0.10
+    hardball_gain_broken: float = 0.08
+
+    skepticism_relief_fulfilled: float = 0.06
+    resentment_relief_fulfilled: float = 0.05
+    hardball_relief_fulfilled: float = 0.04
+
+    skepticism_decay: float = 0.03
+    resentment_decay: float = 0.02
+    hardball_decay: float = 0.02
+
+    decay_trust_bonus: float = 0.04
+    decay_work_ethic_bonus: float = 0.03
+    decay_coachability_bonus: float = 0.02
+
+
+# ---------------------------------------------------------------------------
 # Player option / ETO decisions
 # ---------------------------------------------------------------------------
 
@@ -338,6 +433,13 @@ class AgencyConfig:
     expectations: ExpectationsConfig = field(default_factory=ExpectationsConfig)
     frustration: FrustrationConfig = field(default_factory=FrustrationConfig)
     events: EventConfig = field(default_factory=EventConfig)
+
+    # FM-style interaction tuning
+    self_exp: SelfExpectationsConfig = field(default_factory=SelfExpectationsConfig)
+    credibility: CredibilityConfig = field(default_factory=CredibilityConfig)
+    negotiation: NegotiationConfig = field(default_factory=NegotiationConfig)
+    stance: StanceConfig = field(default_factory=StanceConfig)
+
     options: OptionsConfig = field(default_factory=OptionsConfig)
 
     # Month attribution policy (mid-month trades)
@@ -388,6 +490,12 @@ class AgencyConfig:
 
             # v2 team pass
             "locker_room_meeting": "LOCKER_ROOM_MEETING",
+
+            # v3 negotiation / promise reactions
+            "promise_negotiation": "PROMISE_NEGOTIATION",
+            "broken_promise_private": "BROKEN_PROMISE_PRIVATE",
+            "broken_promise_agent": "BROKEN_PROMISE_AGENT",
+            "broken_promise_public": "BROKEN_PROMISE_PUBLIC",
         }
     )
 

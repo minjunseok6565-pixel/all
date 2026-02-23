@@ -20,9 +20,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .config import AgencyConfig
-from .escalation import advance_stage, decay_stage, desired_stage, stage_label
+from .escalation import advance_stage, decay_stage, desired_stage, stage_fields
 from .metrics import contract_seasons_left, fatigue_level, role_status_pressure
 from .types import MonthlyPlayerInputs
+from .behavior_profile import compute_behavior_profile
+from .self_expectations import update_self_expectations_monthly
+from .stance import apply_monthly_stance_decay
 from .utils import (
     clamp,
     clamp01,
@@ -59,6 +62,51 @@ def _cooldown_active(until_iso: Optional[str], *, now_date_iso: str) -> bool:
         return False
     # ISO dates compare lexicographically.
     return str(u) > str(now_date_iso)[:10]
+
+
+
+def _behavior_profile_for(state: Mapping[str, Any], inputs: MonthlyPlayerInputs) -> Tuple[Any, Dict[str, Any]]:
+    """Compute BehaviorProfile for this player from mental + dynamic stances."""
+    prof, meta = compute_behavior_profile(
+        mental=inputs.mental or {},
+        trust=state.get("trust", 0.5),
+        stance_skepticism=state.get("stance_skepticism", 0.0),
+        stance_resentment=state.get("stance_resentment", 0.0),
+        stance_hardball=state.get("stance_hardball", 0.0),
+    )
+    return prof, meta
+
+
+def _adjust_escalation_params(
+    *,
+    threshold: float,
+    delta_2: float,
+    delta_3: float,
+    profile: Any,
+) -> Tuple[float, float, float]:
+    """Adjust escalation thresholds/deltas per-player.
+
+    - Higher patience -> raises speak-up threshold + slows escalation.
+    - Higher publicness -> stage-3 (PUBLIC) is reachable sooner.
+    """
+    try:
+        pat = float(getattr(profile, "patience", 0.5))
+    except Exception:
+        pat = 0.5
+    try:
+        pub = float(getattr(profile, "publicness", 0.5))
+    except Exception:
+        pub = 0.5
+
+    th = float(clamp01(float(threshold) + 0.10 * (pat - 0.5) - 0.05 * (pub - 0.5)))
+
+    d2 = float(delta_2) * (1.0 + 0.20 * (pat - 0.5)) * (1.0 - 0.15 * pub)
+    d3 = float(delta_3) * (1.0 + 0.25 * (pat - 0.5)) * (1.0 - 0.35 * pub)
+
+    d2 = float(clamp(d2, 0.02, 0.90))
+    d3 = float(clamp(d3, 0.02, 0.90))
+
+    return th, d2, d3
 
 def _injury_multiplier(status: Optional[str], cfg: AgencyConfig) -> float:
     fcfg = cfg.frustration
@@ -305,6 +353,8 @@ def _update_role_frustration(
     role_bucket: str,
     starts_rate: float,
     closes_rate: float,
+    expected_starts_rate: Optional[float] = None,
+    expected_closes_rate: Optional[float] = None,
     mental: Mapping[str, Any],
     leverage: float,
     injury_status: Optional[str],
@@ -326,6 +376,8 @@ def _update_role_frustration(
         role_bucket=str(role_bucket or "UNKNOWN"),
         starts_rate=float(clamp01(starts_rate)),
         closes_rate=float(clamp01(closes_rate)),
+        expected_starts_rate=expected_starts_rate,
+        expected_closes_rate=expected_closes_rate,
         cfg=cfg,
     )
 
@@ -688,7 +740,15 @@ def _candidate_role_issue(
     ecfg = cfg.events
 
     fr = float(clamp01(state.get("role_frustration")))
-    th = float(ecfg.role_issue_threshold)
+
+    prof, prof_meta = _behavior_profile_for(state, inputs)
+    th0 = float(ecfg.role_issue_threshold)
+    th, d2, d3 = _adjust_escalation_params(
+        threshold=th0,
+        delta_2=float(ecfg.axis_escalate_delta_2),
+        delta_3=float(ecfg.axis_escalate_delta_3),
+        profile=prof,
+    )
     if fr < th:
         return None
 
@@ -719,8 +779,8 @@ def _candidate_role_issue(
     desired = desired_stage(
         frustration=fr,
         threshold=th,
-        delta_2=float(ecfg.axis_escalate_delta_2),
-        delta_3=float(ecfg.axis_escalate_delta_3),
+        delta_2=float(d2),
+        delta_3=float(d3),
     )
     stage = advance_stage(state.get("escalation_role"), desired=desired)
 
@@ -742,12 +802,22 @@ def _candidate_role_issue(
 
     payload = {
         "axis": "ROLE",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
         "role_frustration": float(fr),
         "expected_mpg": float(inputs.expected_mpg),
+        "self_expected_mpg": float(state.get("self_expected_mpg") or inputs.expected_mpg),
+        "self_expected_starts_rate": state.get("self_expected_starts_rate"),
+        "self_expected_closes_rate": state.get("self_expected_closes_rate"),
+        "escalation": {
+            "threshold": float(th),
+            "delta_2": float(d2),
+            "delta_3": float(d3),
+            "behavior_profile": dict(prof_meta or {}),
+        },
+        "self_expected_mpg": float(state.get("self_expected_mpg") or inputs.expected_mpg),
         "starts_rate": float(clamp01(inputs.starts_rate)),
         "closes_rate": float(clamp01(inputs.closes_rate)),
         "usage_share": float(clamp01(inputs.usage_share)),
@@ -755,6 +825,24 @@ def _candidate_role_issue(
         "sample_games_played": int(gp),
         "sample_weight": float(clamp01(sample_weight)),
     }
+
+    # Negotiation focus hint: which role-status axis is currently the bigger gap.
+    try:
+        exp_s = state.get("self_expected_starts_rate")
+        exp_c = state.get("self_expected_closes_rate")
+        if exp_s is None and isinstance(status_meta, Mapping):
+            exp_s = status_meta.get("expected_starts_rate")
+        if exp_c is None and isinstance(status_meta, Mapping):
+            exp_c = status_meta.get("expected_closes_rate")
+
+        if exp_s is not None and exp_c is not None:
+            gap_s = float(exp_s) - float(clamp01(inputs.starts_rate))
+            gap_c = float(exp_c) - float(clamp01(inputs.closes_rate))
+            payload["gap_starts"] = float(gap_s)
+            payload["gap_closes"] = float(gap_c)
+            payload["role_focus"] = "STARTS" if gap_s >= gap_c else "CLOSES"
+    except Exception:
+        pass
 
     state_updates = {
         "cooldown_role_until": date_add_days(now_date, int(ecfg.cooldown_role_days)),
@@ -791,7 +879,15 @@ def _candidate_contract_issue(
     ecfg = cfg.events
 
     fr = float(clamp01(state.get("contract_frustration")))
-    th = float(ecfg.contract_issue_threshold)
+
+    prof, prof_meta = _behavior_profile_for(state, inputs)
+    th0 = float(ecfg.contract_issue_threshold)
+    th, d2, d3 = _adjust_escalation_params(
+        threshold=th0,
+        delta_2=float(ecfg.axis_escalate_delta_2),
+        delta_3=float(ecfg.axis_escalate_delta_3),
+        profile=prof,
+    )
     if fr < th:
         return None
 
@@ -822,8 +918,8 @@ def _candidate_contract_issue(
     desired = desired_stage(
         frustration=fr,
         threshold=th,
-        delta_2=float(ecfg.axis_escalate_delta_2),
-        delta_3=float(ecfg.axis_escalate_delta_3),
+        delta_2=float(d2),
+        delta_3=float(d3),
     )
     stage = advance_stage(state.get("escalation_contract"), desired=desired)
 
@@ -842,11 +938,17 @@ def _candidate_contract_issue(
 
     payload = {
         "axis": "CONTRACT",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
         "contract_frustration": float(fr),
+        "escalation": {
+            "threshold": float(th),
+            "delta_2": float(d2),
+            "delta_3": float(d3),
+            "behavior_profile": dict(prof_meta or {}),
+        },
         "active_contract_id": inputs.active_contract_id,
         "contract_end_season_id": inputs.contract_end_season_id,
         "seasons_left": left,
@@ -889,7 +991,15 @@ def _candidate_health_issue(
     ecfg = cfg.events
 
     fr = float(clamp01(state.get("health_frustration")))
-    th = float(ecfg.health_issue_threshold)
+
+    prof, prof_meta = _behavior_profile_for(state, inputs)
+    th0 = float(ecfg.health_issue_threshold)
+    th, d2, d3 = _adjust_escalation_params(
+        threshold=th0,
+        delta_2=float(ecfg.axis_escalate_delta_2),
+        delta_3=float(ecfg.axis_escalate_delta_3),
+        profile=prof,
+    )
     if fr < th:
         return None
 
@@ -918,8 +1028,8 @@ def _candidate_health_issue(
     desired = desired_stage(
         frustration=fr,
         threshold=th,
-        delta_2=float(ecfg.axis_escalate_delta_2),
-        delta_3=float(ecfg.axis_escalate_delta_3),
+        delta_2=float(d2),
+        delta_3=float(d3),
     )
     stage = advance_stage(state.get("escalation_health"), desired=desired)
 
@@ -938,11 +1048,17 @@ def _candidate_health_issue(
 
     payload = {
         "axis": "HEALTH",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
         "health_frustration": float(fr),
+        "escalation": {
+            "threshold": float(th),
+            "delta_2": float(d2),
+            "delta_3": float(d3),
+            "behavior_profile": dict(prof_meta or {}),
+        },
         "injury_status": str(inputs.injury_status or "").upper(),
         "fatigue": dict(fat_meta),
         "sample_games_played": int(gp),
@@ -985,7 +1101,15 @@ def _candidate_chemistry_issue(
     ecfg = cfg.events
 
     fr = float(clamp01(state.get("chemistry_frustration")))
-    th = float(ecfg.chemistry_issue_threshold)
+
+    prof, prof_meta = _behavior_profile_for(state, inputs)
+    th0 = float(ecfg.chemistry_issue_threshold)
+    th, d2, d3 = _adjust_escalation_params(
+        threshold=th0,
+        delta_2=float(ecfg.axis_escalate_delta_2),
+        delta_3=float(ecfg.axis_escalate_delta_3),
+        profile=prof,
+    )
     if fr < th:
         return None
 
@@ -1016,8 +1140,8 @@ def _candidate_chemistry_issue(
     desired = desired_stage(
         frustration=fr,
         threshold=th,
-        delta_2=float(ecfg.axis_escalate_delta_2),
-        delta_3=float(ecfg.axis_escalate_delta_3),
+        delta_2=float(d2),
+        delta_3=float(d3),
     )
     stage = advance_stage(state.get("escalation_chemistry"), desired=desired)
 
@@ -1034,11 +1158,17 @@ def _candidate_chemistry_issue(
 
     payload = {
         "axis": "CHEMISTRY",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "leverage": float(lev),
         "ego": float(ego),
         "chemistry_frustration": float(fr),
+        "escalation": {
+            "threshold": float(th),
+            "delta_2": float(d2),
+            "delta_3": float(d3),
+            "behavior_profile": dict(prof_meta or {}),
+        },
         "team_win_pct": float(inputs.team_win_pct),
         "team_frustration": float(clamp01(state.get("team_frustration"))),
         "trust": float(clamp01(state.get("trust"))),
@@ -1081,7 +1211,15 @@ def _candidate_team_issue(
     ecfg = cfg.events
 
     fr = float(clamp01(state.get("team_frustration")))
-    th = float(ecfg.team_issue_threshold)
+
+    prof, prof_meta = _behavior_profile_for(state, inputs)
+    th0 = float(ecfg.team_issue_threshold)
+    th, d2, d3 = _adjust_escalation_params(
+        threshold=th0,
+        delta_2=float(ecfg.axis_escalate_delta_2),
+        delta_3=float(ecfg.axis_escalate_delta_3),
+        profile=prof,
+    )
     if fr < th:
         return None
 
@@ -1111,8 +1249,8 @@ def _candidate_team_issue(
     desired = desired_stage(
         frustration=fr,
         threshold=th,
-        delta_2=float(ecfg.axis_escalate_delta_2),
-        delta_3=float(ecfg.axis_escalate_delta_3),
+        delta_2=float(d2),
+        delta_3=float(d3),
     )
     stage = advance_stage(state.get("escalation_team"), desired=desired)
 
@@ -1130,13 +1268,19 @@ def _candidate_team_issue(
 
     payload = {
         "axis": "TEAM",
-        "stage": stage_label(stage),
+        **stage_fields(stage),
         "role_bucket": str(inputs.role_bucket or "UNKNOWN"),
         "team_win_pct": float(inputs.team_win_pct),
         "team_strategy": str(inputs.team_strategy or "BALANCED"),
         "leverage": float(lev),
         "ambition": float(amb),
         "team_frustration": float(fr),
+        "escalation": {
+            "threshold": float(th),
+            "delta_2": float(d2),
+            "delta_3": float(d3),
+            "behavior_profile": dict(prof_meta or {}),
+        },
         "sample_games_played": int(gp),
         "sample_games_possible": int(getattr(inputs, "games_possible", 0) or 0),
         "sample_weight": float(clamp01(sample_weight)),
@@ -1234,6 +1378,7 @@ def _candidate_minutes_complaint(
         "axis": "MINUTES",
         "role_bucket": role,
         "expected_mpg": float(inputs.expected_mpg),
+        "self_expected_mpg": float(state.get("self_expected_mpg") or inputs.expected_mpg),
         "actual_mpg": float(ctx_m.get("actual_mpg") or state.get("minutes_actual_mpg") or 0.0),
         "gap": float(ctx_m.get("gap") or 0.0),
         "leverage": float(lev),
@@ -1471,6 +1616,17 @@ def apply_monthly_player_tick(
         "starts_rate": float(clamp01(inputs.starts_rate)),
         "closes_rate": float(clamp01(inputs.closes_rate)),
         "usage_share": float(clamp01(inputs.usage_share)),
+
+        # v3: self expectations (player self-perception; initialized/updated monthly)
+        "self_expected_mpg": None,
+        "self_expected_starts_rate": None,
+        "self_expected_closes_rate": None,
+
+        # v3: dynamic stances (0..1)
+        "stance_skepticism": 0.0,
+        "stance_resentment": 0.0,
+        "stance_hardball": 0.0,
+
         "trade_request_level": 0,
         "cooldown_minutes_until": None,
         "cooldown_trade_until": None,
@@ -1531,13 +1687,43 @@ def apply_monthly_player_tick(
         sample_weight = 1.0 if mins <= 0.0 and exp_mpg > 0.0 else 0.0
        
     # ------------------------------------------------------------------
+    # v3: self expectations + stance decay (FM-style)
+    # ------------------------------------------------------------------
+
+    self_exp_updates, self_exp_meta = update_self_expectations_monthly(
+        state=st,
+        expected_mpg=float(st.get("minutes_expected_mpg") or 0.0),
+        role_bucket=str(st.get("role_bucket") or inputs.role_bucket or "UNKNOWN"),
+        mental=inputs.mental or {},
+        cfg=cfg,
+    )
+    if self_exp_updates:
+        st.update(self_exp_updates)
+
+    stance_updates, stance_meta = apply_monthly_stance_decay(
+        state=st,
+        mental=inputs.mental or {},
+        cfg=cfg,
+    )
+    if stance_updates:
+        st.update(stance_updates)
+
+    beh_profile, beh_meta = compute_behavior_profile(
+        mental=inputs.mental or {},
+        trust=st.get("trust", 0.5),
+        stance_skepticism=st.get("stance_skepticism", 0.0),
+        stance_resentment=st.get("stance_resentment", 0.0),
+        stance_hardball=st.get("stance_hardball", 0.0),
+    )
+
+    # ------------------------------------------------------------------
     # Update frustrations and trust.
     # ------------------------------------------------------------------
     context: Dict[str, Any] = {}
 
     new_m_fr, meta_m = _update_minutes_frustration(
         prev=float(st.get("minutes_frustration") or 0.0),
-        expected_mpg=float(st.get("minutes_expected_mpg") or 0.0),
+        expected_mpg=float(st.get("self_expected_mpg") or st.get("minutes_expected_mpg") or 0.0),
         actual_mpg=float(actual_mpg),
         games_played=int(gp),
         games_possible=int(getattr(inputs, "games_possible", 0) or 0),
@@ -1548,6 +1734,13 @@ def apply_monthly_player_tick(
         cfg=cfg,
     )
     st["minutes_frustration"] = float(new_m_fr)
+    # Add team/self expectation context for explainability.
+    try:
+        meta_m = dict(meta_m or {})
+        meta_m.setdefault("team_expected_mpg", float(st.get("minutes_expected_mpg") or 0.0))
+        meta_m.setdefault("self_expected_mpg", float(st.get("self_expected_mpg") or st.get("minutes_expected_mpg") or 0.0))
+    except Exception:
+        pass
 
     new_t_fr, meta_t = _update_team_frustration(
         prev=float(st.get("team_frustration") or 0.0),
@@ -1566,6 +1759,12 @@ def apply_monthly_player_tick(
         role_bucket=str(st.get("role_bucket") or "UNKNOWN"),
         starts_rate=float(st.get("starts_rate") or 0.0),
         closes_rate=float(st.get("closes_rate") or 0.0),
+        expected_starts_rate=(
+            float(st.get("self_expected_starts_rate")) if st.get("self_expected_starts_rate") is not None else None
+        ),
+        expected_closes_rate=(
+            float(st.get("self_expected_closes_rate")) if st.get("self_expected_closes_rate") is not None else None
+        ),
         mental=inputs.mental,
         leverage=float(st.get("leverage") or 0.0),
         injury_status=inputs.injury_status,
@@ -1643,6 +1842,11 @@ def apply_monthly_player_tick(
     context["chemistry"] = meta_ch
     context["usage"] = meta_u
     context["trust"] = meta_trust
+
+    # v3: self expectations + stances
+    context["self_expectations"] = dict(self_exp_meta or {})
+    context["stance_decay"] = dict(stance_meta or {})
+    context["behavior_profile"] = dict(beh_meta or {})
 
     context["player"] = {
         "ovr": inputs.ovr,
@@ -1759,5 +1963,3 @@ def apply_monthly_player_tick(
         events.append(dict(chosen.event))
  
     return st, events
-
-

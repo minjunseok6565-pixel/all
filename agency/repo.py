@@ -18,7 +18,7 @@ Dates are stored as ISO strings.
 import sqlite3
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from .utils import clamp01, json_dumps, json_loads, norm_date_iso, norm_month_key, safe_float, safe_int
+from .utils import clamp01, json_dumps, json_loads, norm_date_iso, norm_month_key, safe_float, safe_float_opt, safe_int
 
 
 def _uniq_str_ids(ids: list[str]) -> list[str]:
@@ -75,6 +75,13 @@ def get_player_agency_states(
             closes_rate,
             usage_share,
 
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            stance_skepticism,
+            stance_resentment,
+            stance_hardball,
+
             trade_request_level,
 
             cooldown_minutes_until,
@@ -122,21 +129,32 @@ def get_player_agency_states(
             "starts_rate": safe_float(r[15], 0.0),
             "closes_rate": safe_float(r[16], 0.0),
             "usage_share": safe_float(r[17], 0.0),
-            "trade_request_level": safe_int(r[18], 0),
-            "cooldown_minutes_until": norm_date_iso(r[19]),
-            "cooldown_trade_until": norm_date_iso(r[20]),
-            "cooldown_help_until": norm_date_iso(r[21]),
-            "cooldown_contract_until": norm_date_iso(r[22]),
-            "cooldown_role_until": norm_date_iso(r[23]),
-            "cooldown_health_until": norm_date_iso(r[24]),
-            "cooldown_chemistry_until": norm_date_iso(r[25]),
-            "escalation_role": safe_int(r[26], 0),
-            "escalation_contract": safe_int(r[27], 0),
-            "escalation_team": safe_int(r[28], 0),
-            "escalation_health": safe_int(r[29], 0),
-            "escalation_chemistry": safe_int(r[30], 0),
-            "last_processed_month": norm_month_key(r[31]),
-            "context": json_loads(r[32], default={}) or {},
+
+            # v3: self expectations (optional)
+            "self_expected_mpg": safe_float_opt(r[18]),
+            "self_expected_starts_rate": safe_float_opt(r[19]),
+            "self_expected_closes_rate": safe_float_opt(r[20]),
+
+            # v3: dynamic stances (0..1)
+            "stance_skepticism": float(clamp01(safe_float(r[21], 0.0))),
+            "stance_resentment": float(clamp01(safe_float(r[22], 0.0))),
+            "stance_hardball": float(clamp01(safe_float(r[23], 0.0))),
+
+            "trade_request_level": safe_int(r[24], 0),
+            "cooldown_minutes_until": norm_date_iso(r[25]),
+            "cooldown_trade_until": norm_date_iso(r[26]),
+            "cooldown_help_until": norm_date_iso(r[27]),
+            "cooldown_contract_until": norm_date_iso(r[28]),
+            "cooldown_role_until": norm_date_iso(r[29]),
+            "cooldown_health_until": norm_date_iso(r[30]),
+            "cooldown_chemistry_until": norm_date_iso(r[31]),
+            "escalation_role": safe_int(r[32], 0),
+            "escalation_contract": safe_int(r[33], 0),
+            "escalation_team": safe_int(r[34], 0),
+            "escalation_health": safe_int(r[35], 0),
+            "escalation_chemistry": safe_int(r[36], 0),
+            "last_processed_month": norm_month_key(r[37]),
+            "context": json_loads(r[38], default={}) or {},
         }
 
     return out
@@ -194,6 +212,24 @@ def upsert_player_agency_states(
             closes_rate = float(clamp01(st.get("closes_rate")))
             usage_share = float(clamp01(st.get("usage_share")))
 
+            # v3: self expectations (optional)
+            self_exp_mpg = safe_float_opt(st.get("self_expected_mpg"))
+            if self_exp_mpg is not None:
+                self_exp_mpg = float(max(0.0, self_exp_mpg))
+
+            self_exp_starts = safe_float_opt(st.get("self_expected_starts_rate"))
+            if self_exp_starts is not None:
+                self_exp_starts = float(clamp01(self_exp_starts))
+
+            self_exp_closes = safe_float_opt(st.get("self_expected_closes_rate"))
+            if self_exp_closes is not None:
+                self_exp_closes = float(clamp01(self_exp_closes))
+
+            # v3: dynamic stances (0..1)
+            stance_skepticism = float(clamp01(st.get("stance_skepticism")))
+            stance_resentment = float(clamp01(st.get("stance_resentment")))
+            stance_hardball = float(clamp01(st.get("stance_hardball")))
+
             tr_level = safe_int(st.get("trade_request_level"), 0)
 
             cd_minutes = norm_date_iso(st.get("cooldown_minutes_until"))
@@ -248,6 +284,14 @@ def upsert_player_agency_states(
                 float(starts_rate),
                 float(closes_rate),
                 float(usage_share),
+
+                self_exp_mpg,
+                self_exp_starts,
+                self_exp_closes,
+                float(stance_skepticism),
+                float(stance_resentment),
+                float(stance_hardball),
+
                 int(tr_level),
                 cd_minutes,
                 cd_trade,
@@ -292,6 +336,14 @@ def upsert_player_agency_states(
             starts_rate,
             closes_rate,
             usage_share,
+
+            self_expected_mpg,
+            self_expected_starts_rate,
+            self_expected_closes_rate,
+            stance_skepticism,
+            stance_resentment,
+            stance_hardball,
+
             trade_request_level,
             cooldown_minutes_until,
             cooldown_trade_until,
@@ -310,7 +362,7 @@ def upsert_player_agency_states(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(player_id) DO UPDATE SET
             team_id=excluded.team_id,
             season_year=excluded.season_year,
@@ -329,6 +381,14 @@ def upsert_player_agency_states(
             starts_rate=excluded.starts_rate,
             closes_rate=excluded.closes_rate,
             usage_share=excluded.usage_share,
+
+            self_expected_mpg=excluded.self_expected_mpg,
+            self_expected_starts_rate=excluded.self_expected_starts_rate,
+            self_expected_closes_rate=excluded.self_expected_closes_rate,
+            stance_skepticism=excluded.stance_skepticism,
+            stance_resentment=excluded.stance_resentment,
+            stance_hardball=excluded.stance_hardball,
+
             trade_request_level=excluded.trade_request_level,
             cooldown_minutes_until=excluded.cooldown_minutes_until,
             cooldown_trade_until=excluded.cooldown_trade_until,

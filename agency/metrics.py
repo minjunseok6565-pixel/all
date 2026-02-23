@@ -25,6 +25,8 @@ def role_status_pressure(
     role_bucket: str,
     starts_rate: Any,
     closes_rate: Any,
+    expected_starts_rate: Optional[Any] = None,
+    expected_closes_rate: Optional[Any] = None,
     cfg: AgencyConfig,
 ) -> Tuple[float, Dict[str, Any]]:
     """Compute pressure from missing starts/closes relative to expectation.
@@ -35,7 +37,22 @@ def role_status_pressure(
     s = float(clamp01(starts_rate))
     c = float(clamp01(closes_rate))
 
-    exp_s, exp_c = role_expected_rates(role_bucket, cfg=cfg)
+    base_exp_s, base_exp_c = role_expected_rates(role_bucket, cfg=cfg)
+
+    exp_s_src = "role_bucket"
+    exp_c_src = "role_bucket"
+
+    if expected_starts_rate is not None:
+        exp_s = float(clamp01(expected_starts_rate))
+        exp_s_src = "override"
+    else:
+        exp_s = float(base_exp_s)
+
+    if expected_closes_rate is not None:
+        exp_c = float(clamp01(expected_closes_rate))
+        exp_c_src = "override"
+    else:
+        exp_c = float(base_exp_c)
 
     # Absolute gaps.
     gap_s = max(0.0, exp_s - s)
@@ -54,6 +71,7 @@ def role_status_pressure(
         "closes_rate": float(c),
         "expected_starts_rate": float(exp_s),
         "expected_closes_rate": float(exp_c),
+        "expected_sources": {"starts": exp_s_src, "closes": exp_c_src},
         "gap_starts": float(gap_s),
         "gap_closes": float(gap_c),
         "weights": {"starts": float(w_s), "closes": float(w_c)},
