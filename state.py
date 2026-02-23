@@ -33,6 +33,8 @@ __all__ = [
     "validate_state",
     "export_workflow_state",
     "export_full_state_snapshot",
+    "export_save_state_snapshot",
+    "import_save_state_snapshot",
     "get_current_date",
     "get_current_date_as_date",
     "set_current_date",
@@ -1038,6 +1040,42 @@ def export_workflow_state(
 def export_full_state_snapshot() -> dict:
     return snapshot_state()
 
+
+def export_save_state_snapshot() -> dict:
+    """Export a save-friendly state snapshot (exclude cache/migration/runtime-env-only fields)."""
+    snapshot = snapshot_state()
+
+    # Exclude derived/cache-only branches that can be rebuilt on boot.
+    snapshot.pop("ui_cache", None)
+    snapshot.pop("cached_views", None)
+    snapshot.pop("_migrations", None)
+
+    league = snapshot.get("league")
+    if isinstance(league, dict):
+        league.pop("db_path", None)
+        league.pop("master_schedule", None)
+
+    return snapshot
+
+
+
+
+def import_save_state_snapshot(payload: dict) -> None:
+    """Merge a save snapshot into current runtime state (DB-SSOT branches should be pre-filtered by caller)."""
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+
+    def _merge_dict(dst: dict, src: dict) -> None:
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                _merge_dict(dst[k], v)
+            else:
+                dst[k] = deepcopy(v)
+
+    def _impl(state: dict) -> None:
+        _merge_dict(state, payload)
+
+    _mutate_state("import_save_state_snapshot", _impl)
 
 def get_current_date() -> str | None:
     return _read_state(lambda v: v["league"]["current_date"])
