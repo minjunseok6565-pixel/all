@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -17,6 +18,18 @@ from team_utils import ui_cache_rebuild_all
 _SAVE_LOCK = RLock()
 _SLOT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,63}$")
 _SAVE_FORMAT_VERSION = 1
+_DB_HASH_BLOCK_SIZE = 1024 * 1024
+_DB_SSOT_KEYS = {
+    "draft_picks",
+    "swap_rights",
+    "fixed_assets",
+    "transactions",
+    "contracts",
+    "player_contracts",
+    "active_contract_id_by_player",
+    "free_agents",
+    "gm_profiles",
+}
 
 
 class SaveError(ValueError):
@@ -104,6 +117,81 @@ def _read_meta(meta_path: Path) -> Dict[str, Any]:
         return {}
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(_DB_HASH_BLOCK_SIZE)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_json(payload: Dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _verify_slot_files(slot_dir: Path, *, strict: bool = True) -> Dict[str, Any]:
+    issues = []
+    meta_path = slot_dir / "meta.json"
+    db_path = slot_dir / "league.sqlite3"
+    state_path = slot_dir / "state.partial.json"
+
+    if not meta_path.exists():
+        raise SaveError("slot meta.json is missing")
+    if not db_path.exists():
+        raise SaveError("slot league.sqlite3 is missing")
+    if not state_path.exists():
+        issues.append("state.partial.json is missing; runtime workflow state restore will be skipped")
+
+    meta = _read_meta(meta_path)
+    if not meta:
+        raise SaveError("slot meta.json is invalid")
+
+    version = int(meta.get("save_format_version") or 0)
+    if version > _SAVE_FORMAT_VERSION:
+        raise SaveError(f"unsupported save_format_version: {version}")
+
+    hashes = meta.get("content_hashes") if isinstance(meta.get("content_hashes"), dict) else {}
+    if hashes:
+        expected_db = str(hashes.get("league.sqlite3") or "").strip()
+        expected_state = str(hashes.get("state.partial.json") or "").strip()
+        if expected_db:
+            actual_db = _sha256_file(db_path)
+            if actual_db != expected_db:
+                msg = "league.sqlite3 checksum mismatch"
+                if strict:
+                    raise SaveError(msg)
+                issues.append(msg)
+
+        if expected_state and state_path.exists():
+            try:
+                with state_path.open("r", encoding="utf-8") as f:
+                    state_payload = json.load(f)
+                if not isinstance(state_payload, dict):
+                    raise SaveError("state.partial.json is invalid")
+                actual_state = _sha256_json(state_payload)
+                if actual_state != expected_state:
+                    msg = "state.partial.json checksum mismatch"
+                    if strict:
+                        raise SaveError(msg)
+                    issues.append(msg)
+            except SaveError:
+                raise
+            except Exception as exc:
+                raise SaveError(f"failed to parse state.partial.json: {exc}") from exc
+
+    return {
+        "ok": len(issues) == 0,
+        "issues": issues,
+        "meta": meta,
+        "db_path": str(db_path),
+        "state_path": str(state_path),
+    }
+
+
 def save_game(*, slot_id: str, save_name: Optional[str] = None, note: Optional[str] = None) -> Dict[str, Any]:
     with _SAVE_LOCK:
         sid = _validate_slot_id(slot_id)
@@ -120,6 +208,8 @@ def save_game(*, slot_id: str, save_name: Optional[str] = None, note: Optional[s
         _atomic_copy_file(db_path, slot_dir / "league.sqlite3")
         save_state = state.export_save_state_snapshot()
         _atomic_write_json(slot_dir / "state.partial.json", save_state)
+        db_hash = _sha256_file(slot_dir / "league.sqlite3")
+        state_hash = _sha256_json(save_state)
 
         meta = _meta_from_state(
             slot_id=sid,
@@ -128,6 +218,10 @@ def save_game(*, slot_id: str, save_name: Optional[str] = None, note: Optional[s
             note=note,
             save_version=save_version,
         )
+        meta["content_hashes"] = {
+            "league.sqlite3": db_hash,
+            "state.partial.json": state_hash,
+        }
         _atomic_write_json(meta_path, meta)
 
         return {
@@ -138,6 +232,112 @@ def save_game(*, slot_id: str, save_name: Optional[str] = None, note: Optional[s
             "active_season_id": meta.get("active_season_id"),
             "current_date": meta.get("current_date"),
             "season_year": meta.get("season_year"),
+            "content_hashes": meta.get("content_hashes"),
+        }
+
+
+def list_save_slots() -> Dict[str, Any]:
+    with _SAVE_LOCK:
+        root = _ensure_save_root()
+        slots = []
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            sid = entry.name
+            if not _SLOT_RE.fullmatch(sid):
+                continue
+            meta = _read_meta(entry / "meta.json")
+            if not meta:
+                continue
+            slots.append(
+                {
+                    "slot_id": sid,
+                    "slot_name": meta.get("slot_name") or sid,
+                    "save_version": int(meta.get("save_version") or 0),
+                    "saved_at": meta.get("saved_at"),
+                    "save_name": meta.get("save_name"),
+                    "note": meta.get("note"),
+                    "season_year": meta.get("season_year"),
+                    "current_date": meta.get("current_date"),
+                    "user_team_id": meta.get("user_team_id"),
+                    "save_format_version": int(meta.get("save_format_version") or 0),
+                }
+            )
+
+        slots.sort(key=lambda x: str(x.get("saved_at") or ""), reverse=True)
+        return {"ok": True, "slots": slots}
+
+
+def get_save_slot_detail(*, slot_id: str, strict: bool = False) -> Dict[str, Any]:
+    with _SAVE_LOCK:
+        sid = _validate_slot_id(slot_id)
+        slot_dir = _slot_dir(sid)
+        if not slot_dir.exists():
+            raise SaveError(f"slot not found: {sid}")
+        verify = _verify_slot_files(slot_dir, strict=strict)
+        meta = verify["meta"]
+        return {
+            "ok": True,
+            "slot_id": sid,
+            "slot_name": meta.get("slot_name") or sid,
+            "meta": meta,
+            "integrity": {
+                "ok": verify["ok"],
+                "issues": verify["issues"],
+            },
+        }
+
+
+def load_game(*, slot_id: str, strict: bool = True, expected_save_version: Optional[int] = None) -> Dict[str, Any]:
+    with _SAVE_LOCK:
+        sid = _validate_slot_id(slot_id)
+        slot_dir = _slot_dir(sid)
+        if not slot_dir.exists():
+            raise SaveError(f"slot not found: {sid}")
+
+        verify = _verify_slot_files(slot_dir, strict=strict)
+        meta = verify["meta"]
+        save_version = int(meta.get("save_version") or 0)
+        if expected_save_version is not None and int(expected_save_version) != save_version:
+            raise SaveError(
+                f"save_version mismatch: expected={int(expected_save_version)} actual={save_version}"
+            )
+
+        db_path = slot_dir / "league.sqlite3"
+        state_path = slot_dir / "state.partial.json"
+
+        state.reset_state_for_dev()
+        state.set_db_path(str(db_path))
+        state.startup_init_state()
+
+        imported_partial = False
+        if state_path.exists():
+            with state_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                raise SaveError("state.partial.json is invalid")
+            filtered = {k: v for k, v in payload.items() if k not in _DB_SSOT_KEYS}
+            state.import_save_state_snapshot(filtered)
+            imported_partial = True
+
+        try:
+            ui_cache_rebuild_all()
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "slot_id": sid,
+            "slot_name": meta.get("slot_name") or sid,
+            "save_version": save_version,
+            "saved_at": meta.get("saved_at"),
+            "season_year": meta.get("season_year"),
+            "current_date": meta.get("current_date"),
+            "user_team_id": meta.get("user_team_id"),
+            "strict": bool(strict),
+            "integrity_issues": verify.get("issues") or [],
+            "imported_partial_state": imported_partial,
+            "db_path": str(db_path),
         }
 
 
