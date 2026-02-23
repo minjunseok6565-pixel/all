@@ -598,7 +598,7 @@ def apply_trade_executed_effects_to_state(
         try:
             today = state.get_current_date_as_date()
         except Exception:
-            today = date.today()
+            raise
 
     # Atomic mutation: update both trade_market and trade_memory in one state transaction.
     with state.transaction("apply_trade_executed_effects_to_state") as st:

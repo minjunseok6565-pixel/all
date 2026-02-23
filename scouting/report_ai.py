@@ -10,9 +10,10 @@ Implementation uses Google Generative AI (Gemini), matching existing project
 modules (news_ai.py, season_report_ai.py).
 """
 
-import datetime as _dt
 import json
 from typing import Any, Dict, Tuple
+
+import game_time
 
 try:
     import google.generativeai as genai
@@ -25,7 +26,7 @@ PROMPT_VERSION = "scouting_report_v1"
 
 
 def _now_iso() -> str:
-    return _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return game_time.now_utc_like_iso()
 
 
 def _extract_text_from_gemini_response(resp: Any) -> str:
