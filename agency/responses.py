@@ -265,7 +265,7 @@ def apply_user_response(
     now_d = norm_date_iso(now_date_iso) or "2000-01-01"
     mental = mental or {}
 
-    allowed = _allowed_responses_for_event(et)
+    allowed = _allowed_responses_for_event(et, ep)
     if rt not in allowed:
         return ResponseOutcome(
             ok=False,
@@ -373,12 +373,28 @@ def apply_user_response(
             if not counter:
                 return ResponseOutcome(ok=False, error="No counter-offer to accept.", state_updates={})
             off2 = _offer_from_dict(counter)
-            promise = PromiseSpec(
-                promise_type=str(off2.promise_type),
-                due_month=str(off2.due_month),
-                target_value=safe_float_opt(off2.target_value),
-                target=off2.target_json,
-            )
+
+            if str(off2.promise_type).upper() == "HELP":
+                tj = off2.target_json or {}
+                tags = tj.get("need_tags")
+                if not isinstance(tags, list):
+                    tags = tj.get("offer_need_tags")
+                if not isinstance(tags, list):
+                    tags = tj.get("ask_need_tags")
+                if not isinstance(tags, list):
+                    tags = []
+                promise = PromiseSpec(
+                    promise_type="HELP",
+                    due_month=str(off2.due_month),
+                    target={"need_tags": tags},
+                )
+            else:
+                promise = PromiseSpec(
+                    promise_type=str(off2.promise_type),
+                    due_month=str(off2.due_month),
+                    target_value=safe_float_opt(off2.target_value),
+                    target=off2.target_json,
+                )
             reasons.append({"code": "NEGOTIATION_ACCEPT_COUNTER", "evidence": {"thread_id": thread_id}})
             trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.85))
 
@@ -454,12 +470,27 @@ def apply_user_response(
 
             verdict = str(getattr(decision, "verdict", "")).upper()
             if verdict == "ACCEPT":
-                promise = PromiseSpec(
-                    promise_type=str(off.promise_type),
-                    due_month=str(off.due_month),
-                    target_value=safe_float_opt(off.target_value),
-                    target=off.target_json,
-                )
+                if str(off.promise_type).upper() == "HELP":
+                    tj = off.target_json or {}
+                    tags = tj.get("need_tags")
+                    if not isinstance(tags, list):
+                        tags = tj.get("offer_need_tags")
+                    if not isinstance(tags, list):
+                        tags = tj.get("ask_need_tags")
+                    if not isinstance(tags, list):
+                        tags = []
+                    promise = PromiseSpec(
+                        promise_type="HELP",
+                        due_month=str(off.due_month),
+                        target={"need_tags": tags},
+                    )
+                else:
+                    promise = PromiseSpec(
+                        promise_type=str(off.promise_type),
+                        due_month=str(off.due_month),
+                        target_value=safe_float_opt(off.target_value),
+                        target=off.target_json,
+                    )
                 reasons.append({"code": "NEGOTIATION_ACCEPT", "evidence": {"thread_id": thread_id}})
                 trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.80))
                 # relief
@@ -553,7 +584,21 @@ def apply_user_response(
             reasons.append({"code": "BROKEN_PROMISE_DISMISSED", "evidence": {"promise_type": ptype, "axis": axis}})
 
         else:
-            # Re-offer a promise (goes through credibility + negotiation)
+            # Re-offer a promise (goes through credibility + negotiation).
+            # Use the original promise snapshot when available to keep the conversation consistent.
+            snap_tv = safe_float_opt(ep.get("promise_target_value"))
+            snap_t = ep.get("promise_target") if isinstance(ep.get("promise_target"), dict) else {}
+
+            broken_snap = {
+                "promise_id": str(ep.get("promise_id") or ""),
+                "promise_type": ptype,
+                "axis": axis,
+                "due_month": str(ep.get("due_month") or ""),
+                "promise_target_value": snap_tv,
+                "promise_target": dict(snap_t),
+            }
+
+            # Safety: ensure the user is re-offering the same kind of promise that was broken.
             if ptype == "MINUTES" and rt != "PROMISE_MINUTES":
                 return ResponseOutcome(ok=False, error="Wrong promise type for this broken promise.", state_updates={})
             if ptype == "ROLE" and rt != "PROMISE_ROLE":
@@ -565,12 +610,25 @@ def apply_user_response(
             if ptype == "EXTENSION_TALKS" and rt != "PROMISE_EXTENSION_TALKS":
                 return ResponseOutcome(ok=False, error="Wrong promise type for this broken promise.", state_updates={})
 
-            if ptype != "MINUTES":
-                reasons.append({"code": "BROKEN_PROMISE_REPAIR_UNSUPPORTED", "evidence": {"promise_type": ptype}})
-            else:
+            repair_scale = 0.90
+
+            offer: Optional[Offer] = None
+            promise_target_value: Optional[float] = None
+            promise_target: Dict[str, Any] = {}
+
+            if ptype == "MINUTES":
                 target = safe_float_opt(payload.get("target_mpg"))
                 if target is None:
-                    target = safe_float_opt(ep.get("self_expected_mpg")) or safe_float_opt(ep.get("expected_mpg")) or safe_float_opt(state.get("self_expected_mpg"))
+                    target = safe_float_opt(snap_t.get("target_mpg"))
+                if target is None:
+                    target = snap_tv
+                if target is None:
+                    target = (
+                        safe_float_opt(ep.get("self_expected_mpg"))
+                        or safe_float_opt(ep.get("expected_mpg"))
+                        or safe_float_opt(state.get("self_expected_mpg"))
+                        or safe_float_opt(state.get("minutes_expected_mpg"))
+                    )
                 target = float(clamp(target or 0.0, 0.0, 48.0))
                 due = due_month_from_now(now_d, int(rcfg.promise_minutes_due_months))
                 offer = Offer(
@@ -580,9 +638,122 @@ def apply_user_response(
                     target_value=target,
                     target_json={"target_mpg": target},
                 )
+                promise_target_value = float(target)
+                promise_target = {"target_mpg": float(target)}
+
+            elif ptype == "ROLE":
+                role_tag = str(
+                    payload.get("role_tag") or payload.get("role") or snap_t.get("role") or snap_t.get("role_tag") or "ROTATION"
+                ).upper()
+
+                role_focus = str(
+                    payload.get("role_focus") or payload.get("focus") or snap_t.get("role_focus") or snap_t.get("focus") or "STARTS"
+                ).upper()
+                if role_focus not in {"STARTS", "CLOSES"}:
+                    role_focus = "STARTS"
+
+                starts_rate = safe_float_opt(payload.get("starts_rate"))
+                if starts_rate is None:
+                    starts_rate = safe_float_opt(payload.get("min_starts_rate"))
+                if starts_rate is None:
+                    starts_rate = safe_float_opt(snap_t.get("min_starts_rate")) or safe_float_opt(snap_t.get("starts_rate"))
+                if starts_rate is None:
+                    starts_rate = float(rcfg.promise_role_starts_rate)
+
+                closes_rate = safe_float_opt(payload.get("closes_rate"))
+                if closes_rate is None:
+                    closes_rate = safe_float_opt(payload.get("min_closes_rate"))
+                if closes_rate is None:
+                    closes_rate = safe_float_opt(snap_t.get("min_closes_rate")) or safe_float_opt(snap_t.get("closes_rate"))
+                if closes_rate is None:
+                    closes_rate = float(rcfg.promise_role_closes_rate)
+
+                starts_rate = float(clamp01(starts_rate))
+                closes_rate = float(clamp01(closes_rate))
+
+                due = due_month_from_now(now_d, int(rcfg.promise_role_due_months))
+                offer = Offer(
+                    promise_type="ROLE",
+                    axis="ROLE",
+                    due_month=due,
+                    target_value=None,
+                    target_json={
+                        "role": role_tag,
+                        "role_focus": role_focus,
+                        "min_starts_rate": starts_rate,
+                        "min_closes_rate": closes_rate,
+                    },
+                )
+                promise_target = dict(offer.target_json or {})
+
+            elif ptype == "HELP":
+                ask_tags = ep.get("need_tags") if isinstance(ep.get("need_tags"), list) else []
+                if not ask_tags:
+                    ask_tags = snap_t.get("need_tags") if isinstance(snap_t.get("need_tags"), list) else []
+                offer_tags = payload.get("need_tags") if isinstance(payload.get("need_tags"), list) else ask_tags
+
+                due = due_month_from_now(now_d, int(rcfg.promise_help_due_months))
+                offer = Offer(
+                    promise_type="HELP",
+                    axis="TEAM",
+                    due_month=due,
+                    target_value=None,
+                    target_json={"ask_need_tags": ask_tags, "offer_need_tags": offer_tags, "need_tags": offer_tags},
+                )
+                promise_target = {"need_tags": list(offer_tags) if isinstance(offer_tags, list) else []}
+
+            elif ptype == "LOAD":
+                max_mpg = safe_float_opt(payload.get("max_mpg"))
+                if max_mpg is None:
+                    max_mpg = safe_float_opt(snap_t.get("max_mpg"))
+                if max_mpg is None:
+                    max_mpg = snap_tv
+                if max_mpg is None:
+                    max_mpg = float(rcfg.promise_load_max_mpg)
+                max_mpg = float(clamp(max_mpg, 0.0, 48.0))
+
+                ask_payload = dict(ep)
+                if ask_payload.get("health_frustration") is None:
+                    ask_payload["health_frustration"] = safe_float_opt(state.get("health_frustration"))
+
+                ask_max_mpg = _health_load_ask_max_mpg(event_payload=ask_payload, default_max_mpg=max_mpg)
+
+                due = due_month_from_now(now_d, int(rcfg.promise_load_due_months))
+                offer = Offer(
+                    promise_type="LOAD",
+                    axis="HEALTH",
+                    due_month=due,
+                    target_value=max_mpg,
+                    target_json={"max_mpg": max_mpg, "ask_max_mpg": ask_max_mpg},
+                )
+                promise_target = {"max_mpg": float(max_mpg)}
+
+            elif ptype == "EXTENSION_TALKS":
+                years_left = safe_float_opt(payload.get("seasons_left")) or safe_float_opt(payload.get("years_left"))
+                if years_left is None:
+                    years_left = safe_float_opt(snap_t.get("seasons_left")) or safe_float_opt(snap_t.get("years_left"))
+                if years_left is None:
+                    years_left = safe_float_opt(state.get("contract_seasons_left")) or 1.0
+                years_left = float(clamp(years_left, 0.0, 10.0))
+
+                due = due_month_from_now(now_d, int(rcfg.promise_extension_due_months))
+                offer = Offer(
+                    promise_type="EXTENSION_TALKS",
+                    axis="CONTRACT",
+                    due_month=due,
+                    target_value=None,
+                    target_json={"years_left": years_left, "now_month_key": due_month_from_now(now_d, 0)},
+                )
+                promise_target = {"years_left": float(years_left)}
+
+            else:
+                reasons.append({"code": "BROKEN_PROMISE_REPAIR_UNSUPPORTED", "evidence": {"promise_type": ptype}})
+
+            if offer is not None:
                 decision = evaluate_offer(offer=offer, state=state, mental=mental, cfg=cfg, round_index=0, max_rounds=2)
                 negotiation_meta = dict(getattr(decision, "meta", {}) or {})
                 negotiation_meta["decision"] = getattr(decision, "to_dict", lambda: {})()
+                negotiation_meta.setdefault("broken_promise", broken_snap)
                 verdict = str(getattr(decision, "verdict", "")).upper()
 
                 st_updates, st_meta = _apply_offer_decision_stances(
@@ -598,15 +769,37 @@ def apply_user_response(
                     negotiation_meta.setdefault("stance", st_meta)
 
                 if verdict == "ACCEPT":
-                    promise = PromiseSpec(promise_type="MINUTES", due_month=due, target_value=target, target={"target_mpg": target})
-                    trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * 0.90))
-                    _apply_axis_delta("MINUTES", -(rcfg.minutes_relief_promise * impact * pos_mult * sev_mult * 0.90))
-                    reasons.append({"code": "BROKEN_PROMISE_REPAIR_ACCEPTED"})
+                    promise = PromiseSpec(
+                        promise_type=str(offer.promise_type),
+                        due_month=str(offer.due_month),
+                        target_value=promise_target_value,
+                        target=dict(promise_target or {}),
+                    )
+                    trust1 = float(clamp01(trust1 + rcfg.trust_promise * impact * pos_mult * sev_mult * repair_scale))
+
+                    ax = str(offer.axis).upper()
+                    if ax == "MINUTES":
+                        relief = float(rcfg.minutes_relief_promise)
+                    elif ax == "ROLE":
+                        relief = float(rcfg.role_relief_promise)
+                    elif ax == "CONTRACT":
+                        relief = float(rcfg.contract_relief_promise)
+                    elif ax == "HEALTH":
+                        relief = float(rcfg.health_relief_promise)
+                    elif ax == "TEAM":
+                        relief = float(rcfg.team_relief_promise)
+                    elif ax == "CHEMISTRY":
+                        relief = float(rcfg.chemistry_relief_promise)
+                    else:
+                        relief = float(rcfg.axis_relief_promise)
+                    _apply_axis_delta(ax, -(relief * impact * pos_mult * sev_mult * repair_scale))
+
+                    reasons.append({"code": "BROKEN_PROMISE_REPAIR_ACCEPTED", "evidence": {"promise_type": ptype, "axis": ax}})
                 else:
                     tp, fb = _neg_penalties(verdict)
                     trust1 = float(clamp01(trust1 - tp * impact * neg_mult * sev_mult))
-                    _apply_axis_delta("MINUTES", fb * impact * neg_mult * sev_mult)
-                    reasons.append({"code": "BROKEN_PROMISE_REPAIR_NEGOTIATION", "evidence": {"verdict": verdict}})
+                    _apply_axis_delta(str(offer.axis).upper(), fb * impact * neg_mult * sev_mult)
+                    reasons.append({"code": "BROKEN_PROMISE_REPAIR_NEGOTIATION", "evidence": {"promise_type": ptype, "verdict": verdict}})
                     fu = _maybe_make_negotiation_followup(decision=decision, offer=offer, event=event, now_date_iso=now_d, cfg=cfg)
                     if fu:
                         follow_up_events.append(fu)
@@ -1149,22 +1342,28 @@ def apply_user_response(
 # ---------------------------------------------------------------------------
 
 
-def _allowed_responses_for_event(event_type: str) -> set[str]:
+def _allowed_responses_for_event(event_type: str, event_payload: Optional[Mapping[str, Any]] = None) -> set[str]:
     et = str(event_type or "").upper()
 
     if et == "PROMISE_NEGOTIATION":
         return {"ACCEPT_COUNTER", "MAKE_NEW_OFFER", "END_TALKS"}
 
     if et.startswith("BROKEN_PROMISE_"):
-        return {
-            "ACKNOWLEDGE",
-            "DISMISS",
-            "PROMISE_MINUTES",
-            "PROMISE_ROLE",
-            "PROMISE_HELP",
-            "PROMISE_LOAD",
-            "PROMISE_EXTENSION_TALKS",
-        }
+        base = {"ACKNOWLEDGE", "DISMISS"}
+        ep = event_payload if isinstance(event_payload, Mapping) else {}
+        ptype = str(ep.get("promise_type") or "").upper()
+
+        if ptype == "MINUTES":
+            base.add("PROMISE_MINUTES")
+        elif ptype == "ROLE":
+            base.add("PROMISE_ROLE")
+        elif ptype == "HELP":
+            base.add("PROMISE_HELP")
+        elif ptype == "LOAD":
+            base.add("PROMISE_LOAD")
+        elif ptype == "EXTENSION_TALKS":
+            base.add("PROMISE_EXTENSION_TALKS")
+        return base
 
     if et == "MINUTES_COMPLAINT":
         return {"ACKNOWLEDGE", "PROMISE_MINUTES", "DISMISS"}
