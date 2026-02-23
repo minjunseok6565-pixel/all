@@ -582,6 +582,7 @@ def _eval_role(
         target = {}
 
     desired = str(target.get("role") or target.get("target_role") or "STARTER").upper()
+    focus = str(target.get("role_focus") or target.get("focus") or "").upper()
 
     s = safe_float_opt(ctx.starts_rate)
     c = safe_float_opt(ctx.closes_rate)
@@ -605,7 +606,11 @@ def _eval_role(
     max_s_sixth = safe_float(target.get("max_starts_rate"), float(cfg.role_max_starts_rate_for_sixth))
 
     ok = False
-    if desired in {"STARTER", "START"}:
+    if focus == "STARTS":
+        ok = s >= float(clamp01(min_s))
+    elif focus == "CLOSES":
+        ok = c >= float(clamp01(min_c))
+    elif desired in {"STARTER", "START"}:
         ok = s >= float(clamp01(min_s))
     elif desired in {"CLOSER", "CLOSE", "CLOSING"}:
         ok = c >= float(clamp01(min_c))
@@ -629,6 +634,7 @@ def _eval_role(
 
     evidence = {
         "desired": desired,
+        "focus": focus,
         "starts_rate": float(s),
         "closes_rate": float(c),
         "min_starts_rate": float(clamp01(min_s)),

@@ -410,6 +410,23 @@ def apply_user_response(
             if not _is_valid_month_key(off.due_month):
                 return ResponseOutcome(ok=False, error="MAKE_NEW_OFFER requires valid offer.due_month (YYYY-MM).", state_updates={})
 
+            # Preserve LOAD negotiation ask SSOT across rounds when client omits ask_max_mpg.
+            if str(off.promise_type).upper() == "LOAD":
+                tj = dict(off.target_json or {})
+                if safe_float_opt(tj.get("ask_max_mpg")) is None:
+                    prev_ask = safe_float_opt((offer_dict.get("target_json") or {}).get("ask_max_mpg"))
+                    if prev_ask is None:
+                        prev_ask = safe_float_opt((decision_dict.get("meta") or {}).get("ask_max_mpg"))
+                    if prev_ask is not None:
+                        tj["ask_max_mpg"] = float(prev_ask)
+                        off = Offer(
+                            promise_type=off.promise_type,
+                            axis=off.axis,
+                            due_month=off.due_month,
+                            target_value=off.target_value,
+                            target_json=tj,
+                        )
+
 
             decision = evaluate_offer(
                 offer=off,
