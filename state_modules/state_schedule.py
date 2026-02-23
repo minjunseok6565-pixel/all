@@ -1277,7 +1277,12 @@ def mark_master_schedule_game_final(
     home_score: int,
     away_score: int,
 ) -> None:
-    """마스터 스케줄에 동일한 game_id가 있으면 결과를 반영한다."""
+    """마스터 스케줄에 동일한 game_id가 있으면 결과를 반영한다.
+
+    Fail-fast:
+    - game_id가 스케줄에 없으면 예외를 발생시켜 상위 ingest가
+      스케줄 비일관 상태를 만들지 않도록 한다.
+    """
     if not isinstance(master_schedule, dict):
         raise ValueError("master_schedule must be a dict")
     games = master_schedule.get("games") or []
@@ -1300,6 +1305,8 @@ def mark_master_schedule_game_final(
             g["away_score"] = away_score
             by_id[game_id] = g
             return
+
+    raise ValueError(f"master_schedule game_id not found: {game_id!r}")
 
 
 def get_schedule_summary(master_schedule: dict) -> Dict[str, Any]:
