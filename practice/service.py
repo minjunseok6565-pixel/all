@@ -724,6 +724,7 @@ def resolve_practice_session(
     d = game_time.require_date_iso(date_iso, field="date_iso")
     tid = str(team_id).upper()
     sy = int(season_year)
+    roster_was_provided = roster_pids is not None
     # Dedupe roster IDs (order-preserving) and strip whitespace.
     roster: list[str] = []
     _seen: set[str] = set()
@@ -744,7 +745,7 @@ def resolve_practice_session(
         # Commercial safety: if SCRIMMAGE, clamp stored participant_pids to the provided roster.
         # This prevents OUT/traded players from occupying participant slots when callers
         # provide a filtered/eligible roster_pids list.
-        if roster and str(sess.get("type") or "").upper() == "SCRIMMAGE":
+        if roster_was_provided and str(sess.get("type") or "").upper() == "SCRIMMAGE":
             try:
                 roster_set = set(roster)
                 existing = sess.get("participant_pids") or []
