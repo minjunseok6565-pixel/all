@@ -1441,6 +1441,13 @@ def apply_monthly_agency_tick(
                                     ev_type = str(cfg.event_types.get("broken_promise_public", "BROKEN_PROMISE_PUBLIC")).upper()
 
                                 sev_r = float(clamp01(0.35 + 0.55 * score + 0.20 * lev0))
+
+                                # Snapshot the original promise terms so follow-up actions can
+                                # re-offer/renegotiate without DB lookups (responses layer is pure).
+                                pt = p.get("target")
+                                if not isinstance(pt, Mapping):
+                                    pt = {}
+
                                 reaction_event = {
                                     "event_id": make_event_id("agency", "broken_promise", promise_id, mk, ev_type),
                                     "player_id": pid,
@@ -1456,6 +1463,12 @@ def apply_monthly_agency_tick(
                                         "promise_type": str(ptype),
                                         "month_key": str(mk),
                                         "due_month": p.get("due_month"),
+                                        # Snapshot of original promise terms for follow-up actions.
+                                        "promise_target_value": p.get("target_value"),
+                                        "promise_target": dict(pt),
+                                        "promise_created_date": p.get("created_date"),
+                                        "promise_source_event_id": p.get("source_event_id"),
+                                        "promise_response_id": p.get("response_id"),
                                         "promised_team_id": promised_team,
                                         "team_end_of_month_id": team_eom,
                                         "reasons": list(res.reasons or []),
