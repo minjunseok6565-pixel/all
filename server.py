@@ -990,7 +990,7 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
                     "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
                     (pid, sy),
                 ).fetchone()
-                games_used = int((used or {}).get("n") or 0)
+                games_used = int((used["n"] if used is not None else 0) or 0)
                 two_way = {
                     "is_two_way": True,
                     "game_limit": game_limit,
@@ -4131,7 +4131,7 @@ async def two_way_summary(team_id: str):
                     "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
                     (player_id, season_year),
                 ).fetchone()
-                used_i = int((used or {}).get("n") or 0)
+                used_i = int((used["n"] if used is not None else 0) or 0)
                 players.append(
                     {
                         "player_id": player_id,
@@ -4346,7 +4346,6 @@ async def api_game_set_user_team(req: GameSetUserTeamRequest):
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
 
 
 
