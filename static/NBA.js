@@ -9,17 +9,30 @@ const TEAM_FULL_NAMES = {
   UTA: "유타 재즈", WAS: "워싱턴 위저즈"
 };
 
-const state = { lastSaveSlotId: null, selectedTeamId: null, selectedTeamName: "" };
+const state = {
+  lastSaveSlotId: null,
+  selectedTeamId: null,
+  selectedTeamName: "",
+  rosterRows: [],
+  selectedPlayerId: null,
+};
 
 const els = {
   startScreen: document.getElementById("start-screen"),
   teamScreen: document.getElementById("team-screen"),
+  mainScreen: document.getElementById("main-screen"),
+  myTeamScreen: document.getElementById("my-team-screen"),
   newGameBtn: document.getElementById("new-game-btn"),
   continueBtn: document.getElementById("continue-btn"),
   continueHint: document.getElementById("continue-hint"),
   teamGrid: document.getElementById("team-grid"),
-  mainScreen: document.getElementById("main-screen"),
   mainTeamTitle: document.getElementById("main-team-title"),
+  myTeamTitle: document.getElementById("my-team-title"),
+  myTeamBtn: document.getElementById("my-team-btn"),
+  backToMainBtn: document.getElementById("back-to-main-btn"),
+  rosterBody: document.getElementById("my-team-roster-body"),
+  playerDetailPanel: document.getElementById("player-detail-panel"),
+  playerDetailContent: document.getElementById("player-detail-content"),
   loadingOverlay: document.getElementById("loading-overlay"),
   loadingText: document.getElementById("loading-text")
 };
@@ -27,9 +40,7 @@ const els = {
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || `요청 실패: ${url}`);
-  }
+  if (!res.ok) throw new Error(data.detail || `요청 실패: ${url}`);
   return data;
 }
 
@@ -38,23 +49,222 @@ function setLoading(show, msg = "") {
   if (msg) els.loadingText.textContent = msg;
 }
 
-function showTeamSelection() {
-  els.startScreen.classList.remove("active");
-  els.mainScreen.classList.remove("active");
-  els.teamScreen.classList.add("active");
-  els.teamScreen.setAttribute("aria-hidden", "false");
-  els.mainScreen.setAttribute("aria-hidden", "true");
+function activateScreen(target) {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen].forEach((screen) => {
+    const active = screen === target;
+    screen.classList.toggle("active", active);
+    screen.setAttribute("aria-hidden", active ? "false" : "true");
+  });
 }
 
+function showTeamSelection() { activateScreen(els.teamScreen); }
 
 function showMainScreen() {
-  els.startScreen.classList.remove("active");
-  els.teamScreen.classList.remove("active");
-  els.mainScreen.classList.add("active");
-  els.teamScreen.setAttribute("aria-hidden", "true");
-  els.mainScreen.setAttribute("aria-hidden", "false");
+  activateScreen(els.mainScreen);
   const teamName = state.selectedTeamName || state.selectedTeamId || "선택 팀";
   els.mainTeamTitle.textContent = `${teamName} 메인 화면`;
+}
+
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+function formatHeightIn(inches) {
+  const inch = Math.max(0, Math.round(num(inches, 0)));
+  const feet = Math.floor(inch / 12);
+  const rem = inch % 12;
+  return `${feet}'${String(rem).padStart(2, "0")}"`;
+}
+
+function formatWeightLb(lb) { return `${Math.round(num(lb, 0))} lb`; }
+
+function formatMoney(n) {
+  return `$${Math.round(num(n, 0)).toLocaleString("en-US")}`;
+}
+
+function ratioToColor(ratio) {
+  const r = clamp(num(ratio, 0), 0, 1);
+  const hue = Math.round(r * 120);
+  return `hsl(${hue} 80% 36%)`;
+}
+
+function renderConditionRing(longStamina, shortStamina) {
+  const longPct = clamp(num(longStamina, 0), 0, 1) * 100;
+  const shortPct = clamp(num(shortStamina, 0), 0, 1) * 100;
+  const longColor = ratioToColor(longStamina);
+  const shortColor = ratioToColor(shortStamina);
+  return `<div class="condition-ring" style="--long-pct:${longPct};--short-pct:${shortPct};--long-color:${longColor};--short-color:${shortColor};" title="장기 ${Math.round(longPct)}% · 단기 ${Math.round(shortPct)}%"></div>`;
+}
+
+function renderRosterRows(rows) {
+  els.rosterBody.innerHTML = "";
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "roster-row";
+    tr.dataset.playerId = row.player_id;
+
+    const shortStamina = row.short_term_stamina ?? (1 - num(row.short_term_fatigue, 0));
+    const longStamina = row.long_term_stamina ?? (1 - num(row.long_term_fatigue, 0));
+    const sharpness = clamp(num(row.sharpness, 50), 0, 100);
+
+    tr.innerHTML = `
+      <td>${row.name || "-"}</td>
+      <td>${row.pos || "-"}</td>
+      <td>${num(row.age, 0)}</td>
+      <td>${formatHeightIn(row.height_in)}</td>
+      <td>${formatWeightLb(row.weight_lb)}</td>
+      <td>${formatMoney(row.salary)}</td>
+      <td class="condition-cell">${renderConditionRing(longStamina, shortStamina)}</td>
+      <td><span class="sharpness-badge" style="background:${ratioToColor(sharpness / 100)}">${Math.round(sharpness)}%</span></td>
+    `;
+
+    tr.addEventListener("click", () => {
+      state.selectedPlayerId = row.player_id;
+      [...els.rosterBody.querySelectorAll(".roster-row")].forEach((node) => node.classList.remove("active"));
+      tr.classList.add("active");
+      loadPlayerDetail(row.player_id).catch((e) => alert(e.message));
+    });
+
+    els.rosterBody.appendChild(tr);
+  }
+}
+
+function getDissatisfactionSummary(d) {
+  if (!d || !d.is_dissatisfied) return { text: "불만: 없음", details: [] };
+  const st = d.state || {};
+  const axes = [
+    ["팀", num(st.team_frustration, 0)],
+    ["역할", num(st.role_frustration, 0)],
+    ["계약", num(st.contract_frustration, 0)],
+    ["건강", num(st.health_frustration, 0)],
+    ["케미", num(st.chemistry_frustration, 0)],
+    ["사용률", num(st.usage_frustration, 0)],
+  ].sort((a, b) => b[1] - a[1]);
+
+  const top = axes.filter(([, v]) => v > 0.1).slice(0, 3).map(([k, v]) => `${k} ${Math.round(v * 100)}%`);
+  const level = clamp(num(st.trade_request_level, 0), 0, 10);
+  return {
+    text: `불만: 있음 (강도 ${Math.round(axes[0][1] * 100)}%, TR ${level})`,
+    details: top,
+  };
+}
+
+function renderKVList(obj) {
+  const entries = Object.entries(obj || {});
+  if (!entries.length) return "<li>데이터 없음</li>";
+  return entries
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([k, v]) => `<li><strong>${k}</strong>: ${typeof v === "number" ? Math.round(v * 100) / 100 : String(v)}</li>`)
+    .join("");
+}
+
+function renderPlayerDetail(detail) {
+  const p = detail.player || {};
+  const contract = detail.contract || {};
+  const diss = getDissatisfactionSummary(detail.dissatisfaction);
+  const injury = detail.injury || {};
+  const condition = detail.condition || {};
+  const seasonStats = detail.season_stats || {};
+  const totals = seasonStats.totals || {};
+  const twoWay = detail.two_way || {};
+
+  const healthText = injury.is_injured
+    ? `${injury.status || "부상"} · ${(injury.state?.injury_type || "")}`
+    : "건강함";
+
+  const contractLine = contract.active
+    ? `${contract.active.contract_type || "STANDARD"} · ${contract.active.years || "-"}년 · ${Object.keys(contract.active.salary_by_year || {}).length}시즌`
+    : "활성 계약 정보 없음";
+
+  const twoWayHtml = twoWay.is_two_way
+    ? `<div class="detail-chip">투웨이: 예 · 남은 경기 ${num(twoWay.games_remaining, 0)} / ${num(twoWay.game_limit, 0)}</div>`
+    : "";
+
+  els.playerDetailPanel.classList.remove("empty");
+  els.playerDetailContent.innerHTML = `
+    <div class="detail-head">
+      <h3>${p.name || "선수"}</h3>
+      <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
+    </div>
+
+    <div class="detail-grid">
+      <div class="detail-chip">포지션: ${p.pos || "-"}</div>
+      <div class="detail-chip">나이: ${num(p.age, 0)}</div>
+      <div class="detail-chip">키/몸무게: ${formatHeightIn(p.height_in)} · ${formatWeightLb(p.weight_lb)}</div>
+      <div class="detail-chip">샐러리: ${formatMoney(detail.roster?.salary_amount)}</div>
+      <div class="detail-chip">단기 체력: ${Math.round(num(condition.short_term_stamina, 0) * 100)}%</div>
+      <div class="detail-chip">장기 체력: ${Math.round(num(condition.long_term_stamina, 0) * 100)}%</div>
+      ${twoWayHtml}
+    </div>
+
+    <div class="detail-section">
+      <h4>불만</h4>
+      <p>${diss.text}</p>
+      ${diss.details.length ? `<ul class="kv-list">${diss.details.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+    </div>
+
+    <div class="detail-section">
+      <h4>건강</h4>
+      <p>${healthText}</p>
+      ${injury.is_injured ? `<pre class="mini-json">${JSON.stringify(injury.state || {}, null, 2)}</pre>` : ""}
+    </div>
+
+    <div class="detail-section">
+      <h4>계약 구조</h4>
+      <p>${contractLine}</p>
+      <pre class="mini-json">${JSON.stringify(contract.active || {}, null, 2)}</pre>
+    </div>
+
+    <div class="detail-section">
+      <h4>ATTR</h4>
+      <ul class="kv-list">${renderKVList(p.attrs || {})}</ul>
+    </div>
+
+    <div class="detail-section">
+      <h4>누적 스탯</h4>
+      <p>경기 수: ${num(seasonStats.games, 0)}</p>
+      <ul class="kv-list">${renderKVList(totals)}</ul>
+    </div>
+  `;
+}
+
+async function loadPlayerDetail(playerId) {
+  setLoading(true, "선수 상세 정보를 불러오는 중...");
+  try {
+    const detail = await fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`);
+    renderPlayerDetail(detail);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function showMyTeamScreen() {
+  if (!state.selectedTeamId) {
+    alert("먼저 팀을 선택해주세요.");
+    return;
+  }
+
+  setLoading(true, "내 팀 로스터를 불러오는 중...");
+  try {
+    const detail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+    state.rosterRows = detail.roster || [];
+    state.selectedPlayerId = null;
+
+    const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    els.myTeamTitle.textContent = `${teamName} 선수단`;
+
+    renderRosterRows(state.rosterRows);
+    els.playerDetailPanel.classList.add("empty");
+    els.playerDetailContent.innerHTML = "";
+    activateScreen(els.myTeamScreen);
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function confirmTeamSelection(teamId, fullName) {
@@ -68,10 +278,7 @@ async function confirmTeamSelection(teamId, fullName) {
     await fetchJson("/api/game/set-user-team", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        slot_id: state.lastSaveSlotId,
-        user_team_id: teamId
-      })
+      body: JSON.stringify({ slot_id: state.lastSaveSlotId, user_team_id: teamId })
     });
   }
 
@@ -167,5 +374,20 @@ async function continueGame() {
 
 els.newGameBtn.addEventListener("click", () => createNewGame().catch((e) => alert(e.message)));
 els.continueBtn.addEventListener("click", () => continueGame().catch((e) => alert(e.message)));
+els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
+els.backToMainBtn.addEventListener("click", () => showMainScreen());
 
 loadSavesStatus();
+
+window.__debugRenderMyTeam = function __debugRenderMyTeam() {
+  state.selectedTeamId = "BOS";
+  state.selectedTeamName = "보스턴 셀틱스";
+  state.rosterRows = [
+    { player_id: "p1", name: "J. Tatum", pos: "SF", age: 27, height_in: 80, weight_lb: 210, salary: 34000000, short_term_stamina: 0.72, long_term_stamina: 0.86, sharpness: 89 },
+    { player_id: "p2", name: "J. Brown", pos: "SG", age: 28, height_in: 78, weight_lb: 223, salary: 32000000, short_term_stamina: 0.51, long_term_stamina: 0.78, sharpness: 61 },
+    { player_id: "p3", name: "K. Porzingis", pos: "C", age: 29, height_in: 87, weight_lb: 240, salary: 36000000, short_term_stamina: 0.33, long_term_stamina: 0.62, sharpness: 42 }
+  ];
+  els.myTeamTitle.textContent = `${state.selectedTeamName} 선수단`;
+  renderRosterRows(state.rosterRows);
+  activateScreen(els.myTeamScreen);
+};

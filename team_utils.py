@@ -495,14 +495,49 @@ def get_team_detail(team_id: str) -> Dict[str, Any]:
     }
 
     season_stats = export_workflow_state().get("player_stats", {}) or {}
+    league_ctx = get_league_context_snapshot() or {}
+    season_year = int(league_ctx.get("season_year") or 0)
+
     roster: List[Dict[str, Any]] = []
     with _repo_ctx() as repo:
         roster_rows = repo.get_team_roster(tid)
+        roster_pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
+
+        fatigue_by_pid: Dict[str, Dict[str, Any]] = {}
+        sharpness_by_pid: Dict[str, Dict[str, Any]] = {}
+        if roster_pids:
+            try:
+                from fatigue import repo as f_repo
+                from readiness import repo as r_repo
+
+                with repo.transaction() as cur:
+                    fatigue_by_pid = f_repo.get_player_fatigue_states(cur, roster_pids)
+                    if season_year > 0:
+                        sharpness_by_pid = r_repo.get_player_sharpness_states(
+                            cur,
+                            roster_pids,
+                            season_year=int(season_year),
+                        )
+            except Exception as exc:
+                _warn_limited(
+                    "TEAM_DETAIL_CONDITION_LOAD_FAILED",
+                    f"team_id={tid!r} exc_type={type(exc).__name__}",
+                    limit=3,
+                )
+
         for row in roster_rows:
             pid = str(row.get("player_id"))
             p_stats = season_stats.get(pid, {}) or {}
             games = int(p_stats.get("games", 0) or 0)
             totals = p_stats.get("totals", {}) or {}
+
+            fatigue_row = fatigue_by_pid.get(pid) or {}
+            st_fatigue = float(fatigue_row.get("st", 0.0) or 0.0)
+            lt_fatigue = float(fatigue_row.get("lt", 0.0) or 0.0)
+
+            sharp_row = sharpness_by_pid.get(pid) or {}
+            sharpness = float(sharp_row.get("sharpness", 50.0) or 50.0)
+
             def per_game_val(key: str) -> float:
                 try:
                     return float(totals.get(key, 0.0)) / games if games else 0.0
@@ -516,7 +551,14 @@ def get_team_detail(team_id: str) -> Dict[str, Any]:
                     "pos": row.get("pos"),
                     "ovr": float(row.get("ovr") or 0.0),
                     "age": int(row.get("age") or 0),
+                    "height_in": int(row.get("height_in") or 0),
+                    "weight_lb": int(row.get("weight_lb") or 0),
                     "salary": float(row.get("salary_amount") or 0.0),
+                    "short_term_fatigue": st_fatigue,
+                    "long_term_fatigue": lt_fatigue,
+                    "short_term_stamina": max(0.0, 1.0 - st_fatigue),
+                    "long_term_stamina": max(0.0, 1.0 - lt_fatigue),
+                    "sharpness": sharpness,
                     "pts": per_game_val("PTS"),
                     "ast": per_game_val("AST"),
                     "reb": per_game_val("REB"),
