@@ -64,6 +64,7 @@
                 <button id="refreshSavesBtn">새로고침</button>
               </div>
               <div id="saveSlots" class="list"></div>
+              <pre id="saveDetailBox" class="json"></pre>
             </article>
           </div>
         </section>
@@ -131,6 +132,25 @@
               <button id="searchCollegePlayersBtn">검색</button>
             </div>
             <pre id="collegePlayersBox" class="json"></pre>
+
+            <h4>대학/드래프트 상세 탐색</h4>
+            <div class="inline-actions">
+              <button id="loadCollegeMetaBtn">메타 조회</button>
+              <button id="loadCollegeTeamsBtn">대학 팀 목록</button>
+            </div>
+            <div class="inline-form">
+              <input id="collegeTeamDetailId" placeholder="college_team_id" />
+              <button id="loadCollegeTeamDetailBtn">팀 상세 조회</button>
+            </div>
+            <div class="inline-form">
+              <input id="collegePlayerDetailId" placeholder="player_id" />
+              <button id="loadCollegePlayerDetailBtn">선수 상세 조회</button>
+            </div>
+            <div class="inline-form">
+              <input id="collegeDraftPoolYear" type="number" placeholder="draft_year (예: 2026)" />
+              <button id="loadCollegeDraftPoolBtn">드래프트 풀 조회</button>
+            </div>
+            <pre id="collegeDetailBox" class="json"></pre>
           </article>
         </section>
 
@@ -164,6 +184,7 @@
                 <div class="inline-actions">
                   <button id="sendOfferBtn">오퍼 전송</button>
                   <button id="acceptCounterBtn">카운터 수락</button>
+                  <button id="cancelNegotiationBtn">협상 취소</button>
                   <button id="commitNegotiationBtn" class="primary">협상 커밋</button>
                 </div>
                 <pre id="negotiationResult" class="json"></pre>
