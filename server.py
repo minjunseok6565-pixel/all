@@ -403,6 +403,22 @@ class ContractNegotiationCancelRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class TwoWayNegotiationStartRequest(BaseModel):
+    team_id: str
+    player_id: str
+    valid_days: Optional[int] = 7
+
+
+class TwoWayNegotiationDecisionRequest(BaseModel):
+    session_id: str
+    accept: bool
+
+
+class TwoWayNegotiationCommitRequest(BaseModel):
+    session_id: str
+    signed_date: Optional[str] = None
+
+
 class AgencyEventRespondRequest(BaseModel):
     user_team_id: str
     event_id: str
@@ -3298,6 +3314,62 @@ async def api_contracts_re_sign_or_extend(req: ReSignOrExtendRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Re-sign/extend failed: {e}")
+
+
+@app.post("/api/contracts/two-way/negotiation/start")
+async def api_two_way_negotiation_start(req: TwoWayNegotiationStartRequest):
+    try:
+        from contracts.two_way_service import start_two_way_negotiation
+
+        out = start_two_way_negotiation(
+            db_path=str(state.get_db_path()),
+            team_id=req.team_id,
+            player_id=req.player_id,
+            valid_days=req.valid_days,
+            now_iso=game_time.now_utc_like_iso(),
+        )
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/two-way/negotiation/decision")
+async def api_two_way_negotiation_decision(req: TwoWayNegotiationDecisionRequest):
+    try:
+        from contracts.two_way_service import decide_two_way_negotiation
+
+        out = decide_two_way_negotiation(session_id=str(req.session_id), accept=bool(req.accept))
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/two-way/negotiation/commit")
+async def api_two_way_negotiation_commit(req: TwoWayNegotiationCommitRequest):
+    try:
+        from contracts.two_way_service import commit_two_way_negotiation
+
+        out = commit_two_way_negotiation(
+            db_path=str(state.get_db_path()),
+            session_id=str(req.session_id),
+            signed_date_iso=req.signed_date or state.get_current_date_as_date().isoformat(),
+        )
+        _validate_repo_integrity(str(state.get_db_path()))
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/trade/submit")

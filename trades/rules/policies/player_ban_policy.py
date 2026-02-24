@@ -14,10 +14,11 @@ def compute_recent_signing_banned_until(
     """Compute banned-until date for a "recent signing / re-sign" restriction.
 
     Policy (mirrors PlayerEligibilityRule Phase2):
-    - Applies if last_contract_action_type in {SIGN_FREE_AGENT, RE_SIGN_OR_EXTEND}
+    - Applies if last_contract_action_type in {SIGN_FREE_AGENT, RE_SIGN_OR_EXTEND, SIGN_TWO_WAY}
       OR signed_via_free_agency is True.
     - signed_date source: prefer last_contract_action_date, else signed_date.
-    - banned_until = max(signed_date + new_fa_sign_ban_days, Dec 15 of season_year)
+    - SIGN_TWO_WAY: banned_until = signed_date + two_way_sign_ban_days (default 30)
+    - Other signing/re-sign cases: banned_until = max(signed_date + new_fa_sign_ban_days, Dec 15 of season_year)
     """
     tr = trade_rules or {}
     ban_days = _safe_int(tr.get("new_fa_sign_ban_days"), default=90)
@@ -37,7 +38,7 @@ def compute_recent_signing_banned_until(
             raise RuntimeError(f"{ctx}: signed_via_free_agency must be bool, got {type(signed_via_fa).__name__}")
         signed_via_fa = False
 
-    is_recent_signing = contract_action_type in {"SIGN_FREE_AGENT", "RE_SIGN_OR_EXTEND"}
+    is_recent_signing = contract_action_type in {"SIGN_FREE_AGENT", "RE_SIGN_OR_EXTEND", "SIGN_TWO_WAY"}
     applies = bool(is_recent_signing or signed_via_fa)
 
     dec15 = _dec15(season_year, strict=strict, context=ctx)
@@ -62,6 +63,13 @@ def compute_recent_signing_banned_until(
     if signed_date is None or dec15 is None:
         # Non-strict mode can end up here; treat as no-ban rather than guessing.
         return None, evidence
+
+    if str(contract_action_type or "").upper() == "SIGN_TWO_WAY":
+        two_way_ban_days = _safe_int(tr.get("two_way_sign_ban_days"), default=30)
+        evidence["ban_days"] = two_way_ban_days
+        banned_until = signed_date + timedelta(days=two_way_ban_days)
+        evidence["dec15"] = None
+        return banned_until, evidence
 
     banned_until_days = signed_date + timedelta(days=ban_days)
     banned_until = max(banned_until_days, dec15)

@@ -48,6 +48,7 @@ from contract_codec import contract_from_row, contract_to_upsert_row
 
 # Contract creation helpers
 from contracts.models import new_contract_id, make_contract_record
+from two_way_repo import count_active_two_way_by_team
 
 # Season inference (fallbacks keep Service usable even in minimal test harnesses)
 try:
@@ -1819,6 +1820,108 @@ class LeagueService:
                 "years": years_i,
                 "guaranteed_years": int(guaranteed_years),
                 "team_option_years": [int(y) for y in option_years_sorted] if option_years_sorted else [],
+            },
+        )
+
+    def sign_two_way(
+        self,
+        team_id: str,
+        player_id: str,
+        *,
+        signed_date: date | str | None = None,
+    ) -> ServiceEvent:
+        """Sign a two-way contract (salary-free; does not count toward standard salary cap logic)."""
+        team_norm = self._norm_team_id(team_id, strict=True)
+        pid = self._norm_player_id(player_id)
+        signed_date_iso = _coerce_iso(signed_date)
+        season_year_i = _current_season_year_ssot()
+
+        with self._atomic() as cur:
+            roster = cur.execute(
+                """
+                SELECT team_id
+                FROM roster
+                WHERE player_id=? AND status='active';
+                """,
+                (pid,),
+            ).fetchone()
+            if not roster:
+                raise KeyError(f"active roster entry not found for player_id={player_id}")
+            current_team = str(roster["team_id"]).upper()
+            if current_team != "FA":
+                raise ValueError(f"player_id={player_id} is not a free agent (team_id={current_team})")
+
+            two_way_count = int(count_active_two_way_by_team(cur, team_norm))
+            if two_way_count >= 3:
+                raise ValueError(f"team_id={team_norm} already has max two-way players (3)")
+
+            contract_id = str(new_contract_id())
+            contract = make_contract_record(
+                contract_id=contract_id,
+                player_id=pid,
+                team_id=team_norm,
+                signed_date_iso=signed_date_iso,
+                start_season_year=int(season_year_i),
+                years=1,
+                salary_by_year={str(int(season_year_i)): 0.0},
+                options=[],
+                status="ACTIVE",
+            )
+            contract["contract_type"] = "TWO_WAY"
+            contract["two_way"] = True
+            contract["two_way_game_limit"] = 50
+            contract["postseason_eligible"] = False
+            contract["salary_free"] = True
+
+            self._upsert_contract_records_in_cur(cur, {contract_id: contract})
+            self._activate_contract_for_player_in_cur(cur, pid, contract_id)
+            self._move_player_team_in_cur(cur, pid, team_norm)
+            self._set_roster_salary_in_cur(cur, pid, 0)
+
+            try:
+                cur.execute("DELETE FROM free_agents WHERE player_id=?;", (pid,))
+            except Exception:
+                pass
+
+            self._insert_transactions_in_cur(
+                cur,
+                [
+                    {
+                        "type": "SIGN_TWO_WAY",
+                        "date": signed_date_iso,
+                        "action_date": signed_date_iso,
+                        "action_type": "SIGN_TWO_WAY",
+                        "season_year": int(season_year_i),
+                        "source": "contracts.two_way",
+                        "teams": [team_norm],
+                        "team_id": team_norm,
+                        "player_id": pid,
+                        "from_team": "FA",
+                        "to_team": team_norm,
+                        "contract_id": contract_id,
+                        "start_season_year": int(season_year_i),
+                        "years": 1,
+                    }
+                ],
+            )
+
+        return ServiceEvent(
+            type="sign_two_way",
+            payload={
+                "date": signed_date_iso,
+                "season_year": int(season_year_i),
+                "player_id": pid,
+                "affected_player_ids": [pid],
+                "from_team": "FA",
+                "to_team": team_norm,
+                "team_id": team_norm,
+                "contract_id": contract_id,
+                "signed_date": signed_date_iso,
+                "years": 1,
+                "contract_type": "TWO_WAY",
+                "salary_free": True,
+                "two_way_game_limit": 50,
+                "postseason_eligible": False,
             },
         )
 
