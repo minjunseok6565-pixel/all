@@ -56,6 +56,7 @@ from save_service import (
     list_save_slots,
     load_game,
     save_game,
+    set_save_user_team,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,11 @@ class GameLoadRequest(BaseModel):
     slot_id: str
     strict: bool = True
     expected_save_version: Optional[int] = None
+
+
+class GameSetUserTeamRequest(BaseModel):
+    slot_id: str
+    user_team_id: str
 
 
 class OffseasonContractsProcessRequest(BaseModel):
@@ -4138,6 +4144,20 @@ async def api_game_load(req: GameLoadRequest):
         raise HTTPException(status_code=status, detail=msg)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load game: {exc}")
+
+
+
+
+@app.post("/api/game/set-user-team")
+async def api_game_set_user_team(req: GameSetUserTeamRequest):
+    try:
+        return set_save_user_team(slot_id=req.slot_id, user_team_id=req.user_team_id)
+    except SaveError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to set user team: {exc}")
 
 
 @app.get("/api/debug/schedule-summary")
