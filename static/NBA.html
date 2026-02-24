@@ -20,6 +20,7 @@
           <button class="menu-item" data-view="seasonView">시즌 운영</button>
           <button class="menu-item" data-view="rosterView">로스터/팀</button>
           <button class="menu-item" data-view="transactionsView">계약/트레이드</button>
+          <button class="menu-item" data-view="operationsView">운영 도구</button>
           <button class="menu-item" data-view="offseasonView">오프시즌</button>
           <button class="menu-item" data-view="assistantView">AI 어시스턴트</button>
           <button class="menu-item" data-view="apiStudioView">API 스튜디오</button>
@@ -172,7 +173,7 @@
           <div class="grid two">
             <article class="panel">
               <h3>자유계약/계약 액션</h3>
-              <textarea id="contractPayload" rows="12" class="mono" placeholder='{"team_id":"LAL","player_id":"..."}'></textarea>
+              <textarea id="contractPayload" rows="12" class="mono" placeholder='{"session_id":"neg_...","team_id":"LAL","player_id":"..."}'></textarea>
               <div class="inline-actions">
                 <button data-endpoint="/api/contracts/sign-free-agent" class="tx-btn">FA 계약</button>
                 <button data-endpoint="/api/contracts/re-sign-or-extend" class="tx-btn">재계약/연장</button>
@@ -191,6 +192,101 @@
               <pre id="tradeResult" class="json"></pre>
             </article>
           </div>
+        </section>
+
+        <section id="operationsView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>단일 경기 시뮬레이션</h3>
+              <div class="inline-form">
+                <input id="simHomeTeamId" placeholder="home_team_id (예: LAL)" />
+                <input id="simAwayTeamId" placeholder="away_team_id (예: BOS)" />
+              </div>
+              <div class="inline-form">
+                <input id="simGameDate" placeholder="YYYY-MM-DD (선택)" />
+                <button id="simulateGameBtn" class="primary">경기 시뮬레이션</button>
+              </div>
+              <pre id="simulateGameResult" class="json"></pre>
+            </article>
+
+            <article class="panel">
+              <h3>트레이닝</h3>
+              <div class="inline-form">
+                <input id="trainingTeamId" placeholder="team_id (기본: 내 팀)" />
+                <button id="loadTeamTrainingBtn">팀 플랜 조회</button>
+              </div>
+              <textarea id="teamTrainingPayload" rows="6" class="mono" placeholder='{"focus":"BALANCED","intensity":"MEDIUM","weights":{"shooting":0.3,"defense":0.3,"athleticism":0.4}}'></textarea>
+              <div class="inline-actions">
+                <button id="setTeamTrainingBtn" class="primary">팀 플랜 저장</button>
+              </div>
+              <div class="inline-form">
+                <input id="trainingPlayerId" placeholder="player_id" />
+                <button id="loadPlayerTrainingBtn">선수 플랜 조회</button>
+              </div>
+              <textarea id="playerTrainingPayload" rows="5" class="mono" placeholder='{"primary":"shooting","secondary":"playmaking","intensity":"MEDIUM"}'></textarea>
+              <div class="inline-actions">
+                <button id="setPlayerTrainingBtn" class="primary">선수 플랜 저장</button>
+              </div>
+              <pre id="trainingResult" class="json"></pre>
+            </article>
+          </div>
+
+          <div class="grid two">
+            <article class="panel">
+              <h3>스카우팅</h3>
+              <div class="inline-form">
+                <input id="scoutingTeamId" placeholder="team_id (기본: 내 팀)" />
+                <button id="loadScoutsBtn">스카우트 조회</button>
+                <button id="loadScoutingReportsBtn">리포트 조회</button>
+              </div>
+              <textarea id="scoutingAssignPayload" rows="5" class="mono" placeholder='{"team_id":"LAL","scout_id":"...","target_type":"COLLEGE_PLAYER","target_id":"..."}'></textarea>
+              <div class="inline-actions">
+                <button id="scoutingAssignBtn" class="primary">스카우트 배정</button>
+                <button id="scoutingUnassignBtn">스카우트 해제</button>
+              </div>
+              <pre id="scoutingResult" class="json"></pre>
+            </article>
+
+            <article class="panel">
+              <h3>포스트시즌</h3>
+              <div class="inline-actions">
+                <button id="loadPostseasonStateBtn">상태 조회</button>
+                <button id="loadPostseasonFieldBtn">필드 조회</button>
+                <button id="resetPostseasonBtn">리셋</button>
+              </div>
+              <div class="inline-form">
+                <input id="postseasonTeamId" placeholder="my_team_id (기본: 내 팀)" />
+                <label><input id="postseasonRandomField" type="checkbox" /> 랜덤 필드</label>
+                <button id="setupPostseasonBtn" class="primary">포스트시즌 세팅</button>
+              </div>
+              <div class="inline-actions">
+                <button id="playInMyTeamBtn">플레이-인 진행</button>
+                <button id="advanceMyTeamPlayoffBtn">내 팀 PO 1경기 진행</button>
+                <button id="autoAdvanceRoundBtn">현재 라운드 자동 진행</button>
+              </div>
+              <pre id="postseasonResult" class="json"></pre>
+            </article>
+          </div>
+
+          <article class="panel">
+            <h3>에이전시 이벤트</h3>
+            <div class="inline-form">
+              <input id="agencyTeamId" placeholder="team_id (기본: 내 팀)" />
+              <input id="agencyPlayerId" placeholder="player_id" />
+              <button id="loadAgencyEventsBtn">전체 이벤트</button>
+              <button id="loadAgencyTeamEventsBtn">팀 이벤트</button>
+              <button id="loadAgencyPlayerBtn">선수 정보</button>
+            </div>
+            <div class="grid two">
+              <textarea id="agencyRespondPayload" rows="6" class="mono" placeholder='{"event_id":"...","team_id":"LAL","action":"ACCEPT"}'></textarea>
+              <textarea id="agencyApplyPayload" rows="6" class="mono" placeholder='{"team_id":"LAL","actions":[{"type":"SIGN","player_id":"..."}]}'></textarea>
+            </div>
+            <div class="inline-actions">
+              <button id="agencyRespondBtn">이벤트 응답</button>
+              <button id="agencyApplyBtn" class="primary">액션 적용</button>
+            </div>
+            <pre id="agencyResult" class="json"></pre>
+          </article>
         </section>
 
         <section id="offseasonView" class="view">
@@ -225,6 +321,23 @@
                 <button id="draftPickOneBtn" class="primary">현재 픽 1개 선택</button>
               </div>
               <pre id="draftToolsResult" class="json"></pre>
+
+              <h4>워크아웃</h4>
+              <div class="inline-form">
+                <input id="draftWorkoutsTeamId" placeholder="team_id (기본: 내 팀)" />
+                <input id="draftWorkoutsMaxInvites" type="number" min="1" value="12" />
+                <input id="draftWorkoutsRngSeed" placeholder="rng_seed (선택)" />
+              </div>
+              <textarea id="draftWorkoutProspects" rows="4" class="mono" placeholder="invited prospect_temp_id 목록 (콤마/줄바꿈 구분)"></textarea>
+              <button id="runDraftWorkoutsBtn">워크아웃 실행</button>
+
+              <h4>인터뷰</h4>
+              <div class="inline-actions">
+                <button id="loadInterviewQuestionsBtn">질문 목록 조회</button>
+                <input id="draftInterviewsRngSeed" placeholder="rng_seed (선택)" />
+                <button id="runDraftInterviewsBtn" class="primary">인터뷰 실행</button>
+              </div>
+              <textarea id="draftInterviewsPayload" rows="8" class="mono" placeholder='[{"prospect_temp_id":"prospect_001","selected_question_ids":["Q01","Q02","Q03"]}]'></textarea>
             </article>
           </div>
         </section>

@@ -100,6 +100,7 @@ function bindMenu() {
     seasonView: ['시즌 운영', '리그 진행/일정/순위/리더'],
     rosterView: ['로스터/팀', '팀 상세와 대학 선수 정보'],
     transactionsView: ['계약/트레이드', '선수 계약 및 트레이드 실행'],
+    operationsView: ['운영 도구', '시뮬/트레이닝/스카우팅/포스트시즌/에이전시'],
     offseasonView: ['오프시즌', '오프시즌 전체 파이프라인 실행'],
     assistantView: ['AI 어시스턴트', 'API 키 검증 및 챗 요청'],
     apiStudioView: ['API 스튜디오', '전체 엔드포인트 범용 실행 도구'],
@@ -245,6 +246,160 @@ function parseJsonOrEmpty(value) {
   return JSON.parse(value);
 }
 
+
+function parseListInput(value) {
+  if (!value || !value.trim()) return [];
+  return value.split(/[\n,]/g).map((x) => x.trim()).filter(Boolean);
+}
+
+function normalizeTeamInput(value) {
+  return value?.trim() || currentTeamId();
+}
+
+async function runDraftWorkouts() {
+  const teamId = normalizeTeamInput($('draftWorkoutsTeamId')?.value);
+  if (!teamId) return log('워크아웃 실행 실패: team_id가 필요합니다.');
+  const maxInvites = Number($('draftWorkoutsMaxInvites')?.value || 12);
+  const rngSeedRaw = $('draftWorkoutsRngSeed')?.value?.trim();
+  const invited = parseListInput($('draftWorkoutProspects')?.value || '');
+  await runSimple('/api/offseason/draft/workouts', 'draftToolsResult', 'POST', {
+    team_id: teamId,
+    max_invites: maxInvites,
+    invited_prospect_temp_ids: invited,
+    rng_seed: rngSeedRaw ? Number(rngSeedRaw) : null,
+  });
+}
+
+async function loadDraftInterviewQuestions() {
+  await runSimple('/api/offseason/draft/interviews/questions', 'draftToolsResult');
+}
+
+async function runDraftInterviews() {
+  const teamId = normalizeTeamInput($('draftWorkoutsTeamId')?.value);
+  if (!teamId) return log('인터뷰 실행 실패: team_id가 필요합니다.');
+  let interviews = [];
+  try {
+    const parsed = JSON.parse($('draftInterviewsPayload')?.value || '[]');
+    interviews = Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return log('인터뷰 실행 실패: interviews JSON 파싱 오류', { error: String(e) });
+  }
+  for (const item of interviews) {
+    const qids = Array.isArray(item.selected_question_ids) ? item.selected_question_ids.filter(Boolean) : [];
+    if (qids.length !== 3) return log('인터뷰 실행 실패: 각 항목의 selected_question_ids는 정확히 3개여야 합니다.');
+  }
+  const rngSeedRaw = $('draftInterviewsRngSeed')?.value?.trim();
+  await runSimple('/api/offseason/draft/interviews', 'draftToolsResult', 'POST', {
+    team_id: teamId,
+    interviews,
+    rng_seed: rngSeedRaw ? Number(rngSeedRaw) : null,
+  });
+}
+
+async function runSingleSimulation() {
+  const home = $('simHomeTeamId')?.value.trim();
+  const away = $('simAwayTeamId')?.value.trim();
+  if (!home || !away) return log('경기 시뮬레이션 실패: home_team_id, away_team_id가 필요합니다.');
+  await runSimple('/api/simulate-game', 'simulateGameResult', 'POST', {
+    home_team_id: home,
+    away_team_id: away,
+    game_date: $('simGameDate')?.value.trim() || null,
+  });
+}
+
+async function loadTeamTraining() {
+  const teamId = normalizeTeamInput($('trainingTeamId')?.value);
+  if (!teamId) return log('팀 트레이닝 조회 실패: team_id가 필요합니다.');
+  await runSimple(`/api/training/team/${teamId}`, 'trainingResult');
+}
+
+async function setTeamTraining() {
+  const teamId = normalizeTeamInput($('trainingTeamId')?.value);
+  if (!teamId) return log('팀 트레이닝 저장 실패: team_id가 필요합니다.');
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('teamTrainingPayload').value); } catch (e) { return log('팀 트레이닝 JSON 오류', { error: String(e) }); }
+  await runSimple('/api/training/team/set', 'trainingResult', 'POST', { team_id: teamId, ...payload });
+}
+
+async function loadPlayerTraining() {
+  const playerId = $('trainingPlayerId')?.value.trim();
+  if (!playerId) return log('선수 트레이닝 조회 실패: player_id가 필요합니다.');
+  await runSimple(`/api/training/player/${playerId}`, 'trainingResult');
+}
+
+async function setPlayerTraining() {
+  const playerId = $('trainingPlayerId')?.value.trim();
+  if (!playerId) return log('선수 트레이닝 저장 실패: player_id가 필요합니다.');
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('playerTrainingPayload').value); } catch (e) { return log('선수 트레이닝 JSON 오류', { error: String(e) }); }
+  await runSimple('/api/training/player/set', 'trainingResult', 'POST', { player_id: playerId, ...payload });
+}
+
+async function loadScouts() {
+  const teamId = normalizeTeamInput($('scoutingTeamId')?.value);
+  if (!teamId) return log('스카우트 조회 실패: team_id가 필요합니다.');
+  await runSimple(`/api/scouting/scouts/${teamId}`, 'scoutingResult');
+}
+
+async function loadScoutingReports() {
+  const teamId = normalizeTeamInput($('scoutingTeamId')?.value);
+  if (!teamId) return log('리포트 조회 실패: team_id가 필요합니다.');
+  await runSimple('/api/scouting/reports', 'scoutingResult', 'GET', null, { team_id: teamId });
+}
+
+async function scoutingAssign() {
+  try {
+    const payload = parseJsonOrEmpty($('scoutingAssignPayload').value);
+    await runSimple('/api/scouting/assign', 'scoutingResult', 'POST', payload);
+  } catch (e) { log('스카우팅 assign JSON 오류', { error: String(e) }); }
+}
+
+async function scoutingUnassign() {
+  try {
+    const payload = parseJsonOrEmpty($('scoutingAssignPayload').value);
+    await runSimple('/api/scouting/unassign', 'scoutingResult', 'POST', payload);
+  } catch (e) { log('스카우팅 unassign JSON 오류', { error: String(e) }); }
+}
+
+async function loadPostseasonState() { await runSimple('/api/postseason/state', 'postseasonResult'); }
+async function loadPostseasonField() { await runSimple('/api/postseason/field', 'postseasonResult'); }
+async function resetPostseason() { await runSimple('/api/postseason/reset', 'postseasonResult', 'POST', {}); }
+async function setupPostseason() {
+  const teamId = normalizeTeamInput($('postseasonTeamId')?.value);
+  if (!teamId) return log('포스트시즌 세팅 실패: my_team_id가 필요합니다.');
+  await runSimple('/api/postseason/setup', 'postseasonResult', 'POST', {
+    my_team_id: teamId,
+    use_random_field: $('postseasonRandomField')?.checked || false,
+  });
+}
+async function playInMyTeam() { await runSimple('/api/postseason/play-in/my-team-game', 'postseasonResult', 'POST', {}); }
+async function advanceMyTeamPlayoff() { await runSimple('/api/postseason/playoffs/advance-my-team-game', 'postseasonResult', 'POST', {}); }
+async function autoAdvanceRound() { await runSimple('/api/postseason/playoffs/auto-advance-round', 'postseasonResult', 'POST', {}); }
+
+async function loadAgencyEvents() { await runSimple('/api/agency/events', 'agencyResult'); }
+async function loadAgencyTeamEvents() {
+  const teamId = normalizeTeamInput($('agencyTeamId')?.value);
+  if (!teamId) return log('팀 에이전시 이벤트 조회 실패: team_id가 필요합니다.');
+  await runSimple(`/api/agency/team/${teamId}/events`, 'agencyResult');
+}
+async function loadAgencyPlayer() {
+  const playerId = $('agencyPlayerId')?.value.trim();
+  if (!playerId) return log('에이전시 선수 조회 실패: player_id가 필요합니다.');
+  await runSimple(`/api/agency/player/${playerId}`, 'agencyResult');
+}
+async function respondAgencyEvent() {
+  try {
+    const payload = parseJsonOrEmpty($('agencyRespondPayload').value);
+    await runSimple('/api/agency/events/respond', 'agencyResult', 'POST', payload);
+  } catch (e) { log('에이전시 응답 JSON 오류', { error: String(e) }); }
+}
+async function applyAgencyActions() {
+  try {
+    const payload = parseJsonOrEmpty($('agencyApplyPayload').value);
+    await runSimple('/api/agency/actions/apply', 'agencyResult', 'POST', payload);
+  } catch (e) { log('에이전시 액션 JSON 오류', { error: String(e) }); }
+}
+
 function buildOffseasonButtons() {
   const box = $('offseasonButtons');
   box.innerHTML = '';
@@ -256,6 +411,8 @@ function buildOffseasonButtons() {
       let payload = {};
       if (ep.includes('/contracts/process')) payload = { user_team_id: teamId };
       if (ep.includes('/options/team/pending')) payload = { user_team_id: teamId };
+      if (ep.includes('/draft/workouts')) payload = { team_id: teamId };
+      if (ep.includes('/draft/interviews')) payload = { team_id: teamId, interviews: [] };
       if (ep.includes('/options/team/decide')) {
         return log('TEAM 옵션은 아래 전용 UI에서 선택 후 제출해주세요.');
       }
@@ -618,6 +775,34 @@ function bindEvents() {
   $('draftAutoPickBtn')?.addEventListener('click', runDraftAutoPick);
   $('draftPickOneBtn')?.addEventListener('click', runDraftPickOne);
   $('loadDraftBundleBtn')?.addEventListener('click', loadDraftBundle);
+  $('runDraftWorkoutsBtn')?.addEventListener('click', runDraftWorkouts);
+  $('loadInterviewQuestionsBtn')?.addEventListener('click', loadDraftInterviewQuestions);
+  $('runDraftInterviewsBtn')?.addEventListener('click', runDraftInterviews);
+
+  $('simulateGameBtn')?.addEventListener('click', runSingleSimulation);
+  $('loadTeamTrainingBtn')?.addEventListener('click', loadTeamTraining);
+  $('setTeamTrainingBtn')?.addEventListener('click', setTeamTraining);
+  $('loadPlayerTrainingBtn')?.addEventListener('click', loadPlayerTraining);
+  $('setPlayerTrainingBtn')?.addEventListener('click', setPlayerTraining);
+
+  $('loadScoutsBtn')?.addEventListener('click', loadScouts);
+  $('loadScoutingReportsBtn')?.addEventListener('click', loadScoutingReports);
+  $('scoutingAssignBtn')?.addEventListener('click', scoutingAssign);
+  $('scoutingUnassignBtn')?.addEventListener('click', scoutingUnassign);
+
+  $('loadPostseasonStateBtn')?.addEventListener('click', loadPostseasonState);
+  $('loadPostseasonFieldBtn')?.addEventListener('click', loadPostseasonField);
+  $('resetPostseasonBtn')?.addEventListener('click', resetPostseason);
+  $('setupPostseasonBtn')?.addEventListener('click', setupPostseason);
+  $('playInMyTeamBtn')?.addEventListener('click', playInMyTeam);
+  $('advanceMyTeamPlayoffBtn')?.addEventListener('click', advanceMyTeamPlayoff);
+  $('autoAdvanceRoundBtn')?.addEventListener('click', autoAdvanceRound);
+
+  $('loadAgencyEventsBtn')?.addEventListener('click', loadAgencyEvents);
+  $('loadAgencyTeamEventsBtn')?.addEventListener('click', loadAgencyTeamEvents);
+  $('loadAgencyPlayerBtn')?.addEventListener('click', loadAgencyPlayer);
+  $('agencyRespondBtn')?.addEventListener('click', respondAgencyEvent);
+  $('agencyApplyBtn')?.addEventListener('click', applyAgencyActions);
 
   $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
   $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
