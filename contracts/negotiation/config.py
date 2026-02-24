@@ -103,6 +103,13 @@ class ContractNegotiationConfig:
     # ---------------------------------------------------------------------
     years_mismatch_penalty: float = 0.03  # premium required per-year mismatch when preference is strong
 
+    # Contract option value in negotiation (player perspective)
+    # TEAM option: player-unfriendly -> requires higher money
+    # PLAYER option: player-friendly -> can accept slightly lower money
+    team_option_penalty_per_year: float = 0.03
+    player_option_bonus_per_year: float = 0.03
+    option_value_cap: float = 0.10
+
     # ---------------------------------------------------------------------
     # Counter behavior
     # ---------------------------------------------------------------------

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
+from contracts.options import normalize_option_record
+
 from .utils import clamp01, json_dumps, safe_float, safe_int
 
 
@@ -65,6 +67,7 @@ class ContractOffer:
     start_season_year: int
     years: int
     salary_by_year: Dict[int, float]
+    options: List[Dict[str, Any]] = field(default_factory=list)
     non_monetary: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -124,11 +127,36 @@ class ContractOffer:
         for y in range(int(start_season_year), int(start_season_year) + int(years_i)):
             canonical[y] = float(safe_float(salary_by_year.get(y, first), first))
 
+        raw_options = payload.get("options")
+        options: List[Dict[str, Any]] = []
+        if isinstance(raw_options, list):
+            for opt in raw_options:
+                if not isinstance(opt, Mapping):
+                    continue
+                rec = dict(opt)
+                rec.setdefault("status", "PENDING")
+                rec.setdefault("decision_date", None)
+                try:
+                    normalized = normalize_option_record(rec)
+                except Exception:
+                    continue
+                oy = int(normalized.get("season_year") or 0)
+                if oy < int(start_season_year) or oy >= int(start_season_year) + int(years_i):
+                    continue
+                options.append(normalized)
+        # dedupe by season year: keep first to preserve sender ordering
+        dedup: Dict[int, Dict[str, Any]] = {}
+        for opt in options:
+            sy = int(opt.get("season_year") or 0)
+            if sy not in dedup:
+                dedup[sy] = opt
+
         non_monetary = payload.get("non_monetary") if isinstance(payload.get("non_monetary"), Mapping) else {}
         return cls(
             start_season_year=int(start_season_year),
             years=int(years_i),
             salary_by_year=canonical,
+            options=[dict(v) for _, v in sorted(dedup.items(), key=lambda kv: kv[0])],
             non_monetary=dict(non_monetary),
         )
 
@@ -144,6 +172,7 @@ class ContractOffer:
             "start_season_year": int(self.start_season_year),
             "years": int(self.years),
             "salary_by_year": {int(k): float(v) for k, v in (self.salary_by_year or {}).items()},
+            "options": [dict(x) for x in (self.options or [])],
             "non_monetary": dict(self.non_monetary or {}),
         }
 

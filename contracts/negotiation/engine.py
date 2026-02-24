@@ -401,10 +401,21 @@ def build_counter_offer(
     if bool(getattr(cfg, "enable_non_monetary_gate", False)) and pos.required_demands:
         non_monetary.setdefault("required_demands", list(pos.required_demands))
 
+    counter_options: list[dict] = []
+    for opt in (offer.options or []):
+        try:
+            oy = int(opt.get("season_year") or 0)
+        except Exception:
+            continue
+        if oy < int(start_year) or oy >= int(start_year) + int(counter_years):
+            continue
+        counter_options.append(dict(opt))
+
     return ContractOffer(
         start_season_year=int(start_year),
         years=int(counter_years),
         salary_by_year=salary_by_year,
+        options=counter_options,
         non_monetary=non_monetary,
     )
 
@@ -472,6 +483,28 @@ def evaluate_offer(
         cfg=cfg,
     )
 
+    # Option value adjustment (player perspective):
+    # - TEAM options are player-unfriendly => increase required floor
+    # - PLAYER/ETO options are player-friendly => decrease required floor
+    team_opt_count = 0
+    player_opt_count = 0
+    for opt in (offer.options or []):
+        t = str(opt.get("type") or "").strip().upper()
+        if t == "TEAM":
+            team_opt_count += 1
+        elif t in {"PLAYER", "ETO"}:
+            player_opt_count += 1
+    opt_delta = (
+        float(team_opt_count) * float(getattr(cfg, "team_option_penalty_per_year", 0.0))
+        - float(player_opt_count) * float(getattr(cfg, "player_option_bonus_per_year", 0.0))
+    )
+    opt_cap = abs(float(getattr(cfg, "option_value_cap", 0.10)))
+    if opt_delta > opt_cap:
+        opt_delta = opt_cap
+    if opt_delta < -opt_cap:
+        opt_delta = -opt_cap
+    floor_adj = float(floor_adj) * (1.0 + float(opt_delta))
+
     years_ok = int(pos.min_years) <= int(offer.years) <= int(pos.max_years)
 
     demands_ok = _demands_satisfied(offer, list(pos.required_demands or []))
@@ -482,6 +515,9 @@ def evaluate_offer(
         "floor_aav": float(base_floor),
         "floor_adj_aav": float(floor_adj),
         "floor_year_mult": float(floor_year_mult),
+        "team_option_count": int(team_opt_count),
+        "player_option_count": int(player_opt_count),
+        "option_premium_delta": float(opt_delta),
         "offer_years": int(offer.years),
         "ideal_years": int(pos.ideal_years),
         "min_years": int(pos.min_years),
