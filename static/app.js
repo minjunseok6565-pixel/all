@@ -7,6 +7,7 @@ const appState = {
   selectedEndpoint: null,
   pendingTeamOptions: [],
   lastNegotiationSessionId: null,
+  adminToken: '',
 };
 
 const OFFSEASON_ENDPOINTS = [
@@ -50,7 +51,10 @@ async function request(path, method = 'GET', data = null, query = null) {
     });
   }
 
-  const options = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers = { 'Content-Type': 'application/json' };
+  const adminToken = (appState.adminToken || '').trim();
+  if (adminToken) headers['X-Admin-Token'] = adminToken;
+  const options = { method, headers };
   if (data !== null) options.body = JSON.stringify(data);
 
   const res = await fetch(url.toString(), options);
@@ -102,6 +106,7 @@ function bindMenu() {
     transactionsView: ['계약/트레이드', '선수 계약 및 트레이드 실행'],
     operationsView: ['운영 도구', '시뮬/트레이닝/스카우팅/포스트시즌/에이전시'],
     offseasonView: ['오프시즌', '오프시즌 전체 파이프라인 실행'],
+    insightsView: ['인사이트/뉴스', 'Practice/뉴스/리포트/드래프트/트레이드 협상'],
     assistantView: ['AI 어시스턴트', 'API 키 검증 및 챗 요청'],
     apiStudioView: ['API 스튜디오', '전체 엔드포인트 범용 실행 도구'],
   };
@@ -673,17 +678,100 @@ async function sendStudioRequest() {
   }
 }
 
+
+function currentSeasonYearInput(id) {
+  const raw = $(id)?.value?.trim();
+  return raw ? Number(raw) : null;
+}
+
+async function loadPracticePlan() {
+  const teamId = normalizeTeamInput($('practiceTeamId')?.value);
+  if (!teamId) return log('Practice 플랜 조회 실패: team_id 필요');
+  await runSimple(`/api/practice/team/${teamId}/plan`, 'practiceResult', 'GET', null, { season_year: currentSeasonYearInput('practiceSeasonYear') });
+}
+async function setPracticePlan() {
+  const teamId = normalizeTeamInput($('practiceTeamId')?.value);
+  if (!teamId) return log('Practice 플랜 저장 실패: team_id 필요');
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('practicePlanPayload')?.value || '{}'); } catch (e) { return log('Practice plan JSON 오류', { error: String(e) }); }
+  await runSimple('/api/practice/team/plan/set', 'practiceResult', 'POST', { team_id: teamId, season_year: currentSeasonYearInput('practiceSeasonYear'), ...payload });
+}
+async function loadPracticeSession() {
+  const teamId = normalizeTeamInput($('practiceTeamId')?.value);
+  const dateIso = $('practiceDateIso')?.value?.trim();
+  if (!teamId || !dateIso) return log('Practice 세션 조회 실패: team_id/date_iso 필요');
+  await runSimple(`/api/practice/team/${teamId}/session`, 'practiceResult', 'GET', null, { date_iso: dateIso, season_year: currentSeasonYearInput('practiceSeasonYear') });
+}
+async function setPracticeSession() {
+  const teamId = normalizeTeamInput($('practiceTeamId')?.value);
+  const dateIso = $('practiceDateIso')?.value?.trim();
+  if (!teamId || !dateIso) return log('Practice 세션 저장 실패: team_id/date_iso 필요');
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('practiceSessionPayload')?.value || '{}'); } catch (e) { return log('Practice session JSON 오류', { error: String(e) }); }
+  await runSimple('/api/practice/team/session/set', 'practiceResult', 'POST', { team_id: teamId, season_year: currentSeasonYearInput('practiceSeasonYear'), date_iso: dateIso, ...payload });
+}
+async function listPracticeSessions() {
+  const teamId = normalizeTeamInput($('practiceTeamId')?.value);
+  if (!teamId) return log('Practice 세션 목록 실패: team_id 필요');
+  await runSimple(`/api/practice/team/${teamId}/sessions`, 'practiceResult', 'GET', null, { season_year: currentSeasonYearInput('practiceSeasonYear') });
+}
+
+async function generateWeeklyNews() {
+  await runSimple('/api/news/week', 'newsReportResult', 'POST', { apiKey: $('apiKeyInput')?.value?.trim() || '' });
+}
+async function generatePlayoffNews() {
+  await runSimple('/api/news/playoffs', 'newsReportResult', 'POST', {});
+}
+async function generateSeasonReport() {
+  const teamId = normalizeTeamInput($('seasonReportTeamId')?.value);
+  if (!teamId) return log('시즌 리포트 실패: user_team_id 필요');
+  await runSimple('/api/season-report', 'newsReportResult', 'POST', { apiKey: $('apiKeyInput')?.value?.trim() || '', user_team_id: teamId });
+}
+
+async function runDraftWatchRecompute() {
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('draftWatchPayload')?.value || '{}'); } catch (e) { return log('Draft watch JSON 오류', { error: String(e) }); }
+  await runSimple('/api/college/draft-watch/recompute', 'draftInsightResult', 'POST', payload);
+}
+async function loadDraftExperts() {
+  await runSimple('/api/offseason/draft/experts', 'draftInsightResult');
+}
+async function loadDraftBigboardExpert() {
+  await runSimple('/api/offseason/draft/bigboard/expert', 'draftInsightResult', 'GET', null, { expert_id: $('draftBigboardExpertId')?.value?.trim(), viewer_team_id: $('draftBigboardTeamId')?.value?.trim() || null });
+}
+
+async function startTradeNegotiation() {
+  const userTeamId = normalizeTeamInput($('tradeNegoUserTeamId')?.value);
+  const otherTeamId = $('tradeNegoOtherTeamId')?.value?.trim();
+  if (!userTeamId || !otherTeamId) return log('트레이드 협상 시작 실패: 팀 ID 필요');
+  const data = await request('/api/trade/negotiation/start', 'POST', { user_team_id: userTeamId, other_team_id: otherTeamId });
+  $('tradeNegoResult').textContent = pretty(data);
+  $('tradeNegoSessionId').value = data?.session?.session_id || '';
+}
+async function commitTradeNegotiation() {
+  const sid = $('tradeNegoSessionId')?.value?.trim();
+  if (!sid) return log('트레이드 협상 커밋 실패: session_id 필요');
+  let payload = {};
+  try { payload = parseJsonOrEmpty($('tradeNegoDealPayload')?.value || '{}'); } catch (e) { return log('트레이드 deal JSON 오류', { error: String(e) }); }
+  await runSimple('/api/trade/negotiation/commit', 'tradeNegoResult', 'POST', { session_id: sid, ...(payload || {}) });
+}
+
 function bindAssistant() {
   $('saveApiKeyBtn').addEventListener('click', () => {
     const key = $('apiKeyInput').value.trim();
     localStorage.setItem('nba_sim_api_key', key);
-    log('API key 저장 완료');
+    appState.adminToken = $('adminTokenInput')?.value?.trim() || '';
+    localStorage.setItem('nba_sim_admin_token', appState.adminToken);
+    log('API/Admin 토큰 저장 완료');
   });
 
   $('clearApiKeyBtn').addEventListener('click', () => {
     $('apiKeyInput').value = '';
     localStorage.removeItem('nba_sim_api_key');
-    log('API key 삭제 완료');
+    if ($('adminTokenInput')) $('adminTokenInput').value = '';
+    appState.adminToken = '';
+    localStorage.removeItem('nba_sim_admin_token');
+    log('API/Admin 토큰 삭제 완료');
   });
 
   $('validateApiKeyBtn').addEventListener('click', async () => {
@@ -804,6 +892,23 @@ function bindEvents() {
   $('agencyRespondBtn')?.addEventListener('click', respondAgencyEvent);
   $('agencyApplyBtn')?.addEventListener('click', applyAgencyActions);
 
+  $('loadPracticePlanBtn')?.addEventListener('click', loadPracticePlan);
+  $('setPracticePlanBtn')?.addEventListener('click', setPracticePlan);
+  $('loadPracticeSessionBtn')?.addEventListener('click', loadPracticeSession);
+  $('setPracticeSessionBtn')?.addEventListener('click', setPracticeSession);
+  $('listPracticeSessionsBtn')?.addEventListener('click', listPracticeSessions);
+
+  $('generateWeeklyNewsBtn')?.addEventListener('click', generateWeeklyNews);
+  $('generatePlayoffNewsBtn')?.addEventListener('click', generatePlayoffNews);
+  $('generateSeasonReportBtn')?.addEventListener('click', generateSeasonReport);
+
+  $('runDraftWatchBtn')?.addEventListener('click', runDraftWatchRecompute);
+  $('loadDraftExpertsBtn')?.addEventListener('click', loadDraftExperts);
+  $('loadDraftBigboardBtn')?.addEventListener('click', loadDraftBigboardExpert);
+
+  $('startTradeNegoBtn')?.addEventListener('click', async () => { try { await startTradeNegotiation(); } catch (e) { log('트레이드 협상 시작 실패', { error: String(e), detail: e.payload || null }); } });
+  $('commitTradeNegoBtn')?.addEventListener('click', commitTradeNegotiation);
+
   $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
   $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
   $('acceptCounterBtn')?.addEventListener('click', acceptNegotiationCounter);
@@ -825,6 +930,8 @@ async function init() {
   buildOffseasonButtons();
 
   $('apiKeyInput').value = localStorage.getItem('nba_sim_api_key') || '';
+  appState.adminToken = localStorage.getItem('nba_sim_admin_token') || '';
+  if ($('adminTokenInput')) $('adminTokenInput').value = appState.adminToken;
 
   try { await loadTeams(); } catch (e) { log('/api/teams 로딩 실패', { error: String(e) }); }
   try { await loadSaves(); } catch (e) { log('/api/game/saves 로딩 실패', { error: String(e) }); }

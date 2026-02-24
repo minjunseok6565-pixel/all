@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, List, Literal
 from uuid import uuid4
 
 import google.generativeai as genai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -93,6 +93,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _auth_guard_middleware(request: Request, call_next):
+    """Optional commercial auth guard.
+
+    If NBA_SIM_ADMIN_TOKEN is configured, require it on state-changing API calls.
+    """
+    required_token = (os.environ.get("NBA_SIM_ADMIN_TOKEN") or "").strip()
+    if not required_token:
+        return await call_next(request)
+
+    path = request.url.path or ""
+    method = (request.method or "GET").upper()
+    if method != "POST" or not path.startswith("/api/"):
+        return await call_next(request)
+
+    # Keep health/auth bootstrap available.
+    if path in {"/api/validate-key"}:
+        return await call_next(request)
+
+    provided = (request.headers.get("X-Admin-Token") or "").strip()
+    if provided != required_token:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized: invalid X-Admin-Token"})
+
+    return await call_next(request)
 
 # static/NBA.html 서빙
 static_dir = os.path.join(BASE_DIR, "static")
@@ -3919,7 +3945,6 @@ async def api_game_load(req: GameLoadRequest):
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
 
 
 
