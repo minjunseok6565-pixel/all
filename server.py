@@ -964,7 +964,7 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
 
             two_way_row = cur.execute(
                 """
-                SELECT COALESCE(contract_data,'') AS contract_data
+                SELECT COALESCE(contract_json,'') AS contract_json
                 FROM contracts
                 WHERE player_id=?
                   AND UPPER(COALESCE(contract_type,''))='TWO_WAY'
@@ -979,7 +979,7 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
             two_way = {"is_two_way": False, "game_limit": None, "games_used": 0, "games_remaining": None}
             if two_way_row:
                 contract_data: Dict[str, Any] = {}
-                raw_cd = two_way_row["contract_data"]
+                raw_cd = two_way_row["contract_json"]
                 if raw_cd:
                     try:
                         contract_data = json.loads(str(raw_cd))
@@ -990,7 +990,7 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
                     "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
                     (pid, sy),
                 ).fetchone()
-                games_used = int((used or {}).get("n") or 0)
+                games_used = int((used["n"] if used is not None else 0) or 0)
                 two_way = {
                     "is_two_way": True,
                     "game_limit": game_limit,
@@ -4103,7 +4103,7 @@ async def two_way_summary(team_id: str):
                 SELECT c.player_id, p.name,
                        COALESCE(c.contract_type,'') AS contract_type,
                        COALESCE(c.status,'') AS status,
-                       COALESCE(c.contract_data,'') AS contract_data
+                       COALESCE(c.contract_json,'') AS contract_json
                 FROM contracts c
                 LEFT JOIN players p ON p.player_id = c.player_id
                 WHERE c.team_id=?
@@ -4118,7 +4118,7 @@ async def two_way_summary(team_id: str):
             players: List[Dict[str, Any]] = []
             for r in rows:
                 player_id = str(r["player_id"])
-                contract_data_raw = r["contract_data"]
+                contract_data_raw = r["contract_json"]
                 contract_data: Dict[str, Any] = {}
                 if contract_data_raw:
                     try:
@@ -4131,7 +4131,7 @@ async def two_way_summary(team_id: str):
                     "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
                     (player_id, season_year),
                 ).fetchone()
-                used_i = int((used or {}).get("n") or 0)
+                used_i = int((used["n"] if used is not None else 0) or 0)
                 players.append(
                     {
                         "player_id": player_id,
@@ -4346,8 +4346,6 @@ async def api_game_set_user_team(req: GameSetUserTeamRequest):
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
-
 
 
 
