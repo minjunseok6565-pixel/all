@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NBA 시뮬 GM</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>NBA SIM GM</h1>
+          <p>Front Office Console</p>
+        </div>
+
+        <nav class="menu" id="mainMenu">
+          <button class="menu-item active" data-view="launcherView">런처</button>
+          <button class="menu-item" data-view="dashboardView">대시보드</button>
+          <button class="menu-item" data-view="seasonView">시즌 운영</button>
+          <button class="menu-item" data-view="rosterView">로스터/팀</button>
+          <button class="menu-item" data-view="transactionsView">계약/트레이드</button>
+          <button class="menu-item" data-view="offseasonView">오프시즌</button>
+          <button class="menu-item" data-view="assistantView">AI 어시스턴트</button>
+          <button class="menu-item" data-view="apiStudioView">API 스튜디오</button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div id="sessionBadge" class="session-badge">세션 없음</div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <h2 id="viewTitle">게임 런처</h2>
+            <p id="viewSubtitle">새 게임 생성 또는 저장 불러오기</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="quickRefreshBtn">전체 새로고침</button>
+          </div>
+        </header>
+
+        <section id="launcherView" class="view active">
+          <div class="grid two">
+            <article class="panel">
+              <h3>새 게임 시작</h3>
+              <form id="newGameForm" class="form-grid">
+                <label>슬롯 이름<input id="slotName" required placeholder="예: dynasty_run" /></label>
+                <label>슬롯 ID(선택)<input id="slotId" placeholder="자동 생성 가능" /></label>
+                <label>시즌(선택)<input id="seasonYear" type="number" placeholder="2025" /></label>
+                <label>유저 팀
+                  <select id="userTeamSelect" required></select>
+                </label>
+                <button class="primary" type="submit">새 게임 생성</button>
+              </form>
+            </article>
+
+            <article class="panel">
+              <div class="row-between">
+                <h3>저장 슬롯 로드</h3>
+                <button id="refreshSavesBtn">새로고침</button>
+              </div>
+              <div id="saveSlots" class="list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="dashboardView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>세션 개요</h3>
+              <div id="sessionInfo" class="kv"></div>
+            </article>
+            <article class="panel">
+              <h3>리그 상태 요약</h3>
+              <button id="loadStateSummaryBtn">불러오기</button>
+              <pre id="stateSummaryBox" class="json"></pre>
+            </article>
+          </div>
+          <article class="panel">
+            <h3>팀 목록</h3>
+            <div id="teamCards" class="cards"></div>
+          </article>
+        </section>
+
+        <section id="seasonView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>리그 진행</h3>
+              <label>목표 날짜<input id="advanceDate" placeholder="YYYY-MM-DD" /></label>
+              <button id="advanceLeagueBtn" class="primary">리그 진행</button>
+              <pre id="advanceResult" class="json"></pre>
+            </article>
+            <article class="panel">
+              <h3>팀 일정</h3>
+              <button id="loadScheduleBtn">내 팀 일정 조회</button>
+              <pre id="teamScheduleBox" class="json"></pre>
+            </article>
+          </div>
+          <article class="panel">
+            <h3>리더보드 / 순위</h3>
+            <div class="inline-actions">
+              <button id="loadStandingsBtn">컨퍼런스 순위</button>
+              <button id="loadLeadersBtn">정규시즌 리더</button>
+              <button id="loadPlayoffLeadersBtn">플레이오프 리더</button>
+            </div>
+            <pre id="seasonDataBox" class="json"></pre>
+          </article>
+        </section>
+
+        <section id="rosterView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>내 팀 상세</h3>
+              <button id="loadMyTeamDetailBtn">조회</button>
+              <pre id="myTeamDetailBox" class="json"></pre>
+            </article>
+            <article class="panel">
+              <h3>내 팀 로스터 요약</h3>
+              <button id="loadRosterSummaryBtn">조회</button>
+              <pre id="rosterSummaryBox" class="json"></pre>
+            </article>
+          </div>
+          <article class="panel">
+            <h3>대학 선수 검색</h3>
+            <div class="inline-form">
+              <input id="collegeQuery" placeholder="선수명 검색" />
+              <button id="searchCollegePlayersBtn">검색</button>
+            </div>
+            <pre id="collegePlayersBox" class="json"></pre>
+          </article>
+        </section>
+
+        <section id="transactionsView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>자유계약/계약 액션</h3>
+              <textarea id="contractPayload" rows="12" class="mono" placeholder='{"team_id":"LAL","player_id":"..."}'></textarea>
+              <div class="inline-actions">
+                <button data-endpoint="/api/contracts/sign-free-agent" class="tx-btn">FA 계약</button>
+                <button data-endpoint="/api/contracts/re-sign-or-extend" class="tx-btn">재계약/연장</button>
+                <button data-endpoint="/api/contracts/release-to-fa" class="tx-btn">방출</button>
+              </div>
+              <pre id="contractResult" class="json"></pre>
+            </article>
+            <article class="panel">
+              <h3>트레이드 액션</h3>
+              <textarea id="tradePayload" rows="12" class="mono" placeholder='{"deal":{...}}'></textarea>
+              <div class="inline-actions">
+                <button data-endpoint="/api/trade/evaluate" class="trade-btn">트레이드 평가</button>
+                <button data-endpoint="/api/trade/submit" class="trade-btn">트레이드 제출</button>
+                <button data-endpoint="/api/trade/submit-committed" class="trade-btn">커밋 제출</button>
+              </div>
+              <pre id="tradeResult" class="json"></pre>
+            </article>
+          </div>
+        </section>
+
+        <section id="offseasonView" class="view">
+          <article class="panel">
+            <h3>오프시즌 파이프라인</h3>
+            <div id="offseasonButtons" class="button-grid"></div>
+            <pre id="offseasonResult" class="json"></pre>
+          </article>
+        </section>
+
+        <section id="assistantView" class="view">
+          <div class="grid two">
+            <article class="panel">
+              <h3>LLM 설정</h3>
+              <label>API Key<input id="apiKeyInput" type="password" placeholder="Gemini API Key" /></label>
+              <div class="inline-actions">
+                <button id="saveApiKeyBtn" class="primary">저장</button>
+                <button id="clearApiKeyBtn">삭제</button>
+                <button id="validateApiKeyBtn">키 검증</button>
+              </div>
+              <pre id="apiKeyResult" class="json"></pre>
+            </article>
+            <article class="panel">
+              <h3>메인 어시스턴트</h3>
+              <textarea id="assistantPrompt" rows="8" placeholder="질문을 입력하세요"></textarea>
+              <button id="askAssistantBtn" class="primary">질문 보내기</button>
+              <pre id="assistantResult" class="json"></pre>
+            </article>
+          </div>
+        </section>
+
+        <section id="apiStudioView" class="view">
+          <article class="panel">
+            <div class="row-between">
+              <h3>API 스튜디오 (전체 엔드포인트 실행)</h3>
+              <button id="reloadOpenApiBtn">OpenAPI 다시 불러오기</button>
+            </div>
+            <p class="muted">FastAPI의 <code>/openapi.json</code>을 읽어 GET/POST를 자동 생성합니다.</p>
+            <div class="grid two">
+              <div>
+                <input id="endpointFilter" placeholder="엔드포인트 검색" />
+                <div id="endpointList" class="endpoint-list"></div>
+              </div>
+              <div>
+                <h4 id="studioTitle">엔드포인트를 선택하세요</h4>
+                <div id="studioMeta" class="muted"></div>
+                <textarea id="studioPayload" class="mono" rows="14" placeholder='{"key":"value"}'></textarea>
+                <div class="inline-actions">
+                  <button id="sendStudioBtn" class="primary">요청 보내기</button>
+                </div>
+                <pre id="studioResult" class="json"></pre>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel">
+          <h3>시스템 로그</h3>
+          <pre id="logBox" class="log"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
