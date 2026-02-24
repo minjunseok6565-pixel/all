@@ -173,7 +173,7 @@
           </article>
 
           <article class="panel">
-            <h3>계약 협상 Wizard</h3>
+            <h3>FA/투웨이 계약 협상 Wizard (FA 대상 전용)</h3>
             <div class="grid two">
               <div>
                 <h4>1) 협상 시작</h4>
@@ -184,8 +184,7 @@
                 <div class="inline-form">
                   <select id="negoMode">
                     <option value="SIGN_FA">SIGN_FA</option>
-                    <option value="RE_SIGN">RE_SIGN</option>
-                    <option value="EXTEND">EXTEND</option>
+                    <option value="TWO_WAY">TWO_WAY</option>
                   </select>
                   <input id="negoValidDays" type="number" value="7" min="1" max="30" />
                   <button id="startNegotiationBtn" class="primary">시작</button>
@@ -201,6 +200,8 @@
                 <div class="inline-actions">
                   <button id="sendOfferBtn">오퍼 전송</button>
                   <button id="acceptCounterBtn">카운터 수락</button>
+                  <button id="twoWayAcceptBtn">투웨이 수락</button>
+                  <button id="twoWayRejectBtn">투웨이 거절</button>
                   <button id="cancelNegotiationBtn">협상 취소</button>
                   <button id="commitNegotiationBtn" class="primary">협상 커밋</button>
                 </div>
@@ -211,12 +212,10 @@
 
           <div class="grid two">
             <article class="panel">
-              <h3>자유계약/계약 액션</h3>
+              <h3>FA 계약 액션 (FA 협상 커밋 전용)</h3>
               <textarea id="contractPayload" rows="12" class="mono" placeholder='{"session_id":"neg_...","team_id":"LAL","player_id":"..."}'></textarea>
               <div class="inline-actions">
                 <button data-endpoint="/api/contracts/sign-free-agent" class="tx-btn">FA 계약</button>
-                <button data-endpoint="/api/contracts/re-sign-or-extend" class="tx-btn">재계약/연장</button>
-                <button data-endpoint="/api/contracts/release-to-fa" class="tx-btn">방출</button>
               </div>
               <pre id="contractResult" class="json"></pre>
             </article>

@@ -7,6 +7,7 @@ const appState = {
   selectedEndpoint: null,
   pendingTeamOptions: [],
   lastNegotiationSessionId: null,
+  lastNegotiationMode: 'SIGN_FA',
   adminToken: '',
 };
 
@@ -639,15 +640,19 @@ async function startContractNegotiation() {
   }
 
   try {
-    const data = await request('/api/contracts/negotiation/start', 'POST', {
-      team_id: teamId,
-      player_id: playerId,
-      mode,
-      valid_days: validDays,
-    });
+    const isTwoWay = mode === 'TWO_WAY';
+    const endpoint = isTwoWay
+      ? '/api/contracts/two-way/negotiation/start'
+      : '/api/contracts/negotiation/start';
+    const payload = isTwoWay
+      ? { team_id: teamId, player_id: playerId, valid_days: validDays }
+      : { team_id: teamId, player_id: playerId, mode: 'SIGN_FA', valid_days: validDays };
+
+    const data = await request(endpoint, 'POST', payload);
     const sid = data.session_id || data.session?.session_id || null;
     if (sid) {
       appState.lastNegotiationSessionId = sid;
+      appState.lastNegotiationMode = mode;
       $('negotiationSessionId').value = sid;
     }
     $('negotiationResult').textContent = pretty(data);
@@ -661,9 +666,24 @@ function getNegotiationSessionId() {
   return $('negotiationSessionId').value.trim() || appState.lastNegotiationSessionId;
 }
 
+
+function currentNegotiationMode() {
+  const sidInput = $('negotiationSessionId')?.value?.trim();
+  if (sidInput && sidInput === appState.lastNegotiationSessionId) {
+    return appState.lastNegotiationMode || $('negoMode')?.value || 'SIGN_FA';
+  }
+  return $('negoMode')?.value || 'SIGN_FA';
+}
+
+
 async function sendNegotiationOffer() {
   const sid = getNegotiationSessionId();
   if (!sid) return log('오퍼 전송 실패: session_id가 없습니다.');
+
+  const mode = currentNegotiationMode();
+  if (mode === 'TWO_WAY') {
+    return log('투웨이 협상은 오퍼 전송을 지원하지 않습니다. 수락/거절 버튼을 사용하세요.');
+  }
 
   let offer;
   try {
@@ -681,18 +701,40 @@ async function sendNegotiationOffer() {
 async function acceptNegotiationCounter() {
   const sid = getNegotiationSessionId();
   if (!sid) return log('카운터 수락 실패: session_id가 없습니다.');
+  const mode = currentNegotiationMode();
+  if (mode === 'TWO_WAY') {
+    return log('투웨이 협상은 카운터 수락을 지원하지 않습니다. 투웨이 수락 버튼을 사용하세요.');
+  }
   await runSimple('/api/contracts/negotiation/accept-counter', 'negotiationResult', 'POST', { session_id: sid });
+}
+
+async function decideTwoWayNegotiation(accept) {
+  const sid = getNegotiationSessionId();
+  if (!sid) return log('투웨이 의사결정 실패: session_id가 없습니다.');
+  await runSimple('/api/contracts/two-way/negotiation/decision', 'negotiationResult', 'POST', {
+    session_id: sid,
+    accept: Boolean(accept),
+  });
 }
 
 async function commitNegotiation() {
   const sid = getNegotiationSessionId();
   if (!sid) return log('협상 커밋 실패: session_id가 없습니다.');
+  const mode = currentNegotiationMode();
+  if (mode === 'TWO_WAY') {
+    await runSimple('/api/contracts/two-way/negotiation/commit', 'negotiationResult', 'POST', { session_id: sid });
+    return;
+  }
   await runSimple('/api/contracts/negotiation/commit', 'negotiationResult', 'POST', { session_id: sid });
 }
 
 async function cancelNegotiation() {
   const sid = getNegotiationSessionId();
   if (!sid) return log('협상 취소 실패: session_id가 없습니다.');
+  const mode = currentNegotiationMode();
+  if (mode === 'TWO_WAY') {
+    return log('투웨이 협상 취소 API는 제공되지 않습니다. 필요 시 새 협상을 시작하세요.');
+  }
   await runSimple('/api/contracts/negotiation/cancel', 'negotiationResult', 'POST', { session_id: sid });
 }
 
@@ -1044,12 +1086,15 @@ function bindEvents() {
   $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
   $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
   $('acceptCounterBtn')?.addEventListener('click', acceptNegotiationCounter);
+  $('twoWayAcceptBtn')?.addEventListener('click', () => decideTwoWayNegotiation(true));
+  $('twoWayRejectBtn')?.addEventListener('click', () => decideTwoWayNegotiation(false));
   $('cancelNegotiationBtn')?.addEventListener('click', cancelNegotiation);
   $('commitNegotiationBtn')?.addEventListener('click', commitNegotiation);
   $('useLastSessionBtn')?.addEventListener('click', () => {
     if (appState.lastNegotiationSessionId) {
       $('negotiationSessionId').value = appState.lastNegotiationSessionId;
-      log('최근 협상 session_id를 불러왔습니다.', { session_id: appState.lastNegotiationSessionId });
+      if ($('negoMode')) $('negoMode').value = appState.lastNegotiationMode || 'SIGN_FA';
+      log('최근 협상 session_id를 불러왔습니다.', { session_id: appState.lastNegotiationSessionId, mode: appState.lastNegotiationMode || 'SIGN_FA' });
     } else {
       log('최근 협상 session_id가 없습니다. 먼저 협상을 시작하세요.');
     }
