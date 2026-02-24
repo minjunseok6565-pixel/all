@@ -616,6 +616,7 @@ def commit_contract_negotiation(
                 signed_date=signed_date,
                 years=int(offer.years),
                 salary_by_year={int(k): float(v) for k, v in offer.salary_by_year.items()},
+                options=[dict(x) for x in (offer.options or [])],
             )
         elif mode_u in {"RE_SIGN", "EXTEND"}:
             ev = svc.re_sign_or_extend(
@@ -624,6 +625,7 @@ def commit_contract_negotiation(
                 signed_date=signed_date,
                 years=int(offer.years),
                 salary_by_year={int(k): float(v) for k, v in offer.salary_by_year.items()},
+                options=[dict(x) for x in (offer.options or [])],
             )
         else:
             raise ContractNegotiationError(

@@ -3009,6 +3009,7 @@ def _commit_accepted_contract_negotiation(
                     signed_date=signed_date_iso,
                     years=int(offer.years),
                     salary_by_year=offer.salary_by_year,
+                    options=[dict(x) for x in (offer.options or [])],
                 )
             else:
                 # RE_SIGN and EXTEND both map to the same SSOT operation.
@@ -3018,6 +3019,7 @@ def _commit_accepted_contract_negotiation(
                     signed_date=signed_date_iso,
                     years=int(offer.years),
                     salary_by_year=offer.salary_by_year,
+                    options=[dict(x) for x in (offer.options or [])],
                 )
         except CapViolationError as exc:
             # Rule-based rejection: return 409 instead of 500.

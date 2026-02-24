@@ -63,6 +63,7 @@ except Exception as e:  # pragma: no cover
 
 # Contract SSOT codec (columns are SSOT; contract_json stores extras only)
 from contract_codec import CONTRACT_SSOT_FIELDS, contract_from_row, contract_to_upsert_row
+from contracts.options import normalize_option_record
 
 
 # ----------------------------
@@ -170,25 +171,96 @@ def parse_salary_int(value: Any) -> Optional[int]:
         return None
 
 
-def _extract_salary_by_year_excel(row: Any, df_columns: Sequence[str]) -> Dict[str, float]:
-    """Extract per-season salary map from Excel row.
+def _parse_salary_option_cell(value: Any) -> tuple[Optional[int], Optional[str]]:
+    """Parse Excel salary cell with optional option marker.
 
-    Supported forms:
-      - salary_2025 / salary_2026 / ... columns only
+    Supported examples:
+      - 15161800
+      - "15,161,800"
+      - "15,161,800|TEAM" / "15161800|TO"
+      - "15161800|PLAYER" / "15161800|PO"
     """
-    out: Dict[str, float] = {}
+    if value is None:
+        return (None, None)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        sal = parse_salary_int(value)
+        return (sal, None)
+
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"nan", "none"}:
+        return (None, None)
+
+    left = raw
+    opt_raw = None
+    if "|" in raw:
+        left, opt_raw = raw.split("|", 1)
+
+    sal = parse_salary_int(left)
+    if sal is None:
+        return (None, None)
+
+    if opt_raw is None:
+        return (sal, None)
+
+    token = str(opt_raw).strip().upper().replace(" ", "").replace("-", "_")
+    alias = {
+        "TEAM": "TEAM",
+        "TEAM_OPTION": "TEAM",
+        "TO": "TEAM",
+        "PLAYER": "PLAYER",
+        "PLAYER_OPTION": "PLAYER",
+        "PO": "PLAYER",
+        "ETO": "ETO",
+    }
+    opt = alias.get(token)
+    if not opt:
+        _warn_limited("EXCEL_OPTION_TOKEN_INVALID", f"token={opt_raw!r}", limit=5)
+        return (sal, None)
+    return (sal, opt)
+
+
+def _extract_salary_and_options_excel(row: Any, df_columns: Sequence[str]) -> tuple[Dict[str, float], List[Dict[str, Any]]]:
+    """Extract salary_by_year + option records from salary_YYYY Excel columns."""
+    salary_by_year: Dict[str, float] = {}
+    option_rows: List[Dict[str, Any]] = []
 
     for col in df_columns:
         m = _SALARY_YEAR_COL_RE.match(str(col).strip())
         if not m:
             continue
         year_i = int(m.group(1))
-        val_i = parse_salary_int(row.get(col, None))
-        if val_i is None:
+        sal_i, opt_type = _parse_salary_option_cell(row.get(col, None))
+        if sal_i is None:
             continue
-        out[str(year_i)] = float(val_i)
+        salary_by_year[str(year_i)] = float(sal_i)
+        if opt_type:
+            try:
+                option_rows.append(
+                    normalize_option_record(
+                        {
+                            "season_year": int(year_i),
+                            "type": str(opt_type),
+                            "status": "PENDING",
+                            "decision_date": None,
+                        }
+                    )
+                )
+            except Exception as e:
+                _warn_limited(
+                    "EXCEL_OPTION_NORMALIZE_FAILED",
+                    f"col={col!r} value={row.get(col, None)!r} exc_type={type(e).__name__}",
+                    limit=5,
+                )
 
-    return out
+    # de-dup by season_year (first wins)
+    by_year: Dict[int, Dict[str, Any]] = {}
+    for opt in option_rows:
+        sy = int(opt.get("season_year") or 0)
+        if sy not in by_year:
+            by_year[sy] = opt
+
+    options_sorted = [by_year[y] for y in sorted(by_year.keys())]
+    return salary_by_year, options_sorted
 
 
 def _require_columns(cols: Sequence[str], required: Sequence[str]) -> None:
@@ -1410,7 +1482,7 @@ class LeagueRepo:
                 sal = row.get("Salary", None)
             salary_amount = parse_salary_int(sal)
 
-            salary_by_year = _extract_salary_by_year_excel(row, df_columns)
+            salary_by_year, contract_options = _extract_salary_and_options_excel(row, df_columns)
             if salary_by_year:
                 start_year = min(int(k) for k in salary_by_year.keys())
                 years = max(len(salary_by_year), 1)
@@ -1424,7 +1496,7 @@ class LeagueRepo:
                     "start_season_year": int(start_year),
                     "years": int(years),
                     "salary_by_year": salary_by_year,
-                    "options": [],
+                    "options": [dict(x) for x in (contract_options or [])],
                     "status": status,
                     "contract_type": "STANDARD",
                 }
