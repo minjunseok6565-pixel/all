@@ -268,6 +268,86 @@ function normalizeTeamInput(value) {
   return value?.trim() || currentTeamId();
 }
 
+function renderTwoWaySlots(summary) {
+  const box = $('twoWaySlotsBox');
+  if (!box) return;
+  const players = Array.isArray(summary?.players) ? summary.players : [];
+  const maxSlots = Number(summary?.max_two_way_slots || 3);
+
+  const cards = [];
+  for (let i = 0; i < maxSlots; i += 1) {
+    const p = players[i];
+    if (!p) {
+      cards.push(`<div class="two-way-slot-card empty">슬롯 ${i + 1}: 비어 있음</div>`);
+      continue;
+    }
+    cards.push(`
+      <div class="two-way-slot-card">
+        <div><strong>슬롯 ${i + 1}</strong> · ${p.name || p.player_id}</div>
+        <div class="muted">player_id: ${p.player_id}</div>
+        <div>남은 출전 가능 경기: <strong>${p.games_remaining}</strong> / ${p.game_limit}</div>
+      </div>
+    `);
+  }
+
+  box.innerHTML = `
+    <div class="muted">사용 슬롯: ${summary?.used_two_way_slots || 0} / ${maxSlots}</div>
+    ${cards.join('')}
+  `;
+}
+
+async function loadTwoWaySummary() {
+  const teamId = normalizeTeamInput(null);
+  if (!teamId) return log('투웨이 슬롯 조회 실패: team_id가 필요합니다.');
+  const data = await request(`/api/two-way/summary/${teamId}`);
+  renderTwoWaySlots(data);
+}
+
+function findTwoWayTradeRuleViolation(payload, currentTeam) {
+  const err = payload?.error || payload?.detail?.error || null;
+  if (!err) return null;
+  const msg = String(err.message || payload?.detail?.message || '').toLowerCase();
+  const details = err.details || payload?.detail?.details || {};
+  if (!msg.includes('two-way trade-time limit exceeded')) return null;
+
+  const targetTeam = String(details.team_id || '').toUpperCase();
+  const userTeam = String(currentTeam || '').toUpperCase();
+  const roleText = targetTeam && userTeam && targetTeam === userTeam ? '받는 입장' : '보내는 입장';
+  return `투웨이 트레이드 규정 위반으로 트레이드 불가 (${roleText}). team=${targetTeam || '-'}, 보유 예정 투웨이=${details.two_way_count ?? '-'} (최대 ${details.trade_time_max_two_way ?? 2})`;
+}
+
+function clearTwoWayTradeRuleMessage() {
+  const el = $('twoWayTradeRuleMsg');
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = '';
+}
+
+function showTwoWayTradeRuleMessage(text) {
+  const el = $('twoWayTradeRuleMsg');
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = text;
+}
+
+async function runTradeAction(endpoint) {
+  clearTwoWayTradeRuleMessage();
+  try {
+    const payload = parseJsonOrEmpty($('tradePayload').value);
+    if (endpoint === '/api/trade/evaluate') {
+      const teamId = normalizeTeamInput($('tradeEvaluateTeamId')?.value);
+      await runSimple(endpoint, 'tradeResult', 'POST', { ...payload, team_id: teamId });
+      return;
+    }
+    await runSimple(endpoint, 'tradeResult', 'POST', payload);
+  } catch (e) {
+    const errorObj = { error: String(e), detail: e.payload || null };
+    $('tradeResult').textContent = pretty(errorObj);
+    const violation = findTwoWayTradeRuleViolation(e.payload || {}, normalizeTeamInput(null));
+    if (violation) showTwoWayTradeRuleMessage(violation);
+  }
+}
+
 async function runDraftWorkouts() {
   const teamId = normalizeTeamInput($('draftWorkoutsTeamId')?.value);
   if (!teamId) return log('워크아웃 실행 실패: team_id가 필요합니다.');
@@ -866,6 +946,9 @@ function bindEvents() {
 
   $('loadMyTeamDetailBtn').addEventListener('click', () => runSimple(`/api/team-detail/${currentTeamId()}`, 'myTeamDetailBox'));
   $('loadRosterSummaryBtn').addEventListener('click', () => runSimple(`/api/roster-summary/${currentTeamId()}`, 'rosterSummaryBox'));
+  $('loadTwoWaySummaryBtn')?.addEventListener('click', () => {
+    loadTwoWaySummary().catch((e) => log('투웨이 슬롯 조회 실패', { error: String(e), detail: e.payload || null }));
+  });
 
   $('searchCollegePlayersBtn').addEventListener('click', () => {
     runSimple('/api/college/players', 'collegePlayersBox', 'GET', null, { q: $('collegeQuery').value.trim(), limit: 50 });
@@ -888,14 +971,7 @@ function bindEvents() {
   });
 
   document.querySelectorAll('.trade-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try {
-        const payload = parseJsonOrEmpty($('tradePayload').value);
-        await runSimple(btn.dataset.endpoint, 'tradeResult', 'POST', payload);
-      } catch (e) {
-        $('tradeResult').textContent = pretty({ error: String(e) });
-      }
-    });
+    btn.addEventListener('click', async () => runTradeAction(btn.dataset.endpoint));
   });
 
   $('reloadOpenApiBtn').addEventListener('click', async () => {

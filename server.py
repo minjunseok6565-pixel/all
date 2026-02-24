@@ -3839,6 +3839,71 @@ async def roster_summary(team_id: str):
     }
 
 
+@app.get("/api/two-way/summary/{team_id}")
+async def two_way_summary(team_id: str):
+    """특정 팀의 투웨이 슬롯/출전 가능 경기 수를 요약해서 반환한다."""
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    season_year = int((state.export_full_state_snapshot().get("league", {}) or {}).get("season_year") or 0)
+
+    with LeagueRepo(db_path) as repo:
+        with repo.transaction() as cur:
+            rows = cur.execute(
+                """
+                SELECT c.player_id, p.name,
+                       COALESCE(c.contract_type,'') AS contract_type,
+                       COALESCE(c.status,'') AS status,
+                       COALESCE(c.contract_data,'') AS contract_data
+                FROM contracts c
+                LEFT JOIN players p ON p.player_id = c.player_id
+                WHERE c.team_id=?
+                  AND UPPER(COALESCE(c.contract_type,''))='TWO_WAY'
+                  AND UPPER(COALESCE(c.status,''))='ACTIVE'
+                  AND COALESCE(c.is_active, 0)=1
+                ORDER BY p.name ASC;
+                """,
+                (tid,),
+            ).fetchall()
+
+            players: List[Dict[str, Any]] = []
+            for r in rows:
+                player_id = str(r["player_id"])
+                contract_data_raw = r["contract_data"]
+                contract_data: Dict[str, Any] = {}
+                if contract_data_raw:
+                    try:
+                        contract_data = json.loads(str(contract_data_raw))
+                    except Exception:
+                        contract_data = {}
+
+                limit = int(contract_data.get("two_way_game_limit") or 50)
+                used = cur.execute(
+                    "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
+                    (player_id, season_year),
+                ).fetchone()
+                used_i = int((used or {}).get("n") or 0)
+                players.append(
+                    {
+                        "player_id": player_id,
+                        "name": r["name"],
+                        "contract_type": "TWO_WAY",
+                        "game_limit": limit,
+                        "games_used": used_i,
+                        "games_remaining": max(0, int(limit) - int(used_i)),
+                    }
+                )
+
+    max_slots = 3
+    return {
+        "team_id": tid,
+        "season_year": season_year,
+        "max_two_way_slots": max_slots,
+        "used_two_way_slots": len(players),
+        "open_two_way_slots": max(0, max_slots - len(players)),
+        "players": players,
+    }
+
+
 # -------------------------------------------------------------------------
 # 팀별 시즌 스케줄 조회 API
 # -------------------------------------------------------------------------
@@ -4017,7 +4082,6 @@ async def api_game_load(req: GameLoadRequest):
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
 
 
 
