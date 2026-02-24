@@ -13,6 +13,8 @@ from uuid import uuid4
 
 import state
 from config import SAVE_ROOT_DIR
+from config_roster import DEFAULT_ROSTER_PATH
+from league_repo import LeagueRepo
 from team_utils import ui_cache_rebuild_all
 
 _SAVE_LOCK = RLock()
@@ -409,6 +411,12 @@ def create_new_game(
         state.reset_state_for_dev()
         state.set_db_path(str(new_db_path))
         state.startup_init_state()
+
+        # New game bootstrap: import the roster Excel into the new DB snapshot.
+        # This runs synchronously so API callers can expose an actual loading phase.
+        with LeagueRepo(str(new_db_path)) as repo:
+            repo.init_db()
+            repo.import_roster_excel(DEFAULT_ROSTER_PATH, mode="replace", strict_ids=False)
 
         if season_year is not None:
             state.start_new_season(int(season_year), rebuild_schedule=True)

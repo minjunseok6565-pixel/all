@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NBA 시뮬레이션 게임</title>
+  <link rel="stylesheet" href="/static/NBA.css" />
+</head>
+<body>
+  <div class="bg-overlay"></div>
+  <main class="app-shell">
+    <section id="start-screen" class="panel active">
+      <p class="eyebrow">NBA SIMULATION GM</p>
+      <h1>NBA 시뮬레이션 게임</h1>
+      <p class="subtitle">팀을 선택하고 리그를 직접 운영해보세요.</p>
+
+      <div class="button-group">
+        <button id="new-game-btn" class="btn btn-primary">새 게임</button>
+        <button id="continue-btn" class="btn btn-secondary" disabled aria-disabled="true">이어하기</button>
+      </div>
+
+      <p id="continue-hint" class="hint">저장된 게임을 확인하는 중...</p>
+    </section>
+
+    <section id="team-screen" class="panel" aria-hidden="true">
+      <h2>운영할 팀을 선택하세요</h2>
+      <p class="subtitle">NBA 30개 팀 중 하나를 선택해 GM 커리어를 시작합니다.</p>
+      <div id="team-grid" class="team-grid"></div>
+    </section>
+  </main>
+
+  <div id="loading-overlay" class="loading-overlay hidden" role="status" aria-live="polite">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <p id="loading-text">새 게임을 준비하는 중입니다...</p>
+    </div>
+  </div>
+
+  <script src="/static/NBA.js" defer></script>
+</body>
+</html>
