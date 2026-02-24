@@ -163,6 +163,16 @@
 
         <section id="transactionsView" class="view">
           <article class="panel">
+            <h3>FA 후보 조회</h3>
+            <div class="inline-form">
+              <input id="freeAgentQuery" placeholder="선수명/ID 검색 (선택)" />
+              <input id="freeAgentLimit" type="number" min="1" max="1000" value="200" />
+              <button id="loadFreeAgentsBtn" class="primary">FA 후보 조회</button>
+            </div>
+            <pre id="freeAgentListResult" class="json"></pre>
+          </article>
+
+          <article class="panel">
             <h3>계약 협상 Wizard</h3>
             <div class="grid two">
               <div>
