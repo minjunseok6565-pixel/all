@@ -2,8 +2,8 @@
 
 Source: `server.py`
 
-- Total GET: 34
-- Total POST: 56
+- Total GET: 36
+- Total POST: 59
 
 ## GET
 
@@ -36,10 +36,12 @@ Source: `server.py`
 - `/api/offseason/draft/bigboard/expert` (`api_offseason_draft_bigboard_expert`)
 - `/api/offseason/draft/bundle` (`api_offseason_draft_bundle`)
 - `/api/roster-summary/{team_id}` (`roster_summary`)
+- `/api/two-way/summary/{team_id}` (`two_way_summary`)
 - `/api/team-schedule/{team_id}` (`team_schedule`)
 - `/api/state/summary` (`state_summary`)
 - `/api/game/saves` (`api_game_saves`)
 - `/api/game/saves/{slot_id}` (`api_game_save_detail`)
+- `/api/contracts/free-agents` (`api_contracts_free_agents`)
 - `/api/debug/schedule-summary` (`debug_schedule_summary`)
 
 ## POST
@@ -92,6 +94,9 @@ Source: `server.py`
 - `/api/contracts/negotiation/cancel` (`api_contracts_negotiation_cancel`)
 - `/api/contracts/sign-free-agent` (`api_contracts_sign_free_agent`)
 - `/api/contracts/re-sign-or-extend` (`api_contracts_re_sign_or_extend`)
+- `/api/contracts/two-way/negotiation/start` (`api_two_way_negotiation_start`)
+- `/api/contracts/two-way/negotiation/decision` (`api_two_way_negotiation_decision`)
+- `/api/contracts/two-way/negotiation/commit` (`api_two_way_negotiation_commit`)
 - `/api/trade/submit` (`api_trade_submit`)
 - `/api/trade/submit-committed` (`api_trade_submit_committed`)
 - `/api/trade/negotiation/start` (`api_trade_negotiation_start`)

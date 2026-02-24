@@ -3107,6 +3107,68 @@ def _try_ui_cache_refresh_players(player_ids: List[str], *, context: str) -> Non
 # -------------------------------------------------------------------------
 # Contracts / Roster Write API
 # -------------------------------------------------------------------------
+
+
+@app.get("/api/contracts/free-agents")
+async def api_contracts_free_agents(q: str = "", limit: int = 200):
+    """List free-agent candidates (players without an active team assignment)."""
+    qv = str(q or "").strip().lower()
+    lim = max(1, min(int(limit or 200), 1000))
+
+    try:
+        db_path = state.get_db_path()
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT
+                    p.player_id,
+                    p.name,
+                    p.pos,
+                    p.age,
+                    p.ovr,
+                    p.attrs_json,
+                    r.team_id
+                FROM players p
+                LEFT JOIN roster r
+                    ON r.player_id = p.player_id
+                   AND r.status = 'active'
+                WHERE (r.player_id IS NULL OR UPPER(COALESCE(r.team_id, '')) = 'FA')
+                ORDER BY p.ovr DESC, p.name ASC, p.player_id ASC
+                """
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            pid = str(row["player_id"])
+            name = str(row["name"] or "")
+            if qv and qv not in pid.lower() and qv not in name.lower():
+                continue
+            attrs = json.loads(row["attrs_json"]) if row["attrs_json"] else {}
+            out.append({
+                "player_id": pid,
+                "name": name,
+                "pos": row["pos"],
+                "age": row["age"],
+                "overall": row["ovr"],
+                "current_team_id": (str(row["team_id"]).upper() if row["team_id"] else None),
+                "has_active_team": bool(row["team_id"] and str(row["team_id"]).upper() != "FA"),
+                "attrs": attrs,
+            })
+            if len(out) >= lim:
+                break
+
+        return {
+            "count": len(out),
+            "query": q,
+            "limit": lim,
+            "players": out,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"free-agent list failed: {e}")
+
 @app.post("/api/contracts/release-to-fa")
 async def api_contracts_release_to_fa(req: ReleaseToFARequest):
     """Release a player to free agency (DB write)."""

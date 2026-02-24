@@ -619,6 +619,15 @@ async function loadDraftBundle() {
   await runSimple('/api/offseason/draft/bundle', 'draftToolsResult');
 }
 
+
+
+async function loadFreeAgentCandidates() {
+  const q = $('freeAgentQuery')?.value?.trim() || '';
+  const limitRaw = $('freeAgentLimit')?.value?.trim();
+  const limit = limitRaw ? Number(limitRaw) : 200;
+  await runSimple('/api/contracts/free-agents', 'freeAgentListResult', 'GET', null, { q, limit });
+}
+
 async function startContractNegotiation() {
   const teamId = $('negoTeamId').value.trim() || currentTeamId();
   const playerId = $('negoPlayerId').value.trim();
@@ -1031,6 +1040,7 @@ function bindEvents() {
   $('startTradeNegoBtn')?.addEventListener('click', async () => { try { await startTradeNegotiation(); } catch (e) { log('트레이드 협상 시작 실패', { error: String(e), detail: e.payload || null }); } });
   $('commitTradeNegoBtn')?.addEventListener('click', commitTradeNegotiation);
 
+  $('loadFreeAgentsBtn')?.addEventListener('click', loadFreeAgentCandidates);
   $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
   $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
   $('acceptCounterBtn')?.addEventListener('click', acceptNegotiationCounter);
