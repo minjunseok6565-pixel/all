@@ -906,6 +906,188 @@ async def api_team_detail(team_id: str):
 # -------------------------------------------------------------------------
 
 
+
+
+@app.get("/api/player-detail/{player_id}")
+async def api_player_detail(player_id: str, season_year: Optional[int] = None):
+    """Return rich player detail for My Team UI."""
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    db_path = state.get_db_path()
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+
+    workflow_state = state.export_workflow_state()
+    season_player_stats = (workflow_state.get("player_stats") or {}) if isinstance(workflow_state, dict) else {}
+    season_stats_entry = season_player_stats.get(pid) or {}
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        try:
+            player = repo.get_player(pid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        with repo.transaction() as cur:
+            roster_row = cur.execute(
+                """
+                SELECT team_id, salary_amount, status
+                FROM roster
+                WHERE player_id=?
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            active_contract_row = cur.execute(
+                """
+                SELECT *
+                FROM contracts
+                WHERE player_id=? AND COALESCE(is_active,0)=1
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            contract_rows = cur.execute(
+                """
+                SELECT *
+                FROM contracts
+                WHERE player_id=?
+                ORDER BY start_season_year DESC, updated_at DESC;
+                """,
+                (pid,),
+            ).fetchall()
+
+            two_way_row = cur.execute(
+                """
+                SELECT COALESCE(contract_data,'') AS contract_data
+                FROM contracts
+                WHERE player_id=?
+                  AND UPPER(COALESCE(contract_type,''))='TWO_WAY'
+                  AND UPPER(COALESCE(status,''))='ACTIVE'
+                  AND COALESCE(is_active, 0)=1
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            two_way = {"is_two_way": False, "game_limit": None, "games_used": 0, "games_remaining": None}
+            if two_way_row:
+                contract_data: Dict[str, Any] = {}
+                raw_cd = two_way_row["contract_data"]
+                if raw_cd:
+                    try:
+                        contract_data = json.loads(str(raw_cd))
+                    except Exception:
+                        contract_data = {}
+                game_limit = int(contract_data.get("two_way_game_limit") or 50)
+                used = cur.execute(
+                    "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
+                    (pid, sy),
+                ).fetchone()
+                games_used = int((used or {}).get("n") or 0)
+                two_way = {
+                    "is_two_way": True,
+                    "game_limit": game_limit,
+                    "games_used": games_used,
+                    "games_remaining": max(0, int(game_limit) - int(games_used)),
+                }
+
+            from agency import repo as agency_repo
+            agency_state = agency_repo.get_player_agency_states(cur, [pid]).get(pid)
+
+            from injury import repo as injury_repo
+            injury_state = injury_repo.get_player_injury_states(cur, [pid]).get(pid)
+
+            from fatigue import repo as fatigue_repo
+            fatigue_state = fatigue_repo.get_player_fatigue_states(cur, [pid]).get(pid)
+
+            from readiness import repo as readiness_repo
+            sharpness_state = None
+            if sy > 0:
+                sharpness_state = readiness_repo.get_player_sharpness_states(
+                    cur,
+                    [pid],
+                    season_year=int(sy),
+                ).get(pid)
+
+    from contract_codec import contract_from_row
+
+    active_contract = contract_from_row(active_contract_row) if active_contract_row else None
+    contracts = [contract_from_row(r) for r in contract_rows]
+
+    dissatisfaction = {
+        "is_dissatisfied": False,
+        "state": agency_state,
+    }
+    if isinstance(agency_state, dict):
+        axes = [
+            float(agency_state.get("team_frustration") or 0.0),
+            float(agency_state.get("role_frustration") or 0.0),
+            float(agency_state.get("contract_frustration") or 0.0),
+            float(agency_state.get("health_frustration") or 0.0),
+            float(agency_state.get("chemistry_frustration") or 0.0),
+            float(agency_state.get("usage_frustration") or 0.0),
+        ]
+        trade_request_level = int(agency_state.get("trade_request_level") or 0)
+        dissatisfaction["is_dissatisfied"] = trade_request_level > 0 or any(v >= 0.5 for v in axes)
+
+    injury = {
+        "is_injured": False,
+        "status": "HEALTHY",
+        "state": injury_state,
+    }
+    fatigue = fatigue_state or {}
+    st_fatigue = float(fatigue.get("st", 0.0) or 0.0)
+    lt_fatigue = float(fatigue.get("lt", 0.0) or 0.0)
+    sharpness = float((sharpness_state or {}).get("sharpness", 50.0) or 50.0)
+    if isinstance(injury_state, dict):
+        status = str(injury_state.get("status") or "HEALTHY").upper()
+        injury["status"] = status
+        injury["is_injured"] = status in {"OUT", "RETURNING"}
+
+    return {
+        "ok": True,
+        "player": {
+            "player_id": pid,
+            "name": player.get("name"),
+            "pos": player.get("pos"),
+            "age": player.get("age"),
+            "height_in": player.get("height_in"),
+            "weight_lb": player.get("weight_lb"),
+            "ovr": player.get("ovr"),
+            "attrs": player.get("attrs") or {},
+        },
+        "roster": {
+            "team_id": (str(roster_row["team_id"]).upper() if roster_row and roster_row["team_id"] else None),
+            "status": (str(roster_row["status"]) if roster_row and roster_row["status"] else None),
+            "salary_amount": int(roster_row["salary_amount"] or 0) if roster_row else None,
+        },
+        "contract": {
+            "active": active_contract,
+            "all": contracts,
+        },
+        "dissatisfaction": dissatisfaction,
+        "season_stats": season_stats_entry,
+        "two_way": two_way,
+        "condition": {
+            "short_term_fatigue": st_fatigue,
+            "long_term_fatigue": lt_fatigue,
+            "short_term_stamina": max(0.0, 1.0 - st_fatigue),
+            "long_term_stamina": max(0.0, 1.0 - lt_fatigue),
+            "sharpness": sharpness,
+            "fatigue_state": fatigue_state,
+            "sharpness_state": sharpness_state,
+        },
+        "injury": injury,
+    }
+
+
 @app.get("/api/college/meta")
 async def api_college_meta():
     try:
