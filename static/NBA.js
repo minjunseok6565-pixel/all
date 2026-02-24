@@ -9,7 +9,7 @@ const TEAM_FULL_NAMES = {
   UTA: "유타 재즈", WAS: "워싱턴 위저즈"
 };
 
-const state = { lastSaveSlotId: null, selectedTeamId: null };
+const state = { lastSaveSlotId: null, selectedTeamId: null, selectedTeamName: "" };
 
 const els = {
   startScreen: document.getElementById("start-screen"),
@@ -18,6 +18,8 @@ const els = {
   continueBtn: document.getElementById("continue-btn"),
   continueHint: document.getElementById("continue-hint"),
   teamGrid: document.getElementById("team-grid"),
+  mainScreen: document.getElementById("main-screen"),
+  mainTeamTitle: document.getElementById("main-team-title"),
   loadingOverlay: document.getElementById("loading-overlay"),
   loadingText: document.getElementById("loading-text")
 };
@@ -38,8 +40,42 @@ function setLoading(show, msg = "") {
 
 function showTeamSelection() {
   els.startScreen.classList.remove("active");
+  els.mainScreen.classList.remove("active");
   els.teamScreen.classList.add("active");
   els.teamScreen.setAttribute("aria-hidden", "false");
+  els.mainScreen.setAttribute("aria-hidden", "true");
+}
+
+
+function showMainScreen() {
+  els.startScreen.classList.remove("active");
+  els.teamScreen.classList.remove("active");
+  els.mainScreen.classList.add("active");
+  els.teamScreen.setAttribute("aria-hidden", "true");
+  els.mainScreen.setAttribute("aria-hidden", "false");
+  const teamName = state.selectedTeamName || state.selectedTeamId || "선택 팀";
+  els.mainTeamTitle.textContent = `${teamName} 메인 화면`;
+}
+
+async function confirmTeamSelection(teamId, fullName) {
+  const confirmed = window.confirm(`${fullName}을(를) 선택하시겠습니까?`);
+  if (!confirmed) return;
+
+  state.selectedTeamId = teamId;
+  state.selectedTeamName = fullName;
+
+  if (state.lastSaveSlotId) {
+    await fetchJson("/api/game/set-user-team", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot_id: state.lastSaveSlotId,
+        user_team_id: teamId
+      })
+    });
+  }
+
+  showMainScreen();
 }
 
 async function loadSavesStatus() {
@@ -76,8 +112,7 @@ async function renderTeams() {
     card.type = "button";
     card.innerHTML = `<strong>${fullName}</strong><small>${team.conference || ""} · ${team.division || ""}</small>`;
     card.addEventListener("click", () => {
-      state.selectedTeamId = id;
-      alert(`${fullName} 선택 완료 (team_id: ${id})`);
+      confirmTeamSelection(id, fullName).catch((e) => alert(e.message));
     });
     els.teamGrid.appendChild(card);
   });
@@ -109,11 +144,20 @@ async function continueGame() {
   if (!state.lastSaveSlotId) return;
   setLoading(true, "저장된 게임을 불러오는 중입니다...");
   try {
-    await fetchJson("/api/game/load", {
+    const loaded = await fetchJson("/api/game/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slot_id: state.lastSaveSlotId, strict: true })
     });
+
+    const savedTeamId = String(loaded.user_team_id || "").toUpperCase();
+    if (savedTeamId) {
+      state.selectedTeamId = savedTeamId;
+      state.selectedTeamName = TEAM_FULL_NAMES[savedTeamId] || savedTeamId;
+      showMainScreen();
+      return;
+    }
+
     await renderTeams();
     showTeamSelection();
   } finally {

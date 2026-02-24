@@ -445,3 +445,31 @@ def create_new_game(
             }
         )
         return out
+
+
+def set_save_user_team(*, slot_id: str, user_team_id: str) -> Dict[str, Any]:
+    with _SAVE_LOCK:
+        sid = _validate_slot_id(slot_id)
+        slot_dir = _slot_dir(sid)
+        if not slot_dir.exists():
+            raise SaveError(f"slot not found: {sid}")
+
+        normalized_team_id = str(user_team_id or "").strip().upper()
+        if not normalized_team_id:
+            raise SaveError("user_team_id is required")
+
+        meta_path = slot_dir / "meta.json"
+        meta = _read_meta(meta_path)
+        if not meta:
+            raise SaveError(f"meta not found: {sid}")
+
+        meta["user_team_id"] = normalized_team_id
+        _atomic_write_json(meta_path, meta)
+
+        return {
+            "ok": True,
+            "slot_id": sid,
+            "user_team_id": normalized_team_id,
+            "slot_name": meta.get("slot_name") or sid,
+            "save_version": int(meta.get("save_version") or 0),
+        }
