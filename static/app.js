@@ -178,11 +178,13 @@ function renderSaves() {
       <div class="muted">시즌: ${s.season_year || '-'}, 날짜: ${s.current_date || '-'}</div>
       <div class="inline-actions">
         <button data-load="${s.slot_id}">로드</button>
+        <button data-detail="${s.slot_id}">상세</button>
         <button data-save="${s.slot_id}">현재 상태 저장</button>
       </div>
     `;
 
     div.querySelector('[data-load]').addEventListener('click', () => loadGame(s.slot_id));
+    div.querySelector('[data-detail]').addEventListener('click', () => loadSaveDetail(s.slot_id, true));
     div.querySelector('[data-save]').addEventListener('click', () => saveGame(s.slot_id));
     wrap.appendChild(div);
   });
@@ -234,6 +236,11 @@ async function saveGame(slotId = null) {
   const data = await request('/api/game/save', 'POST', { slot_id: sid, save_name: 'manual_save' });
   log('게임 저장 완료', data);
   await loadSaves();
+}
+
+async function loadSaveDetail(slotId, strict = true) {
+  if (!slotId) return log('슬롯 상세 조회 실패: slot_id가 없습니다.');
+  await runSimple(`/api/game/saves/${encodeURIComponent(String(slotId))}`, 'saveDetailBox', 'GET', null, { strict: strict ? 'true' : 'false' });
 }
 
 async function runSimple(path, targetEl, method = 'GET', body = null, query = null) {
@@ -594,6 +601,40 @@ async function commitNegotiation() {
   await runSimple('/api/contracts/negotiation/commit', 'negotiationResult', 'POST', { session_id: sid });
 }
 
+async function cancelNegotiation() {
+  const sid = getNegotiationSessionId();
+  if (!sid) return log('협상 취소 실패: session_id가 없습니다.');
+  await runSimple('/api/contracts/negotiation/cancel', 'negotiationResult', 'POST', { session_id: sid });
+}
+
+async function loadCollegeMeta() {
+  await runSimple('/api/college/meta', 'collegeDetailBox');
+}
+
+async function loadCollegeTeams() {
+  await runSimple('/api/college/teams', 'collegeDetailBox');
+}
+
+async function loadCollegeTeamDetail() {
+  const teamId = $('collegeTeamDetailId')?.value?.trim();
+  if (!teamId) return log('대학 팀 상세 조회 실패: college_team_id를 입력하세요.');
+  await runSimple(`/api/college/team-detail/${encodeURIComponent(teamId)}`, 'collegeDetailBox');
+}
+
+async function loadCollegePlayerDetail() {
+  const playerId = $('collegePlayerDetailId')?.value?.trim();
+  if (!playerId) return log('대학 선수 상세 조회 실패: player_id를 입력하세요.');
+  await runSimple(`/api/college/player/${encodeURIComponent(playerId)}`, 'collegeDetailBox');
+}
+
+async function loadCollegeDraftPool() {
+  const yearRaw = $('collegeDraftPoolYear')?.value?.trim();
+  if (!yearRaw) return log('드래프트 풀 조회 실패: draft_year를 입력하세요.');
+  const draftYear = Number(yearRaw);
+  if (!Number.isInteger(draftYear) || draftYear < 1900) return log('드래프트 풀 조회 실패: 유효한 draft_year가 필요합니다.');
+  await runSimple(`/api/college/draft-pool/${draftYear}`, 'collegeDetailBox');
+}
+
 async function loadOpenApi() {
   const doc = await request('/openapi.json');
   appState.openApi = doc;
@@ -829,6 +870,11 @@ function bindEvents() {
   $('searchCollegePlayersBtn').addEventListener('click', () => {
     runSimple('/api/college/players', 'collegePlayersBox', 'GET', null, { q: $('collegeQuery').value.trim(), limit: 50 });
   });
+  $('loadCollegeMetaBtn')?.addEventListener('click', loadCollegeMeta);
+  $('loadCollegeTeamsBtn')?.addEventListener('click', loadCollegeTeams);
+  $('loadCollegeTeamDetailBtn')?.addEventListener('click', loadCollegeTeamDetail);
+  $('loadCollegePlayerDetailBtn')?.addEventListener('click', loadCollegePlayerDetail);
+  $('loadCollegeDraftPoolBtn')?.addEventListener('click', loadCollegeDraftPool);
 
   document.querySelectorAll('.tx-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -912,6 +958,7 @@ function bindEvents() {
   $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
   $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
   $('acceptCounterBtn')?.addEventListener('click', acceptNegotiationCounter);
+  $('cancelNegotiationBtn')?.addEventListener('click', cancelNegotiation);
   $('commitNegotiationBtn')?.addEventListener('click', commitNegotiation);
   $('useLastSessionBtn')?.addEventListener('click', () => {
     if (appState.lastNegotiationSessionId) {
