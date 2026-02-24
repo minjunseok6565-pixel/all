@@ -5,6 +5,8 @@ const appState = {
   openApi: null,
   endpoints: [],
   selectedEndpoint: null,
+  pendingTeamOptions: [],
+  lastNegotiationSessionId: null,
 };
 
 const OFFSEASON_ENDPOINTS = [
@@ -254,12 +256,180 @@ function buildOffseasonButtons() {
       let payload = {};
       if (ep.includes('/contracts/process')) payload = { user_team_id: teamId };
       if (ep.includes('/options/team/pending')) payload = { user_team_id: teamId };
-      if (ep.includes('/options/team/decide')) payload = { user_team_id: teamId, decisions: [] };
+      if (ep.includes('/options/team/decide')) {
+        return log('TEAM 옵션은 아래 전용 UI에서 선택 후 제출해주세요.');
+      }
+      if (ep.includes('/draft/selections/auto')) {
+        return log('드래프트 자동선택은 아래 드래프트 진행 도구를 사용해주세요.');
+      }
+      if (ep.includes('/draft/selections/pick')) {
+        return log('단일 픽 선택은 prospect_temp_id 입력 후 아래 도구에서 실행해주세요.');
+      }
 
       await runSimple(ep, 'offseasonResult', 'POST', payload);
     });
     box.appendChild(btn);
   });
+}
+
+function renderPendingTeamOptions(items = []) {
+  appState.pendingTeamOptions = Array.isArray(items) ? items : [];
+  const box = $('teamOptionPendingList');
+  if (!box) return;
+
+  box.innerHTML = '';
+  if (!appState.pendingTeamOptions.length) {
+    box.innerHTML = '<div class="muted">처리할 TEAM 옵션이 없습니다.</div>';
+    return;
+  }
+
+  appState.pendingTeamOptions.forEach((item, idx) => {
+    const div = document.createElement('div');
+    div.className = 'save-item';
+    const contractId = item.contract_id || item.id || `contract_${idx}`;
+    const playerName = item.player_name || item.player_id || 'Unknown Player';
+    const seasonYear = item.season_year || '-';
+    const salary = item.salary ?? item.option_salary ?? '-';
+
+    div.innerHTML = `
+      <div><strong>${playerName}</strong></div>
+      <div class="muted">contract_id: ${contractId}</div>
+      <div class="muted">season: ${seasonYear}, salary: ${salary}</div>
+      <div class="inline-form">
+        <label><input type="radio" name="opt_${idx}" value="EXERCISE" checked /> 행사</label>
+        <label><input type="radio" name="opt_${idx}" value="DECLINE" /> 거절</label>
+      </div>
+    `;
+    div.dataset.contractId = String(contractId);
+    box.appendChild(div);
+  });
+}
+
+async function loadPendingTeamOptions() {
+  const teamId = currentTeamId();
+  if (!teamId) return log('TEAM 옵션 조회 실패: 팀 ID가 없습니다.');
+
+  try {
+    const data = await request('/api/offseason/options/team/pending', 'POST', { user_team_id: teamId });
+    renderPendingTeamOptions(data.pending_team_options || []);
+    $('teamOptionResult').textContent = pretty(data);
+  } catch (e) {
+    $('teamOptionResult').textContent = pretty({ error: String(e), detail: e.payload || null });
+    log('TEAM 옵션 pending 조회 실패', { error: String(e), detail: e.payload || null });
+  }
+}
+
+async function submitTeamOptionDecisions() {
+  const teamId = currentTeamId();
+  if (!teamId) return log('TEAM 옵션 제출 실패: 팀 ID가 없습니다.');
+
+  const cards = Array.from(document.querySelectorAll('#teamOptionPendingList .save-item'));
+  const decisions = cards.map((card, idx) => {
+    const checked = card.querySelector(`input[name="opt_${idx}"]:checked`);
+    return {
+      contract_id: card.dataset.contractId,
+      decision: checked?.value || 'EXERCISE',
+    };
+  }).filter((d) => d.contract_id);
+
+  if (!decisions.length) {
+    return log('TEAM 옵션 제출 실패: 먼저 Pending 목록을 불러오고 결정을 선택하세요.');
+  }
+
+  await runSimple('/api/offseason/options/team/decide', 'teamOptionResult', 'POST', {
+    user_team_id: teamId,
+    decisions,
+  });
+  await loadPendingTeamOptions();
+}
+
+async function runDraftAutoPick() {
+  const teamId = currentTeamId();
+  if (!teamId) return log('드래프트 자동 진행 실패: 팀 ID가 없습니다.');
+  const allowAutopick = $('allowAutopickUserTeam')?.checked || false;
+  const payload = allowAutopick
+    ? { allow_autopick_user_team: true }
+    : { stop_on_user_controlled_team_ids: [teamId], allow_autopick_user_team: false };
+
+  await runSimple('/api/offseason/draft/selections/auto', 'draftToolsResult', 'POST', payload);
+}
+
+async function runDraftPickOne() {
+  const prospectTempId = $('draftPickProspectId')?.value.trim();
+  if (!prospectTempId) {
+    return log('단일 픽 선택 실패: prospect_temp_id를 입력하세요.');
+  }
+
+  await runSimple('/api/offseason/draft/selections/pick', 'draftToolsResult', 'POST', {
+    prospect_temp_id: prospectTempId,
+    source: 'draft_user_ui',
+  });
+}
+
+async function loadDraftBundle() {
+  await runSimple('/api/offseason/draft/bundle', 'draftToolsResult');
+}
+
+async function startContractNegotiation() {
+  const teamId = $('negoTeamId').value.trim() || currentTeamId();
+  const playerId = $('negoPlayerId').value.trim();
+  const mode = $('negoMode').value;
+  const validDays = Number($('negoValidDays').value || 7);
+
+  if (!teamId || !playerId) {
+    return log('협상 시작 실패: team_id, player_id를 입력하세요.');
+  }
+
+  try {
+    const data = await request('/api/contracts/negotiation/start', 'POST', {
+      team_id: teamId,
+      player_id: playerId,
+      mode,
+      valid_days: validDays,
+    });
+    const sid = data.session_id || data.session?.session_id || null;
+    if (sid) {
+      appState.lastNegotiationSessionId = sid;
+      $('negotiationSessionId').value = sid;
+    }
+    $('negotiationResult').textContent = pretty(data);
+  } catch (e) {
+    $('negotiationResult').textContent = pretty({ error: String(e), detail: e.payload || null });
+    log('협상 시작 실패', { error: String(e), detail: e.payload || null });
+  }
+}
+
+function getNegotiationSessionId() {
+  return $('negotiationSessionId').value.trim() || appState.lastNegotiationSessionId;
+}
+
+async function sendNegotiationOffer() {
+  const sid = getNegotiationSessionId();
+  if (!sid) return log('오퍼 전송 실패: session_id가 없습니다.');
+
+  let offer;
+  try {
+    offer = parseJsonOrEmpty($('negotiationOfferPayload').value);
+  } catch (e) {
+    return log('오퍼 전송 실패: offer JSON 파싱 오류', { error: String(e) });
+  }
+
+  await runSimple('/api/contracts/negotiation/offer', 'negotiationResult', 'POST', {
+    session_id: sid,
+    offer,
+  });
+}
+
+async function acceptNegotiationCounter() {
+  const sid = getNegotiationSessionId();
+  if (!sid) return log('카운터 수락 실패: session_id가 없습니다.');
+  await runSimple('/api/contracts/negotiation/accept-counter', 'negotiationResult', 'POST', { session_id: sid });
+}
+
+async function commitNegotiation() {
+  const sid = getNegotiationSessionId();
+  if (!sid) return log('협상 커밋 실패: session_id가 없습니다.');
+  await runSimple('/api/contracts/negotiation/commit', 'negotiationResult', 'POST', { session_id: sid });
 }
 
 async function loadOpenApi() {
@@ -442,6 +612,25 @@ function bindEvents() {
   });
   $('endpointFilter').addEventListener('input', (e) => renderEndpointList(e.target.value));
   $('sendStudioBtn').addEventListener('click', sendStudioRequest);
+
+  $('loadPendingOptionsBtn')?.addEventListener('click', loadPendingTeamOptions);
+  $('submitTeamOptionDecisionsBtn')?.addEventListener('click', submitTeamOptionDecisions);
+  $('draftAutoPickBtn')?.addEventListener('click', runDraftAutoPick);
+  $('draftPickOneBtn')?.addEventListener('click', runDraftPickOne);
+  $('loadDraftBundleBtn')?.addEventListener('click', loadDraftBundle);
+
+  $('startNegotiationBtn')?.addEventListener('click', startContractNegotiation);
+  $('sendOfferBtn')?.addEventListener('click', sendNegotiationOffer);
+  $('acceptCounterBtn')?.addEventListener('click', acceptNegotiationCounter);
+  $('commitNegotiationBtn')?.addEventListener('click', commitNegotiation);
+  $('useLastSessionBtn')?.addEventListener('click', () => {
+    if (appState.lastNegotiationSessionId) {
+      $('negotiationSessionId').value = appState.lastNegotiationSessionId;
+      log('최근 협상 session_id를 불러왔습니다.', { session_id: appState.lastNegotiationSessionId });
+    } else {
+      log('최근 협상 session_id가 없습니다. 먼저 협상을 시작하세요.');
+    }
+  });
 }
 
 async function init() {
