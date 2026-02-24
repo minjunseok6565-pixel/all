@@ -22,6 +22,7 @@ const els = {
   teamScreen: document.getElementById("team-screen"),
   mainScreen: document.getElementById("main-screen"),
   myTeamScreen: document.getElementById("my-team-screen"),
+  playerDetailScreen: document.getElementById("player-detail-screen"),
   newGameBtn: document.getElementById("new-game-btn"),
   continueBtn: document.getElementById("continue-btn"),
   continueHint: document.getElementById("continue-hint"),
@@ -30,7 +31,9 @@ const els = {
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
+  backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
+  playerDetailTitle: document.getElementById("player-detail-title"),
   playerDetailPanel: document.getElementById("player-detail-panel"),
   playerDetailContent: document.getElementById("player-detail-content"),
   loadingOverlay: document.getElementById("loading-overlay"),
@@ -50,7 +53,7 @@ function setLoading(show, msg = "") {
 }
 
 function activateScreen(target) {
-  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen].forEach((screen) => {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
@@ -125,8 +128,6 @@ function renderRosterRows(rows) {
 
     tr.addEventListener("click", () => {
       state.selectedPlayerId = row.player_id;
-      [...els.rosterBody.querySelectorAll(".roster-row")].forEach((node) => node.classList.remove("active"));
-      tr.classList.add("active");
       loadPlayerDetail(row.player_id).catch((e) => alert(e.message));
     });
 
@@ -182,54 +183,61 @@ function renderPlayerDetail(detail) {
     : "활성 계약 정보 없음";
 
   const twoWayHtml = twoWay.is_two_way
-    ? `<div class="detail-chip">투웨이: 예 · 남은 경기 ${num(twoWay.games_remaining, 0)} / ${num(twoWay.game_limit, 0)}</div>`
+    ? `<div class="detail-chip">투웨이 계약 · 남은 경기 ${num(twoWay.games_remaining, 0)} / ${num(twoWay.game_limit, 0)}</div>`
     : "";
 
-  els.playerDetailPanel.classList.remove("empty");
+  const playerName = p.name || "선수";
+  els.playerDetailTitle.textContent = `${playerName} 상세 정보`;
   els.playerDetailContent.innerHTML = `
-    <div class="detail-head">
-      <h3>${p.name || "선수"}</h3>
+    <div class="detail-head detail-head-main">
+      <div>
+        <h3>${playerName}</h3>
+        <p class="detail-subline">${p.pos || "-"} · ${num(p.age, 0)}세 · ${formatHeightIn(p.height_in)} / ${formatWeightLb(p.weight_lb)}</p>
+      </div>
       <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
     </div>
 
-    <div class="detail-grid">
-      <div class="detail-chip">포지션: ${p.pos || "-"}</div>
-      <div class="detail-chip">나이: ${num(p.age, 0)}</div>
-      <div class="detail-chip">키/몸무게: ${formatHeightIn(p.height_in)} · ${formatWeightLb(p.weight_lb)}</div>
+    <div class="detail-grid detail-grid-top">
       <div class="detail-chip">샐러리: ${formatMoney(detail.roster?.salary_amount)}</div>
       <div class="detail-chip">단기 체력: ${Math.round(num(condition.short_term_stamina, 0) * 100)}%</div>
       <div class="detail-chip">장기 체력: ${Math.round(num(condition.long_term_stamina, 0) * 100)}%</div>
+      <div class="detail-chip">건강 상태: ${healthText}</div>
       ${twoWayHtml}
     </div>
 
-    <div class="detail-section">
-      <h4>불만</h4>
-      <p>${diss.text}</p>
-      ${diss.details.length ? `<ul class="kv-list">${diss.details.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+    <div class="detail-columns">
+      <section class="detail-section">
+        <h4>불만 상태</h4>
+        <p>${diss.text}</p>
+        ${diss.details.length ? `<ul class="kv-list">${diss.details.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+      </section>
+
+      <section class="detail-section">
+        <h4>계약 정보</h4>
+        <p>${contractLine}</p>
+        <pre class="mini-json">${JSON.stringify(contract.active || {}, null, 2)}</pre>
+      </section>
     </div>
 
-    <div class="detail-section">
-      <h4>건강</h4>
-      <p>${healthText}</p>
-      ${injury.is_injured ? `<pre class="mini-json">${JSON.stringify(injury.state || {}, null, 2)}</pre>` : ""}
+    <div class="detail-columns">
+      <section class="detail-section">
+        <h4>능력치(ATTR)</h4>
+        <ul class="kv-list">${renderKVList(p.attrs || {})}</ul>
+      </section>
+
+      <section class="detail-section">
+        <h4>시즌 누적 스탯</h4>
+        <p>경기 수: ${num(seasonStats.games, 0)}</p>
+        <ul class="kv-list">${renderKVList(totals)}</ul>
+      </section>
     </div>
 
-    <div class="detail-section">
-      <h4>계약 구조</h4>
-      <p>${contractLine}</p>
-      <pre class="mini-json">${JSON.stringify(contract.active || {}, null, 2)}</pre>
-    </div>
-
-    <div class="detail-section">
-      <h4>ATTR</h4>
-      <ul class="kv-list">${renderKVList(p.attrs || {})}</ul>
-    </div>
-
-    <div class="detail-section">
-      <h4>누적 스탯</h4>
-      <p>경기 수: ${num(seasonStats.games, 0)}</p>
-      <ul class="kv-list">${renderKVList(totals)}</ul>
-    </div>
+    ${injury.is_injured ? `
+      <section class="detail-section">
+        <h4>부상 상세</h4>
+        <pre class="mini-json">${JSON.stringify(injury.state || {}, null, 2)}</pre>
+      </section>
+    ` : ""}
   `;
 }
 
@@ -238,6 +246,7 @@ async function loadPlayerDetail(playerId) {
   try {
     const detail = await fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`);
     renderPlayerDetail(detail);
+    activateScreen(els.playerDetailScreen);
   } finally {
     setLoading(false);
   }
@@ -259,8 +268,8 @@ async function showMyTeamScreen() {
     els.myTeamTitle.textContent = `${teamName} 선수단`;
 
     renderRosterRows(state.rosterRows);
-    els.playerDetailPanel.classList.add("empty");
     els.playerDetailContent.innerHTML = "";
+    els.playerDetailTitle.textContent = "선수 상세 정보";
     activateScreen(els.myTeamScreen);
   } finally {
     setLoading(false);
@@ -376,6 +385,7 @@ els.newGameBtn.addEventListener("click", () => createNewGame().catch((e) => aler
 els.continueBtn.addEventListener("click", () => continueGame().catch((e) => alert(e.message)));
 els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
 els.backToMainBtn.addEventListener("click", () => showMainScreen());
+els.backToRosterBtn.addEventListener("click", () => activateScreen(els.myTeamScreen));
 
 loadSavesStatus();
 
@@ -389,5 +399,7 @@ window.__debugRenderMyTeam = function __debugRenderMyTeam() {
   ];
   els.myTeamTitle.textContent = `${state.selectedTeamName} 선수단`;
   renderRosterRows(state.rosterRows);
+  els.playerDetailTitle.textContent = "선수 상세 정보";
+  els.playerDetailContent.innerHTML = "";
   activateScreen(els.myTeamScreen);
 };

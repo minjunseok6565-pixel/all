@@ -71,13 +71,22 @@
             <tbody id="my-team-roster-body"></tbody>
           </table>
         </div>
-
-        <aside id="player-detail-panel" class="player-detail-panel empty">
-          <h3>선수 상세</h3>
-          <p class="detail-empty">선수를 선택하면 상세 정보가 표시됩니다.</p>
-          <div id="player-detail-content"></div>
-        </aside>
       </div>
+    </section>
+
+    <section id="player-detail-screen" class="panel" aria-hidden="true">
+      <div class="screen-header-row">
+        <div>
+          <p class="eyebrow">PLAYER PROFILE</p>
+          <h2 id="player-detail-title">선수 상세 정보</h2>
+          <p class="subtitle">선수의 컨디션, 계약, 불만 및 시즌 스탯을 한 화면에서 확인할 수 있습니다.</p>
+        </div>
+        <button id="back-to-roster-btn" class="btn btn-secondary" type="button">선수단으로</button>
+      </div>
+
+      <article id="player-detail-panel" class="player-detail-panel">
+        <div id="player-detail-content"></div>
+      </article>
     </section>
   </main>
 
