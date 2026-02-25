@@ -289,10 +289,14 @@ def ensure_schedule_for_active_season(*, force: bool = False) -> None:
             ms["by_date"] = built["by_date"]
             ms["by_id"] = built["by_id"]
 
-            league["season_start"] = season_start.isoformat()
+            season_start_iso = season_start.isoformat()
+            league["season_start"] = season_start_iso
             trade_deadline = date(int(active_year) + 1, 2, 5)
             league["trade_rules"]["trade_deadline"] = trade_deadline.isoformat()
-            league["current_date"] = None
+            # Keep in-game date as an explicit ISO date after schedule rebuild.
+            # Avoid a transient None state that breaks API/UI consumers expecting
+            # league.current_date to always be a valid date string (SSOT for "now").
+            league["current_date"] = season_start_iso
             league["last_gm_tick_date"] = None
 
             # schedule 생성 직후의 계약 bootstrap 체크포인트(once per season)
