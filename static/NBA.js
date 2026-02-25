@@ -79,6 +79,13 @@ function formatIsoDate(dateString) {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "YYYY-MM-DD";
 }
 
+function parseIsoDateOrNull(dateString) {
+  const iso = formatIsoDate(dateString);
+  if (iso === "YYYY-MM-DD") return null;
+  const parsed = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function randomTipoffTime() {
   const hour24 = 14 + Math.floor(Math.random() * 6);
   const minute = Math.floor(Math.random() * 60);
@@ -92,8 +99,18 @@ function isCompletedGame(game) {
 
 async function fetchInGameDate() {
   const summary = await fetchJson("/api/state/summary");
-  const currentDate = summary?.workflow_state?.league?.current_date;
-  return formatIsoDate(currentDate);
+  const candidates = [
+    summary?.workflow_state?.league?.current_date,
+    summary?.workflow_state?.current_date,
+    summary?.workflow_state?.league_context?.current_date,
+  ];
+
+  for (const candidate of candidates) {
+    const formatted = formatIsoDate(candidate);
+    if (formatted !== "YYYY-MM-DD") return formatted;
+  }
+
+  throw new Error("STATE 요약에 current_date가 없습니다.");
 }
 
 function resetNextGameCard() {
@@ -112,9 +129,14 @@ async function refreshMainDashboard() {
 
     const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
     const games = schedule?.games || [];
+    const currentDateObj = parseIsoDateOrNull(currentDate);
     const nextGame = games.find((g) => {
-      const date = String(g?.date || "").slice(0, 10);
-      return date >= currentDate && !isCompletedGame(g);
+      if (isCompletedGame(g)) return false;
+      if (!currentDateObj) return true;
+
+      const gameDateObj = parseIsoDateOrNull(g?.date);
+      if (!gameDateObj) return false;
+      return gameDateObj >= currentDateObj;
     });
 
     if (!nextGame) {
