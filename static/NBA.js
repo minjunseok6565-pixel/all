@@ -90,6 +90,24 @@ function formatMoney(n) {
   return `$${Math.round(num(n, 0)).toLocaleString("en-US")}`;
 }
 
+function formatPercent(value) {
+  return `${Math.round(clamp(num(value, 0), 0, 1) * 100)}%`;
+}
+
+function seasonLabelByYear(year) {
+  const y = Number(year);
+  if (!Number.isFinite(y)) return "시즌 미정";
+  const start = String(y).slice(-2);
+  const end = String(y + 1).slice(-2).padStart(2, "0");
+  return `${start}-${end} 시즌`;
+}
+
+function getOptionTypeLabel(optionType) {
+  if (optionType === "PLAYER") return "플레이어 옵션";
+  if (optionType === "TEAM") return "팀 옵션";
+  return "옵션";
+}
+
 function ratioToColor(ratio) {
   const r = clamp(num(ratio, 0), 0, 1);
   const hue = Math.round(r * 120);
@@ -155,13 +173,64 @@ function getDissatisfactionSummary(d) {
   };
 }
 
-function renderKVList(obj) {
-  const entries = Object.entries(obj || {});
-  if (!entries.length) return "<li>데이터 없음</li>";
+function renderAttrGrid(attrs) {
+  const entries = Object.entries(attrs || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  if (!entries.length) return '<p class="empty-copy">능력치 데이터가 없습니다.</p>';
   return entries
-    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-    .map(([k, v]) => `<li><strong>${k}</strong>: ${typeof v === "number" ? Math.round(v * 100) / 100 : String(v)}</li>`)
+    .map(([k, v]) => {
+      const value = typeof v === "number" ? (Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`) : String(v);
+      return `
+        <div class="attr-card">
+          <span class="attr-name">${k}</span>
+          <strong class="attr-value">${value}</strong>
+        </div>
+      `;
+    })
     .join("");
+}
+
+function buildContractRows(contractActive, fallbackSalary) {
+  if (!contractActive) {
+    return [{ label: "계약", value: "활성 계약 정보 없음", emphasis: true }];
+  }
+
+  const salaryByYear = contractActive.salary_by_year || {};
+  const salaryYears = Object.keys(salaryByYear)
+    .map((y) => Number(y))
+    .filter((y) => Number.isFinite(y))
+    .sort((a, b) => a - b);
+
+  const optionByYear = new Map((contractActive.options || []).map((opt) => [Number(opt.season_year), opt]));
+  const rows = [];
+
+  const initialSalary = salaryYears.length ? salaryByYear[salaryYears[0]] : fallbackSalary;
+  rows.push({ label: "샐러리", value: formatMoney(initialSalary), emphasis: true });
+
+  salaryYears.forEach((year, idx) => {
+    if (idx === 0) return;
+    const option = optionByYear.get(year);
+    const optionText = option ? ` (${getOptionTypeLabel(option.type)})` : "";
+    rows.push({
+      label: seasonLabelByYear(year),
+      value: `${formatMoney(salaryByYear[year])}${optionText}`,
+      emphasis: false,
+    });
+  });
+
+  const outstandingOptionRows = (contractActive.options || [])
+    .map((option) => ({
+      year: Number(option.season_year),
+      option,
+    }))
+    .filter(({ year }) => Number.isFinite(year) && !(year in salaryByYear))
+    .sort((a, b) => a.year - b.year)
+    .map(({ year, option }) => ({
+      label: seasonLabelByYear(year),
+      value: `${getOptionTypeLabel(option.type)} (${option.status || "PENDING"})`,
+      emphasis: false,
+    }));
+
+  return rows.concat(outstandingOptionRows);
 }
 
 function renderPlayerDetail(detail) {
@@ -173,71 +242,84 @@ function renderPlayerDetail(detail) {
   const seasonStats = detail.season_stats || {};
   const totals = seasonStats.totals || {};
   const twoWay = detail.two_way || {};
+  const contractActive = contract.active || null;
+  const contractRows = buildContractRows(contractActive, detail.roster?.salary_amount);
+  const dissatisfactionDescription = (detail.dissatisfaction?.reasons || []).length
+    ? detail.dissatisfaction.reasons
+    : diss.details;
+
+  const injuryState = injury.state || {};
+  const injuryDetails = [
+    injuryState.injury_type && `부상 유형: ${injuryState.injury_type}`,
+    injuryState.body_part && `부위: ${injuryState.body_part}`,
+    injuryState.games_remaining != null && `복귀 예상: ${num(injuryState.games_remaining, 0)}경기 후`,
+    injuryState.note && `메모: ${injuryState.note}`,
+  ].filter(Boolean);
+
+  const totalsEntries = Object.entries(totals || {});
+  const statsSummary = totalsEntries.length
+    ? `<div class="stats-grid">${totalsEntries
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .map(([k, v]) => `<div class="stat-chip"><span>${k}</span><strong>${typeof v === "number" ? (Math.round(v * 100) / 100) : v}</strong></div>`)
+      .join("")}</div>`
+    : '<p class="empty-copy">누적 스탯 데이터가 없습니다.</p>';
 
   const healthText = injury.is_injured
     ? `${injury.status || "부상"} · ${(injury.state?.injury_type || "")}`
     : "건강함";
 
-  const contractLine = contract.active
-    ? `${contract.active.contract_type || "STANDARD"} · ${contract.active.years || "-"}년 · ${Object.keys(contract.active.salary_by_year || {}).length}시즌`
-    : "활성 계약 정보 없음";
-
-  const twoWayHtml = twoWay.is_two_way
-    ? `<div class="detail-chip">투웨이 계약 · 남은 경기 ${num(twoWay.games_remaining, 0)} / ${num(twoWay.game_limit, 0)}</div>`
-    : "";
 
   const playerName = p.name || "선수";
   els.playerDetailTitle.textContent = `${playerName} 상세 정보`;
   els.playerDetailContent.innerHTML = `
-    <div class="detail-head detail-head-main">
-      <div>
-        <h3>${playerName}</h3>
-        <p class="detail-subline">${p.pos || "-"} · ${num(p.age, 0)}세 · ${formatHeightIn(p.height_in)} / ${formatWeightLb(p.weight_lb)}</p>
-      </div>
-      <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
-    </div>
-
-    <div class="detail-grid detail-grid-top">
-      <div class="detail-chip">샐러리: ${formatMoney(detail.roster?.salary_amount)}</div>
-      <div class="detail-chip">단기 체력: ${Math.round(num(condition.short_term_stamina, 0) * 100)}%</div>
-      <div class="detail-chip">장기 체력: ${Math.round(num(condition.long_term_stamina, 0) * 100)}%</div>
-      <div class="detail-chip">건강 상태: ${healthText}</div>
-      ${twoWayHtml}
-    </div>
-
-    <div class="detail-columns">
-      <section class="detail-section">
-        <h4>불만 상태</h4>
-        <p>${diss.text}</p>
-        ${diss.details.length ? `<ul class="kv-list">${diss.details.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+    <div class="player-layout">
+      <section class="detail-card detail-card-header">
+        <div class="detail-head detail-head-main">
+          <div>
+            <h3>${playerName}</h3>
+            <p class="detail-subline">${p.pos || "-"} · ${num(p.age, 0)}세 · ${formatHeightIn(p.height_in)} / ${formatWeightLb(p.weight_lb)}</p>
+          </div>
+          <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
+        </div>
       </section>
 
-      <section class="detail-section">
+      <section class="detail-card detail-card-contract">
         <h4>계약 정보</h4>
-        <p>${contractLine}</p>
-        <pre class="mini-json">${JSON.stringify(contract.active || {}, null, 2)}</pre>
+        <ul class="compact-kv-list">
+          ${contractRows.map((row) => `<li><span>${row.label}</span><strong${row.emphasis ? ' class="text-accent"' : ""}>${row.value}</strong></li>`).join("")}
+        </ul>
+        ${twoWay.is_two_way ? `<p class="section-note">투웨이 계약 · 남은 경기 ${num(twoWay.games_remaining, 0)} / ${num(twoWay.game_limit, 0)}</p>` : ""}
+      </section>
+
+      <section class="detail-card detail-card-dissatisfaction">
+        <h4>불만 여부</h4>
+        <p class="status-line ${detail.dissatisfaction?.is_dissatisfied ? "status-danger" : "status-ok"}">${detail.dissatisfaction?.is_dissatisfied ? "불만 있음" : "불만 없음"}</p>
+        <p class="section-copy">${diss.text}</p>
+        ${dissatisfactionDescription.length ? `<ul class="kv-list">${dissatisfactionDescription.map((x) => `<li>${x}</li>`).join("")}</ul>` : ""}
+      </section>
+
+      <section class="detail-card detail-card-attr">
+        <h4>능력치 (ATTR)</h4>
+        <div class="attr-grid">${renderAttrGrid(p.attrs || {})}</div>
+      </section>
+
+      <section class="detail-card detail-card-health">
+        <h4>건강 상태</h4>
+        <ul class="compact-kv-list compact-kv-list-health">
+          <li><span>장기 체력</span><strong>${formatPercent(condition.long_term_stamina)}</strong></li>
+          <li><span>단기 체력</span><strong>${formatPercent(condition.short_term_stamina)}</strong></li>
+          <li><span>부상 여부</span><strong>${injury.is_injured ? "부상" : "정상"}</strong></li>
+        </ul>
+        <p class="section-copy">${healthText}</p>
+        ${injuryDetails.length ? `<ul class="kv-list">${injuryDetails.map((item) => `<li>${item}</li>`).join("")}</ul>` : ""}
+      </section>
+
+      <section class="detail-card detail-card-stats">
+        <h4>누적 스탯</h4>
+        <p class="section-copy">출전 경기 수: ${num(seasonStats.games, 0)}경기</p>
+        ${statsSummary}
       </section>
     </div>
-
-    <div class="detail-columns">
-      <section class="detail-section">
-        <h4>능력치(ATTR)</h4>
-        <ul class="kv-list">${renderKVList(p.attrs || {})}</ul>
-      </section>
-
-      <section class="detail-section">
-        <h4>시즌 누적 스탯</h4>
-        <p>경기 수: ${num(seasonStats.games, 0)}</p>
-        <ul class="kv-list">${renderKVList(totals)}</ul>
-      </section>
-    </div>
-
-    ${injury.is_injured ? `
-      <section class="detail-section">
-        <h4>부상 상세</h4>
-        <pre class="mini-json">${JSON.stringify(injury.state || {}, null, 2)}</pre>
-      </section>
-    ` : ""}
   `;
 }
 

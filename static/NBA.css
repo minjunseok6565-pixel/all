@@ -124,6 +124,7 @@ h1, h2, h3 { margin: 0 0 12px; }
   overflow: auto;
 }
 
+
 .roster-table {
   width: 100%;
   border-collapse: collapse;
@@ -193,9 +194,40 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .player-detail-panel {
-  padding: 20px;
+  padding: 24px;
   min-height: 620px;
 }
+
+.player-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(280px, 0.9fr);
+  grid-template-areas:
+    "header contract"
+    "attr dissatisfaction"
+    "attr health"
+    "stats stats";
+  gap: 16px;
+}
+
+.detail-card {
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 24px;
+  padding: 18px 20px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), 0 10px 24px rgba(0,0,0,0.26);
+}
+
+.detail-card h4 {
+  margin: 0 0 10px;
+  font-size: 1.02rem;
+}
+
+.detail-card-header { grid-area: header; }
+.detail-card-contract { grid-area: contract; }
+.detail-card-dissatisfaction { grid-area: dissatisfaction; }
+.detail-card-attr { grid-area: attr; }
+.detail-card-health { grid-area: health; }
+.detail-card-stats { grid-area: stats; border-radius: 14px; }
 
 .detail-head {
   display: flex;
@@ -205,74 +237,145 @@ h1, h2, h3 { margin: 0 0 12px; }
   margin-bottom: 8px;
 }
 
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-
 .detail-head-main h3 {
   margin: 0;
-  font-size: 1.55rem;
+  font-size: 2rem;
 }
 
 .detail-subline {
   margin: 6px 0 0;
   color: #9fb2d4;
-  font-size: .92rem;
+  font-size: 1rem;
 }
 
-.detail-grid-top {
-  margin-top: 14px;
-}
-
-.detail-columns {
+.compact-kv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 8px;
 }
 
-.detail-chip {
-  border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 10px;
-  padding: 8px;
-  font-size: .84rem;
+.compact-kv-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px dashed rgba(255,255,255,0.16);
+  padding-bottom: 6px;
   color: #dbe6f7;
 }
 
-.detail-section {
-  margin-top: 12px;
-  border-top: 1px solid rgba(255,255,255,0.1);
-  padding-top: 10px;
+.compact-kv-list li:last-child { border-bottom: none; }
+.compact-kv-list span { color: #9fb2d4; }
+.compact-kv-list strong { color: #f6f9ff; }
+
+.text-accent {
+  color: #ffd166;
 }
 
-.detail-section h4 {
+.section-note {
+  margin: 10px 0 0;
+  font-size: .85rem;
+  color: #b2c5e3;
+}
+
+.status-line {
+  display: inline-flex;
   margin: 0 0 8px;
-  font-size: .95rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: .83rem;
+  font-weight: 700;
+}
+
+.status-ok {
+  color: #75ec9f;
+  background: rgba(22, 102, 56, 0.35);
+}
+
+.status-danger {
+  color: #ffadb8;
+  background: rgba(125, 29, 49, 0.38);
+}
+
+.section-copy {
+  margin: 0 0 10px;
+  color: #dbe6f7;
+  font-size: .9rem;
+}
+
+.attr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  max-height: 310px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.attr-card {
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 12px;
+  padding: 9px 10px;
+  background: rgba(4, 12, 25, 0.45);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.attr-name {
+  color: #b9cbe9;
+  font-size: .78rem;
+  text-transform: uppercase;
+}
+
+.attr-value {
+  color: #ffffff;
+  font-size: 1.08rem;
 }
 
 .kv-list {
   margin: 0;
   padding-left: 18px;
   color: #dbe6f7;
-  font-size: .86rem;
-  max-height: 188px;
+  font-size: .84rem;
+  max-height: 144px;
   overflow: auto;
 }
 
-pre.mini-json {
+.compact-kv-list-health {
+  margin-bottom: 10px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.stat-chip {
+  border: 1px solid rgba(255,255,255,0.13);
+  background: rgba(7, 14, 26, 0.52);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #cfdbef;
+  font-size: .82rem;
+}
+
+.stat-chip strong {
+  color: #f4f8ff;
+  font-size: .95rem;
+}
+
+.empty-copy {
   margin: 0;
-  font-size: .76rem;
-  line-height: 1.4;
-  color: #dbe6f7;
-  background: rgba(0,0,0,0.22);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 8px;
-  padding: 8px;
-  max-height: 150px;
-  overflow: auto;
+  color: #99abc8;
+  font-size: .86rem;
 }
 
 .loading-overlay {
@@ -304,9 +407,15 @@ pre.mini-json {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
-  .detail-columns,
-  .detail-grid {
+  .player-layout {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "header"
+      "contract"
+      "dissatisfaction"
+      "health"
+      "attr"
+      "stats";
   }
 
   .player-detail-panel {
