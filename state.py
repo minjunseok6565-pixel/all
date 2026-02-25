@@ -290,7 +290,8 @@ def ensure_schedule_for_active_season(*, force: bool = False) -> None:
             ms["by_date"] = built["by_date"]
             ms["by_id"] = built["by_id"]
 
-            league["season_start"] = season_start.isoformat()
+            season_start_iso = season_start.isoformat()
+            league["season_start"] = season_start_iso
             trade_deadline = date(int(active_year) + 1, 2, 5)
             league["trade_rules"]["trade_deadline"] = trade_deadline.isoformat()
 
