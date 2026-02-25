@@ -11,6 +11,8 @@ import game_time
 import state
 from config import ALL_TEAM_IDS
 from league_repo import LeagueRepo
+from league_service import LeagueService
+from schema import normalize_player_id, normalize_team_id
 from app.schemas.common import EmptyRequest
 from app.schemas.draft import (
     DraftAutoSelectionsRequest,
@@ -28,7 +30,7 @@ from app.schemas.offseason import (
 )
 from app.services.cache_facade import _try_ui_cache_refresh_players
 from app.services.contract_facade import _validate_repo_integrity
-from team_utils import ui_cache_refresh_players
+from team_utils import ui_cache_refresh_players, ui_cache_rebuild_all
 
 router = APIRouter()
 

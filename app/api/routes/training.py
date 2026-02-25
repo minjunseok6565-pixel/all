@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,7 @@ from app.schemas.practice import TeamPracticePlanRequest, TeamPracticeSessionReq
 from app.schemas.training import PlayerTrainingPlanRequest, TeamTrainingPlanRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 

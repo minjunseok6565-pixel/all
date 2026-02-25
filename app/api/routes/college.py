@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+import state
 from college.ui import (
     get_college_draft_pool,
     get_college_meta,
