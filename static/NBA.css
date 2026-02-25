@@ -75,6 +75,129 @@ h1, h2, h3 { margin: 0 0 12px; }
   gap: 14px;
 }
 
+.franchise-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.franchise-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.franchise-date {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  min-width: 120px;
+  text-align: center;
+}
+
+.franchise-layout {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 20px;
+}
+
+.franchise-menu-panel {
+  background: rgba(10, 18, 29, 0.78);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.franchise-menu-panel .menu-card {
+  min-height: 66px;
+  text-align: center;
+}
+
+.next-game-panel {
+  background: rgba(10, 18, 29, 0.78);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 24px 24px 28px;
+}
+
+.next-game-title {
+  text-align: center;
+  font-size: 2rem;
+  margin-bottom: 24px;
+}
+
+.next-game-team-row,
+.next-game-logo-row,
+.next-game-meta-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 1fr;
+  align-items: center;
+}
+
+.next-game-team-name {
+  text-align: center;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.next-game-vs {
+  text-align: center;
+  color: #d9e5fa;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.next-game-logo-row {
+  margin-top: 24px;
+}
+
+.team-logo-placeholder {
+  width: 130px;
+  height: 130px;
+  margin: 0 auto;
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.next-game-meta-row {
+  margin-top: 18px;
+}
+
+.home-away-label {
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.arena-name {
+  text-align: center;
+  color: #d8e3f8;
+  font-size: 1.1rem;
+  min-height: 1.3em;
+}
+
+.next-game-datetime {
+  margin: 16px 0 28px;
+  text-align: center;
+  font-size: 1.15rem;
+  letter-spacing: 0.03em;
+}
+
+.next-game-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 200px));
+  justify-content: center;
+  gap: 18px;
+}
+
+.next-game-action-btn {
+  min-height: 64px;
+  text-align: center;
+}
+
 .team-card,
 .menu-card {
   background: var(--card-bg);
@@ -407,6 +530,18 @@ h1, h2, h3 { margin: 0 0 12px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
+  .franchise-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .franchise-menu-panel {
+    grid-template-columns: repeat(4, minmax(110px, 1fr));
+  }
+
+  .next-game-team-name {
+    font-size: 1.6rem;
+  }
+
   .player-layout {
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -421,5 +556,36 @@ h1, h2, h3 { margin: 0 0 12px; }
   .player-detail-panel {
     min-height: 300px;
     padding: 14px;
+  }
+}
+
+@media (max-width: 720px) {
+  .franchise-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .franchise-header-actions {
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .franchise-menu-panel {
+    grid-template-columns: repeat(2, minmax(110px, 1fr));
+  }
+
+  .next-game-team-row,
+  .next-game-logo-row,
+  .next-game-meta-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .next-game-vs {
+    order: 3;
+  }
+
+  .next-game-actions {
+    grid-template-columns: 1fr;
   }
 }

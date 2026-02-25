@@ -29,17 +29,58 @@
     </section>
 
     <section id="main-screen" class="panel" aria-hidden="true">
-      <p class="eyebrow">MY FRANCHISE</p>
-      <h2 id="main-team-title">메인 화면</h2>
-      <p class="subtitle">아래 메뉴를 선택해 구단 운영을 시작하세요.</p>
-      <div class="main-menu-grid">
-        <button type="button" id="my-team-btn" class="menu-card menu-card-highlight">내 팀</button>
-        <button type="button" class="menu-card">전술</button>
-        <button type="button" class="menu-card">훈련</button>
-        <button type="button" class="menu-card">대학</button>
-        <button type="button" class="menu-card">스케쥴</button>
-        <button type="button" class="menu-card">순위</button>
-        <button type="button" class="menu-card">다음 경기 진행</button>
+      <header class="franchise-header">
+        <div>
+          <p class="eyebrow">MY FRANCHISE</p>
+          <h2 id="main-team-title">팀 이름</h2>
+        </div>
+        <div class="franchise-header-actions">
+          <span id="main-current-date" class="franchise-date">YYYY-MM-DD</span>
+          <button type="button" id="quick-save-btn" class="btn btn-secondary">빠른 저장</button>
+          <button type="button" id="settings-btn" class="btn btn-secondary">설정</button>
+        </div>
+      </header>
+
+      <div class="franchise-layout">
+        <aside class="franchise-menu-panel">
+          <button type="button" id="my-team-btn" class="menu-card menu-card-highlight">내 팀</button>
+          <button type="button" class="menu-card">전술</button>
+          <button type="button" class="menu-card">훈련</button>
+          <button type="button" class="menu-card">스케줄</button>
+          <button type="button" class="menu-card">순위</button>
+          <button type="button" class="menu-card">대학</button>
+          <button type="button" class="menu-card">시장</button>
+          <button type="button" class="menu-card">메디컬 센터</button>
+        </aside>
+
+        <section class="next-game-panel" aria-label="다음 경기">
+          <h3 class="next-game-title">다음 경기</h3>
+
+          <div class="next-game-team-row">
+            <div class="next-game-team-name" id="team-a-name">Team A</div>
+            <div class="next-game-vs">VS</div>
+            <div class="next-game-team-name" id="team-b-name">Team B</div>
+          </div>
+
+          <div class="next-game-logo-row">
+            <div id="team-a-logo" class="team-logo-placeholder" aria-label="Home 팀 로고"></div>
+            <div id="team-b-logo" class="team-logo-placeholder" aria-label="Away 팀 로고"></div>
+          </div>
+
+          <div class="next-game-meta-row">
+            <span class="home-away-label">Home</span>
+            <span id="next-game-arena" class="arena-name"></span>
+            <span class="home-away-label">Away</span>
+          </div>
+
+          <p id="next-game-datetime" class="next-game-datetime">YYYY-MM-DD --:-- PM</p>
+
+          <div class="next-game-actions">
+            <button type="button" class="menu-card next-game-action-btn">경기 진행</button>
+            <button type="button" class="menu-card next-game-action-btn">전술</button>
+            <button type="button" class="menu-card next-game-action-btn">빠른 진행</button>
+          </div>
+        </section>
       </div>
     </section>
 

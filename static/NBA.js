@@ -13,6 +13,7 @@ const state = {
   lastSaveSlotId: null,
   selectedTeamId: null,
   selectedTeamName: "",
+  currentDate: "",
   rosterRows: [],
   selectedPlayerId: null,
 };
@@ -28,6 +29,10 @@ const els = {
   continueHint: document.getElementById("continue-hint"),
   teamGrid: document.getElementById("team-grid"),
   mainTeamTitle: document.getElementById("main-team-title"),
+  mainCurrentDate: document.getElementById("main-current-date"),
+  teamAName: document.getElementById("team-a-name"),
+  teamBName: document.getElementById("team-b-name"),
+  nextGameDatetime: document.getElementById("next-game-datetime"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
@@ -65,7 +70,70 @@ function showTeamSelection() { activateScreen(els.teamScreen); }
 function showMainScreen() {
   activateScreen(els.mainScreen);
   const teamName = state.selectedTeamName || state.selectedTeamId || "선택 팀";
-  els.mainTeamTitle.textContent = `${teamName} 메인 화면`;
+  els.mainTeamTitle.textContent = teamName;
+  void refreshMainDashboard();
+}
+
+function formatIsoDate(dateString) {
+  const raw = String(dateString || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "YYYY-MM-DD";
+}
+
+function randomTipoffTime() {
+  const hour24 = 14 + Math.floor(Math.random() * 6);
+  const minute = Math.floor(Math.random() * 60);
+  const hour12 = String(hour24 > 12 ? hour24 - 12 : hour24).padStart(2, "0");
+  return `${hour12}:${String(minute).padStart(2, "0")} PM`;
+}
+
+function isCompletedGame(game) {
+  return game?.home_score != null && game?.away_score != null;
+}
+
+async function fetchInGameDate() {
+  const summary = await fetchJson("/api/state/summary");
+  const currentDate = summary?.workflow_state?.league?.current_date;
+  return formatIsoDate(currentDate);
+}
+
+function resetNextGameCard() {
+  els.teamAName.textContent = "Team A";
+  els.teamBName.textContent = "Team B";
+  els.nextGameDatetime.textContent = "YYYY-MM-DD --:-- PM";
+}
+
+async function refreshMainDashboard() {
+  if (!state.selectedTeamId) return;
+
+  try {
+    const currentDate = await fetchInGameDate();
+    state.currentDate = currentDate;
+    els.mainCurrentDate.textContent = currentDate;
+
+    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+    const games = schedule?.games || [];
+    const nextGame = games.find((g) => {
+      const date = String(g?.date || "").slice(0, 10);
+      return date >= currentDate && !isCompletedGame(g);
+    });
+
+    if (!nextGame) {
+      resetNextGameCard();
+      els.nextGameDatetime.textContent = "예정된 다음 경기가 없습니다.";
+      return;
+    }
+
+    const homeId = String(nextGame.home_team_id || "").toUpperCase();
+    const awayId = String(nextGame.away_team_id || "").toUpperCase();
+    const gameDate = formatIsoDate(nextGame.date);
+    els.teamAName.textContent = TEAM_FULL_NAMES[homeId] || homeId || "Team A";
+    els.teamBName.textContent = TEAM_FULL_NAMES[awayId] || awayId || "Team B";
+    els.nextGameDatetime.textContent = `${gameDate} ${randomTipoffTime()}`;
+  } catch (e) {
+    resetNextGameCard();
+    els.mainCurrentDate.textContent = "YYYY-MM-DD";
+    els.nextGameDatetime.textContent = `다음 경기 정보를 불러오지 못했습니다: ${e.message}`;
+  }
 }
 
 function num(v, fallback = 0) {
