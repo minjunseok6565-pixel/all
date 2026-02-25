@@ -1,0 +1,107 @@
+# API Endpoint Inventory (GET/POST)
+
+Source: `server.py`
+
+- Total GET: 36
+- Total POST: 59
+
+## GET
+
+- `/` (`root`) - `server.py:128`
+- `/api/training/team/{team_id}` (`api_get_team_training_plan`) - `server.py:550`
+- `/api/training/player/{player_id}` (`api_get_player_training_plan`) - `server.py:589`
+- `/api/practice/team/{team_id}/plan` (`api_get_team_practice_plan`) - `server.py:639`
+- `/api/practice/team/{team_id}/session` (`api_get_team_practice_session`) - `server.py:678`
+- `/api/practice/team/{team_id}/sessions` (`api_list_team_practice_sessions`) - `server.py:751`
+- `/api/stats/leaders` (`api_stats_leaders`) - `server.py:821`
+- `/api/stats/playoffs/leaders` (`api_playoff_stats_leaders`) - `server.py:850`
+- `/api/standings` (`api_standings`) - `server.py:880`
+- `/api/teams` (`api_teams`) - `server.py:885`
+- `/api/team-detail/{team_id}` (`api_team_detail`) - `server.py:890`
+- `/api/college/meta` (`api_college_meta`) - `server.py:903`
+- `/api/college/teams` (`api_college_teams`) - `server.py:911`
+- `/api/college/team-detail/{college_team_id}` (`api_college_team_detail`) - `server.py:919`
+- `/api/college/players` (`api_college_players`) - `server.py:937`
+- `/api/college/player/{player_id}` (`api_college_player`) - `server.py:971`
+- `/api/college/draft-pool/{draft_year}` (`api_college_draft_pool`) - `server.py:989`
+- `/api/scouting/scouts/{team_id}` (`api_scouting_list_scouts`) - `server.py:1075`
+- `/api/scouting/reports` (`api_scouting_reports`) - `server.py:1378`
+- `/api/postseason/field` (`api_postseason_field`) - `server.py:1509`
+- `/api/postseason/state` (`api_postseason_state`) - `server.py:1514`
+- `/api/agency/player/{player_id}` (`api_agency_get_player`) - `server.py:1896`
+- `/api/agency/team/{team_id}/events` (`api_agency_get_team_events`) - `server.py:1925`
+- `/api/agency/events` (`api_agency_get_events`) - `server.py:1959`
+- `/api/offseason/draft/interviews/questions` (`api_offseason_draft_interview_questions`) - `server.py:2318`
+- `/api/offseason/draft/experts` (`api_offseason_draft_experts`) - `server.py:2419`
+- `/api/offseason/draft/bigboard/expert` (`api_offseason_draft_bigboard_expert`) - `server.py:2436`
+- `/api/offseason/draft/bundle` (`api_offseason_draft_bundle`) - `server.py:2515`
+- `/api/contracts/free-agents` (`api_contracts_free_agents`) - `server.py:3112`
+- `/api/roster-summary/{team_id}` (`roster_summary`) - `server.py:3875`
+- `/api/two-way/summary/{team_id}` (`two_way_summary`) - `server.py:3904`
+- `/api/team-schedule/{team_id}` (`team_schedule`) - `server.py:3972`
+- `/api/state/summary` (`state_summary`) - `server.py:4028`
+- `/api/game/saves` (`api_game_saves`) - `server.py:4105`
+- `/api/game/saves/{slot_id}` (`api_game_save_detail`) - `server.py:4115`
+- `/api/debug/schedule-summary` (`debug_schedule_summary`) - `server.py:4143`
+
+## POST
+
+- `/api/simulate-game` (`api_simulate_game`) - `server.py:465`
+- `/api/advance-league` (`api_advance_league`) - `server.py:490`
+- `/api/training/team/set` (`api_set_team_training_plan`) - `server.py:567`
+- `/api/training/player/set` (`api_set_player_training_plan`) - `server.py:611`
+- `/api/practice/team/plan/set` (`api_set_team_practice_plan`) - `server.py:656`
+- `/api/practice/team/session/set` (`api_set_team_practice_session`) - `server.py:779`
+- `/api/college/draft-watch/recompute` (`api_college_draft_watch_recompute`) - `server.py:1011`
+- `/api/scouting/assign` (`api_scouting_assign`) - `server.py:1151`
+- `/api/scouting/unassign` (`api_scouting_unassign`) - `server.py:1285`
+- `/api/postseason/reset` (`api_postseason_reset`) - `server.py:1519`
+- `/api/postseason/setup` (`api_postseason_setup`) - `server.py:1524`
+- `/api/postseason/play-in/my-team-game` (`api_play_in_my_team_game`) - `server.py:1532`
+- `/api/postseason/playoffs/advance-my-team-game` (`api_playoffs_advance_my_team_game`) - `server.py:1540`
+- `/api/postseason/playoffs/auto-advance-round` (`api_playoffs_auto_advance_round`) - `server.py:1548`
+- `/api/season/enter-offseason` (`api_enter_offseason`) - `server.py:1561`
+- `/api/offseason/college/finalize` (`api_offseason_college_finalize`) - `server.py:1625`
+- `/api/offseason/contracts/process` (`api_offseason_contracts_process`) - `server.py:1653`
+- `/api/offseason/retirement/preview` (`api_offseason_retirement_preview`) - `server.py:1741`
+- `/api/offseason/retirement/process` (`api_offseason_retirement_process`) - `server.py:1772`
+- `/api/offseason/training/apply-growth` (`api_offseason_training_apply_growth`) - `server.py:1812`
+- `/api/agency/events/respond` (`api_agency_events_respond`) - `server.py:1987`
+- `/api/agency/actions/apply` (`api_agency_actions_apply`) - `server.py:2033`
+- `/api/offseason/options/team/pending` (`api_offseason_team_options_pending`) - `server.py:2080`
+- `/api/offseason/options/team/decide` (`api_offseason_team_options_decide`) - `server.py:2116`
+- `/api/offseason/draft/lottery` (`api_offseason_draft_lottery`) - `server.py:2193`
+- `/api/offseason/draft/settle` (`api_offseason_draft_settle`) - `server.py:2216`
+- `/api/offseason/draft/combine` (`api_offseason_draft_combine`) - `server.py:2243`
+- `/api/offseason/draft/workouts` (`api_offseason_draft_workouts`) - `server.py:2265`
+- `/api/offseason/draft/interviews` (`api_offseason_draft_interviews`) - `server.py:2330`
+- `/api/offseason/draft/withdrawals` (`api_offseason_draft_withdrawals`) - `server.py:2392`
+- `/api/offseason/draft/selections/auto` (`api_offseason_draft_selections_auto`) - `server.py:2562`
+- `/api/offseason/draft/selections/pick` (`api_offseason_draft_selections_pick`) - `server.py:2629`
+- `/api/offseason/draft/apply` (`api_offseason_draft_apply`) - `server.py:2679`
+- `/api/season/start-regular-season` (`api_start_regular_season`) - `server.py:2808`
+- `/api/news/week` (`api_news_week`) - `server.py:2841`
+- `/api/news/playoffs` (`api_playoff_news`) - `server.py:2853`
+- `/api/season-report` (`api_season_report`) - `server.py:2863`
+- `/api/validate-key` (`api_validate_key`) - `server.py:2878`
+- `/api/chat-main` (`chat_main`) - `server.py:2897`
+- `/api/main-llm` (`chat_main_legacy`) - `server.py:2922`
+- `/api/contracts/release-to-fa` (`api_contracts_release_to_fa`) - `server.py:3172`
+- `/api/contracts/negotiation/start` (`api_contracts_negotiation_start`) - `server.py:3202`
+- `/api/contracts/negotiation/offer` (`api_contracts_negotiation_offer`) - `server.py:3230`
+- `/api/contracts/negotiation/accept-counter` (`api_contracts_negotiation_accept_counter`) - `server.py:3256`
+- `/api/contracts/negotiation/commit` (`api_contracts_negotiation_commit`) - `server.py:3281`
+- `/api/contracts/negotiation/cancel` (`api_contracts_negotiation_cancel`) - `server.py:3307`
+- `/api/contracts/sign-free-agent` (`api_contracts_sign_free_agent`) - `server.py:3323`
+- `/api/contracts/re-sign-or-extend` (`api_contracts_re_sign_or_extend`) - `server.py:3352`
+- `/api/contracts/two-way/negotiation/start` (`api_two_way_negotiation_start`) - `server.py:3381`
+- `/api/contracts/two-way/negotiation/decision` (`api_two_way_negotiation_decision`) - `server.py:3402`
+- `/api/contracts/two-way/negotiation/commit` (`api_two_way_negotiation_commit`) - `server.py:3417`
+- `/api/trade/submit` (`api_trade_submit`) - `server.py:3437`
+- `/api/trade/submit-committed` (`api_trade_submit_committed`) - `server.py:3470`
+- `/api/trade/negotiation/start` (`api_trade_negotiation_start`) - `server.py:3504`
+- `/api/trade/negotiation/commit` (`api_trade_negotiation_commit`) - `server.py:3522`
+- `/api/trade/evaluate` (`api_trade_evaluate`) - `server.py:3826`
+- `/api/game/new` (`api_game_new`) - `server.py:4077`
+- `/api/game/save` (`api_game_save`) - `server.py:4095`
+- `/api/game/load` (`api_game_load`) - `server.py:4127`

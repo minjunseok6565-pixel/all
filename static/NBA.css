@@ -1,0 +1,316 @@
+:root {
+  --bg-primary: #0d1b2a;
+  --bg-secondary: #1b263b;
+  --nba-blue: #1d428a;
+  --nba-red: #c8102e;
+  --text-main: #f5f7fa;
+  --text-sub: #cfd6e4;
+  --card-bg: rgba(255, 255, 255, 0.06);
+  --card-border: rgba(255, 255, 255, 0.15);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Pretendard", "Noto Sans KR", sans-serif;
+  color: var(--text-main);
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #1d428a 0%, var(--bg-primary) 45%, #060b12 100%);
+}
+
+.bg-overlay {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(130deg, rgba(200, 16, 46, 0.15), rgba(29, 66, 138, 0.1));
+  pointer-events: none;
+}
+
+.app-shell {
+  position: relative;
+  z-index: 1;
+  width: min(1280px, 94vw);
+  margin: 0 auto;
+  padding: 44px 0;
+}
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+h1, h2, h3 { margin: 0 0 12px; }
+.eyebrow {
+  letter-spacing: 0.18em;
+  color: #ffd166;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.subtitle { color: var(--text-sub); margin-bottom: 24px; }
+
+.button-group { display: flex; gap: 12px; }
+
+.btn {
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: .95rem;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.42;
+  filter: grayscale(0.8);
+}
+
+.btn-primary { background: var(--nba-red); color: white; }
+.btn-secondary { background: var(--nba-blue); color: white; }
+
+.hint { margin-top: 14px; color: #9fb2d4; }
+
+.team-grid,
+.main-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.team-card,
+.menu-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-main);
+  padding: 16px;
+  border-radius: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-card {
+  min-height: 92px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.menu-card-highlight {
+  border-color: rgba(255, 209, 102, 0.6);
+  background: linear-gradient(135deg, rgba(255, 209, 102, 0.16), rgba(29, 66, 138, 0.26));
+}
+
+.team-card:hover,
+.menu-card:hover { border-color: rgba(255,255,255,0.45); }
+.team-card small { display: block; color: #9fb2d4; margin-top: 6px; }
+
+.screen-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.roster-shell {
+  display: block;
+}
+
+.roster-table-wrap,
+.player-detail-panel {
+  background: rgba(10, 18, 29, 0.78);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+}
+
+.roster-table-wrap {
+  overflow: auto;
+}
+
+.roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px;
+}
+
+.roster-table th,
+.roster-table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  text-align: center;
+  font-size: .92rem;
+}
+
+.roster-table th {
+  font-size: .82rem;
+  color: #9fb2d4;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.roster-table td:first-child,
+.roster-table th:first-child {
+  text-align: left;
+  padding-left: 14px;
+}
+
+.roster-row { cursor: pointer; }
+.roster-row:hover { background: rgba(255,255,255,0.06); }
+.condition-cell {
+  display: grid;
+  place-items: center;
+}
+
+.condition-ring {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: conic-gradient(var(--long-color) calc(var(--long-pct) * 1%), rgba(255,255,255,0.14) 0);
+}
+
+.condition-ring::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: rgba(14, 23, 36, 0.95);
+}
+
+.condition-ring::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  background: conic-gradient(var(--short-color) calc(var(--short-pct) * 1%), rgba(255,255,255,0.12) 0);
+}
+
+.sharpness-badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: #f6f9ff;
+  font-weight: 700;
+  letter-spacing: .02em;
+  min-width: 74px;
+  display: inline-block;
+}
+
+.player-detail-panel {
+  padding: 20px;
+  min-height: 620px;
+}
+
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+
+.detail-head-main h3 {
+  margin: 0;
+  font-size: 1.55rem;
+}
+
+.detail-subline {
+  margin: 6px 0 0;
+  color: #9fb2d4;
+  font-size: .92rem;
+}
+
+.detail-grid-top {
+  margin-top: 14px;
+}
+
+.detail-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.detail-chip {
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 10px;
+  padding: 8px;
+  font-size: .84rem;
+  color: #dbe6f7;
+}
+
+.detail-section {
+  margin-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 10px;
+}
+
+.detail-section h4 {
+  margin: 0 0 8px;
+  font-size: .95rem;
+}
+
+.kv-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #dbe6f7;
+  font-size: .86rem;
+  max-height: 188px;
+  overflow: auto;
+}
+
+pre.mini-json {
+  margin: 0;
+  font-size: .76rem;
+  line-height: 1.4;
+  color: #dbe6f7;
+  background: rgba(0,0,0,0.22);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.68);
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+.loading-overlay.hidden { display: none; }
+.loading-box {
+  background: #101826;
+  border: 1px solid #334a73;
+  padding: 24px;
+  border-radius: 12px;
+  min-width: 320px;
+  text-align: center;
+}
+.spinner {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  border: 4px solid rgba(255,255,255,0.2);
+  border-top-color: #ffd166;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 1120px) {
+  .detail-columns,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .player-detail-panel {
+    min-height: 300px;
+    padding: 14px;
+  }
+}

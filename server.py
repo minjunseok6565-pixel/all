@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, List, Literal
 from uuid import uuid4
 
 import google.generativeai as genai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -56,6 +56,7 @@ from save_service import (
     list_save_slots,
     load_game,
     save_game,
+    set_save_user_team,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _auth_guard_middleware(request: Request, call_next):
+    """Optional commercial auth guard.
+
+    If NBA_SIM_ADMIN_TOKEN is configured, require it on state-changing API calls.
+    """
+    required_token = (os.environ.get("NBA_SIM_ADMIN_TOKEN") or "").strip()
+    if not required_token:
+        return await call_next(request)
+
+    path = request.url.path or ""
+    method = (request.method or "GET").upper()
+    if method != "POST" or not path.startswith("/api/"):
+        return await call_next(request)
+
+    # Keep health/auth bootstrap available.
+    if path in {"/api/validate-key"}:
+        return await call_next(request)
+
+    provided = (request.headers.get("X-Admin-Token") or "").strip()
+    if provided != required_token:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized: invalid X-Admin-Token"})
+
+    return await call_next(request)
 
 # static/NBA.html 서빙
 static_dir = os.path.join(BASE_DIR, "static")
@@ -199,6 +226,11 @@ class GameLoadRequest(BaseModel):
     slot_id: str
     strict: bool = True
     expected_save_version: Optional[int] = None
+
+
+class GameSetUserTeamRequest(BaseModel):
+    slot_id: str
+    user_team_id: str
 
 
 class OffseasonContractsProcessRequest(BaseModel):
@@ -375,6 +407,22 @@ class ContractNegotiationCommitRequest(BaseModel):
 class ContractNegotiationCancelRequest(BaseModel):
     session_id: str
     reason: Optional[str] = None
+
+
+class TwoWayNegotiationStartRequest(BaseModel):
+    team_id: str
+    player_id: str
+    valid_days: Optional[int] = 7
+
+
+class TwoWayNegotiationDecisionRequest(BaseModel):
+    session_id: str
+    accept: bool
+
+
+class TwoWayNegotiationCommitRequest(BaseModel):
+    session_id: str
+    signed_date: Optional[str] = None
 
 
 class AgencyEventRespondRequest(BaseModel):
@@ -856,6 +904,188 @@ async def api_team_detail(team_id: str):
 # -------------------------------------------------------------------------
 # College (Read-only / UI) API
 # -------------------------------------------------------------------------
+
+
+
+
+@app.get("/api/player-detail/{player_id}")
+async def api_player_detail(player_id: str, season_year: Optional[int] = None):
+    """Return rich player detail for My Team UI."""
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    db_path = state.get_db_path()
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+
+    workflow_state = state.export_workflow_state()
+    season_player_stats = (workflow_state.get("player_stats") or {}) if isinstance(workflow_state, dict) else {}
+    season_stats_entry = season_player_stats.get(pid) or {}
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        try:
+            player = repo.get_player(pid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        with repo.transaction() as cur:
+            roster_row = cur.execute(
+                """
+                SELECT team_id, salary_amount, status
+                FROM roster
+                WHERE player_id=?
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            active_contract_row = cur.execute(
+                """
+                SELECT *
+                FROM contracts
+                WHERE player_id=? AND COALESCE(is_active,0)=1
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            contract_rows = cur.execute(
+                """
+                SELECT *
+                FROM contracts
+                WHERE player_id=?
+                ORDER BY start_season_year DESC, updated_at DESC;
+                """,
+                (pid,),
+            ).fetchall()
+
+            two_way_row = cur.execute(
+                """
+                SELECT COALESCE(contract_json,'') AS contract_json
+                FROM contracts
+                WHERE player_id=?
+                  AND UPPER(COALESCE(contract_type,''))='TWO_WAY'
+                  AND UPPER(COALESCE(status,''))='ACTIVE'
+                  AND COALESCE(is_active, 0)=1
+                ORDER BY updated_at DESC
+                LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+
+            two_way = {"is_two_way": False, "game_limit": None, "games_used": 0, "games_remaining": None}
+            if two_way_row:
+                contract_data: Dict[str, Any] = {}
+                raw_cd = two_way_row["contract_json"]
+                if raw_cd:
+                    try:
+                        contract_data = json.loads(str(raw_cd))
+                    except Exception:
+                        contract_data = {}
+                game_limit = int(contract_data.get("two_way_game_limit") or 50)
+                used = cur.execute(
+                    "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
+                    (pid, sy),
+                ).fetchone()
+                games_used = int((used["n"] if used is not None else 0) or 0)
+                two_way = {
+                    "is_two_way": True,
+                    "game_limit": game_limit,
+                    "games_used": games_used,
+                    "games_remaining": max(0, int(game_limit) - int(games_used)),
+                }
+
+            from agency import repo as agency_repo
+            agency_state = agency_repo.get_player_agency_states(cur, [pid]).get(pid)
+
+            from injury import repo as injury_repo
+            injury_state = injury_repo.get_player_injury_states(cur, [pid]).get(pid)
+
+            from fatigue import repo as fatigue_repo
+            fatigue_state = fatigue_repo.get_player_fatigue_states(cur, [pid]).get(pid)
+
+            from readiness import repo as readiness_repo
+            sharpness_state = None
+            if sy > 0:
+                sharpness_state = readiness_repo.get_player_sharpness_states(
+                    cur,
+                    [pid],
+                    season_year=int(sy),
+                ).get(pid)
+
+    from contract_codec import contract_from_row
+
+    active_contract = contract_from_row(active_contract_row) if active_contract_row else None
+    contracts = [contract_from_row(r) for r in contract_rows]
+
+    dissatisfaction = {
+        "is_dissatisfied": False,
+        "state": agency_state,
+    }
+    if isinstance(agency_state, dict):
+        axes = [
+            float(agency_state.get("team_frustration") or 0.0),
+            float(agency_state.get("role_frustration") or 0.0),
+            float(agency_state.get("contract_frustration") or 0.0),
+            float(agency_state.get("health_frustration") or 0.0),
+            float(agency_state.get("chemistry_frustration") or 0.0),
+            float(agency_state.get("usage_frustration") or 0.0),
+        ]
+        trade_request_level = int(agency_state.get("trade_request_level") or 0)
+        dissatisfaction["is_dissatisfied"] = trade_request_level > 0 or any(v >= 0.5 for v in axes)
+
+    injury = {
+        "is_injured": False,
+        "status": "HEALTHY",
+        "state": injury_state,
+    }
+    fatigue = fatigue_state or {}
+    st_fatigue = float(fatigue.get("st", 0.0) or 0.0)
+    lt_fatigue = float(fatigue.get("lt", 0.0) or 0.0)
+    sharpness = float((sharpness_state or {}).get("sharpness", 50.0) or 50.0)
+    if isinstance(injury_state, dict):
+        status = str(injury_state.get("status") or "HEALTHY").upper()
+        injury["status"] = status
+        injury["is_injured"] = status in {"OUT", "RETURNING"}
+
+    return {
+        "ok": True,
+        "player": {
+            "player_id": pid,
+            "name": player.get("name"),
+            "pos": player.get("pos"),
+            "age": player.get("age"),
+            "height_in": player.get("height_in"),
+            "weight_lb": player.get("weight_lb"),
+            "ovr": player.get("ovr"),
+            "attrs": player.get("attrs") or {},
+        },
+        "roster": {
+            "team_id": (str(roster_row["team_id"]).upper() if roster_row and roster_row["team_id"] else None),
+            "status": (str(roster_row["status"]) if roster_row and roster_row["status"] else None),
+            "salary_amount": int(roster_row["salary_amount"] or 0) if roster_row else None,
+        },
+        "contract": {
+            "active": active_contract,
+            "all": contracts,
+        },
+        "dissatisfaction": dissatisfaction,
+        "season_stats": season_stats_entry,
+        "two_way": two_way,
+        "condition": {
+            "short_term_fatigue": st_fatigue,
+            "long_term_fatigue": lt_fatigue,
+            "short_term_stamina": max(0.0, 1.0 - st_fatigue),
+            "long_term_stamina": max(0.0, 1.0 - lt_fatigue),
+            "sharpness": sharpness,
+            "fatigue_state": fatigue_state,
+            "sharpness_state": sharpness_state,
+        },
+        "injury": injury,
+    }
 
 
 @app.get("/api/college/meta")
@@ -3065,6 +3295,68 @@ def _try_ui_cache_refresh_players(player_ids: List[str], *, context: str) -> Non
 # -------------------------------------------------------------------------
 # Contracts / Roster Write API
 # -------------------------------------------------------------------------
+
+
+@app.get("/api/contracts/free-agents")
+async def api_contracts_free_agents(q: str = "", limit: int = 200):
+    """List free-agent candidates (players without an active team assignment)."""
+    qv = str(q or "").strip().lower()
+    lim = max(1, min(int(limit or 200), 1000))
+
+    try:
+        db_path = state.get_db_path()
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT
+                    p.player_id,
+                    p.name,
+                    p.pos,
+                    p.age,
+                    p.ovr,
+                    p.attrs_json,
+                    r.team_id
+                FROM players p
+                LEFT JOIN roster r
+                    ON r.player_id = p.player_id
+                   AND r.status = 'active'
+                WHERE (r.player_id IS NULL OR UPPER(COALESCE(r.team_id, '')) = 'FA')
+                ORDER BY p.ovr DESC, p.name ASC, p.player_id ASC
+                """
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            pid = str(row["player_id"])
+            name = str(row["name"] or "")
+            if qv and qv not in pid.lower() and qv not in name.lower():
+                continue
+            attrs = json.loads(row["attrs_json"]) if row["attrs_json"] else {}
+            out.append({
+                "player_id": pid,
+                "name": name,
+                "pos": row["pos"],
+                "age": row["age"],
+                "overall": row["ovr"],
+                "current_team_id": (str(row["team_id"]).upper() if row["team_id"] else None),
+                "has_active_team": bool(row["team_id"] and str(row["team_id"]).upper() != "FA"),
+                "attrs": attrs,
+            })
+            if len(out) >= lim:
+                break
+
+        return {
+            "count": len(out),
+            "query": q,
+            "limit": lim,
+            "players": out,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"free-agent list failed: {e}")
+
 @app.post("/api/contracts/release-to-fa")
 async def api_contracts_release_to_fa(req: ReleaseToFARequest):
     """Release a player to free agency (DB write)."""
@@ -3272,6 +3564,62 @@ async def api_contracts_re_sign_or_extend(req: ReSignOrExtendRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Re-sign/extend failed: {e}")
+
+
+@app.post("/api/contracts/two-way/negotiation/start")
+async def api_two_way_negotiation_start(req: TwoWayNegotiationStartRequest):
+    try:
+        from contracts.two_way_service import start_two_way_negotiation
+
+        out = start_two_way_negotiation(
+            db_path=str(state.get_db_path()),
+            team_id=req.team_id,
+            player_id=req.player_id,
+            valid_days=req.valid_days,
+            now_iso=game_time.now_utc_like_iso(),
+        )
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/two-way/negotiation/decision")
+async def api_two_way_negotiation_decision(req: TwoWayNegotiationDecisionRequest):
+    try:
+        from contracts.two_way_service import decide_two_way_negotiation
+
+        out = decide_two_way_negotiation(session_id=str(req.session_id), accept=bool(req.accept))
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contracts/two-way/negotiation/commit")
+async def api_two_way_negotiation_commit(req: TwoWayNegotiationCommitRequest):
+    try:
+        from contracts.two_way_service import commit_two_way_negotiation
+
+        out = commit_two_way_negotiation(
+            db_path=str(state.get_db_path()),
+            session_id=str(req.session_id),
+            signed_date_iso=req.signed_date or state.get_current_date_as_date().isoformat(),
+        )
+        _validate_repo_integrity(str(state.get_db_path()))
+        return out
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/trade/submit")
@@ -3741,6 +4089,71 @@ async def roster_summary(team_id: str):
     }
 
 
+@app.get("/api/two-way/summary/{team_id}")
+async def two_way_summary(team_id: str):
+    """특정 팀의 투웨이 슬롯/출전 가능 경기 수를 요약해서 반환한다."""
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    season_year = int((state.export_full_state_snapshot().get("league", {}) or {}).get("season_year") or 0)
+
+    with LeagueRepo(db_path) as repo:
+        with repo.transaction() as cur:
+            rows = cur.execute(
+                """
+                SELECT c.player_id, p.name,
+                       COALESCE(c.contract_type,'') AS contract_type,
+                       COALESCE(c.status,'') AS status,
+                       COALESCE(c.contract_json,'') AS contract_json
+                FROM contracts c
+                LEFT JOIN players p ON p.player_id = c.player_id
+                WHERE c.team_id=?
+                  AND UPPER(COALESCE(c.contract_type,''))='TWO_WAY'
+                  AND UPPER(COALESCE(c.status,''))='ACTIVE'
+                  AND COALESCE(c.is_active, 0)=1
+                ORDER BY p.name ASC;
+                """,
+                (tid,),
+            ).fetchall()
+
+            players: List[Dict[str, Any]] = []
+            for r in rows:
+                player_id = str(r["player_id"])
+                contract_data_raw = r["contract_json"]
+                contract_data: Dict[str, Any] = {}
+                if contract_data_raw:
+                    try:
+                        contract_data = json.loads(str(contract_data_raw))
+                    except Exception:
+                        contract_data = {}
+
+                limit = int(contract_data.get("two_way_game_limit") or 50)
+                used = cur.execute(
+                    "SELECT COUNT(1) AS n FROM two_way_appearances WHERE player_id=? AND season_year=?;",
+                    (player_id, season_year),
+                ).fetchone()
+                used_i = int((used["n"] if used is not None else 0) or 0)
+                players.append(
+                    {
+                        "player_id": player_id,
+                        "name": r["name"],
+                        "contract_type": "TWO_WAY",
+                        "game_limit": limit,
+                        "games_used": used_i,
+                        "games_remaining": max(0, int(limit) - int(used_i)),
+                    }
+                )
+
+    max_slots = 3
+    return {
+        "team_id": tid,
+        "season_year": season_year,
+        "max_two_way_slots": max_slots,
+        "used_two_way_slots": len(players),
+        "open_two_way_slots": max(0, max_slots - len(players)),
+        "players": players,
+    }
+
+
 # -------------------------------------------------------------------------
 # 팀별 시즌 스케줄 조회 API
 # -------------------------------------------------------------------------
@@ -3915,14 +4328,24 @@ async def api_game_load(req: GameLoadRequest):
         raise HTTPException(status_code=500, detail=f"Failed to load game: {exc}")
 
 
+
+
+@app.post("/api/game/set-user-team")
+async def api_game_set_user_team(req: GameSetUserTeamRequest):
+    try:
+        return set_save_user_team(slot_id=req.slot_id, user_team_id=req.user_team_id)
+    except SaveError as exc:
+        msg = str(exc)
+        status = 404 if "not found" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to set user team: {exc}")
+
+
 @app.get("/api/debug/schedule-summary")
 async def debug_schedule_summary():
     """마스터 스케줄 생성/검증용 디버그 엔드포인트."""
     return state.get_schedule_summary()
-
-
-
-
 
 
 

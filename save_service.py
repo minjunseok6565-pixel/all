@@ -13,6 +13,8 @@ from uuid import uuid4
 
 import state
 from config import SAVE_ROOT_DIR
+from config_roster import DEFAULT_ROSTER_PATH
+from league_repo import LeagueRepo
 from team_utils import ui_cache_rebuild_all
 
 _SAVE_LOCK = RLock()
@@ -410,6 +412,12 @@ def create_new_game(
         state.set_db_path(str(new_db_path))
         state.startup_init_state()
 
+        # New game bootstrap: import the roster Excel into the new DB snapshot.
+        # This runs synchronously so API callers can expose an actual loading phase.
+        with LeagueRepo(str(new_db_path)) as repo:
+            repo.init_db()
+            repo.import_roster_excel(DEFAULT_ROSTER_PATH, mode="replace", strict_ids=False)
+
         if season_year is not None:
             state.start_new_season(int(season_year), rebuild_schedule=True)
 
@@ -437,3 +445,31 @@ def create_new_game(
             }
         )
         return out
+
+
+def set_save_user_team(*, slot_id: str, user_team_id: str) -> Dict[str, Any]:
+    with _SAVE_LOCK:
+        sid = _validate_slot_id(slot_id)
+        slot_dir = _slot_dir(sid)
+        if not slot_dir.exists():
+            raise SaveError(f"slot not found: {sid}")
+
+        normalized_team_id = str(user_team_id or "").strip().upper()
+        if not normalized_team_id:
+            raise SaveError("user_team_id is required")
+
+        meta_path = slot_dir / "meta.json"
+        meta = _read_meta(meta_path)
+        if not meta:
+            raise SaveError(f"meta not found: {sid}")
+
+        meta["user_team_id"] = normalized_team_id
+        _atomic_write_json(meta_path, meta)
+
+        return {
+            "ok": True,
+            "slot_id": sid,
+            "user_team_id": normalized_team_id,
+            "slot_name": meta.get("slot_name") or sid,
+            "save_version": int(meta.get("save_version") or 0),
+        }
