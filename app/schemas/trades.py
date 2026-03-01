@@ -16,11 +16,28 @@ class TradeSubmitCommittedRequest(BaseModel):
 class TradeNegotiationStartRequest(BaseModel):
     user_team_id: str
     other_team_id: str
+    default_offer_privacy: str = "PRIVATE"
 
 
 class TradeNegotiationCommitRequest(BaseModel):
     session_id: str
     deal: Dict[str, Any]
+    offer_privacy: str = "PRIVATE"
+    expose_to_media: bool = False
+
+
+class TradeBlockListRequest(BaseModel):
+    team_id: str
+    player_id: str
+    priority: float = 0.5
+    reason_code: str = "MANUAL"
+    visibility: str = "PUBLIC"
+
+
+class TradeBlockUnlistRequest(BaseModel):
+    team_id: str
+    player_id: str
+    reason_code: str = "MANUAL_REMOVE"
 
 
 class TradeEvaluateRequest(BaseModel):
