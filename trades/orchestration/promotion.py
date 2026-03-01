@@ -673,6 +673,58 @@ def promote_and_commit(
                     else:
                         initiator_role = "UNKNOWN"
 
+                    # Offer privacy default: PRIVATE for AI-generated user offers.
+                    offer_privacy = str(getattr(config, "default_offer_privacy", "PRIVATE") or "PRIVATE").upper()
+                    if offer_privacy != "PUBLIC":
+                        offer_privacy = "PRIVATE"
+
+                    leak_status = "NONE"
+                    if offer_privacy == "PRIVATE" and bool(getattr(config, "enable_private_offer_leaks", True)):
+                        allow_leak = True
+                        try:
+                            pair_cd = int(getattr(config, "private_leak_pair_cooldown_days", 7) or 0)
+                        except Exception:
+                            pair_cd = 0
+                        if pair_cd > 0:
+                            last_iso = (
+                                get_rel_meta_date_iso(trade_memory, team_a=recipient_team_id, team_b=proposer_team_id, key="last_private_offer_leak_at")
+                                or get_rel_meta_date_iso(trade_memory, team_a=proposer_team_id, team_b=recipient_team_id, key="last_private_offer_leak_at")
+                            )
+                            if last_iso:
+                                ds = _iso_days_since(today, last_iso)
+                                if ds is not None and ds < max(0, pair_cd):
+                                    allow_leak = False
+
+                        if allow_leak:
+                            try:
+                                p_base = float(getattr(config, "ai_private_leak_base_prob", 0.08) or 0.0)
+                            except Exception:
+                                p_base = 0.08
+                            try:
+                                p_bonus = float(getattr(config, "ai_private_leak_pressure_bonus", 0.22) or 0.0)
+                            except Exception:
+                                p_bonus = 0.22
+                            try:
+                                p_cap = float(getattr(config, "ai_private_leak_prob_cap", 0.30) or 0.30)
+                            except Exception:
+                                p_cap = 0.30
+                            p_leak = _clamp01(min(p_cap, max(0.0, p_base + p_bonus * float(deadline_pressure or 0.0))))
+                            if _stable_roll(seed=f"LEAK|{today.isoformat()}|{deal_key}|{proposer_team_id}|{recipient_team_id}", p=p_leak):
+                                leak_status = "LEAKED_BY_AI"
+                        else:
+                            record_market_event(
+                                trade_market,
+                                today=today,
+                                event_type="PRIVATE_OFFER_LEAK_SUPPRESSED",
+                                payload={
+                                    "deal_id": deal_key,
+                                    "session_id": sess_id,
+                                    "user_team_id": recipient_team_id,
+                                    "other_team_id": proposer_team_id,
+                                    "reason": "PAIR_COOLDOWN",
+                                },
+                            )
+
                     offer_meta = {
                         "deal_id": deal_key, "tick_date": today.isoformat(), "score": score,
                         "offer_tone": tone,
@@ -687,8 +739,37 @@ def promote_and_commit(
                         "proposer_team_id": proposer_team_id, "recipient_team_id": recipient_team_id,
                         "from_team_id": proposer_team_id, "to_team_id": recipient_team_id,
                         "initiator_team_id": initiator_team_id, "initiator_role": initiator_role,
+                        "offer_privacy": offer_privacy, "leak_status": leak_status,
                     }
                     set_market_context_offer_meta(sess_id, offer_meta)
+
+                    if leak_status == "LEAKED_BY_AI":
+                        record_market_event(
+                            trade_market,
+                            today=today,
+                            event_type="PRIVATE_OFFER_LEAKED",
+                            payload={
+                                "deal_id": deal_key,
+                                "session_id": sess_id,
+                                "leaked_by": "AI",
+                                "user_team_id": recipient_team_id,
+                                "other_team_id": proposer_team_id,
+                            },
+                        )
+                        bump_relationship(
+                            trade_memory,
+                            team_a=recipient_team_id,
+                            team_b=proposer_team_id,
+                            today=today,
+                            patch={
+                                "counts": {"private_offer_leaked_by_ai": 1},
+                                "meta": {
+                                    "last_private_offer_leak_at": today.isoformat(),
+                                    "last_private_offer_leak_by": "AI",
+                                    "last_private_offer_leak_session_id": str(sess_id),
+                                },
+                            },
+                        )
 
                     add_team_cooldown(trade_market, team_id=other, today=today, days=int(config.cooldown_days_after_user_offer), reason="USER_OFFER_SENT", meta={"session_id": sess_id, "deal_id": deal_key})
 
@@ -712,6 +793,8 @@ def promote_and_commit(
                             "user_overpay_allowed": float(overpay_allowed or 0.0),
                             "exceed_overpay": float(exceed_overpay or 0.0),
                             "deadline_pressure": float(deadline_pressure or 0.0),
+                            "offer_privacy": offer_privacy,
+                            "leak_status": leak_status,
                         },
                     )
 

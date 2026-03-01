@@ -153,6 +153,23 @@ class OrchestrationConfig:
     # 접촉 중인 팀은 딜 탐색량을 소폭 늘려서(생성기 호출) "진행중" 강화
     thread_per_team_max_results_bonus: int = 2
 
+    # --- Trade block (listing) market effects
+    enable_trade_block: bool = True
+    trade_block_actor_weight_multiplier: float = 1.20
+    trade_block_auto_list_days_public_offer: int = 10
+
+    # --- Offer privacy / leaks
+    default_offer_privacy: str = "PRIVATE"
+    enable_private_offer_leaks: bool = True
+    ai_private_leak_base_prob: float = 0.08
+    ai_private_leak_pressure_bonus: float = 0.22
+    ai_private_leak_prob_cap: float = 0.30
+    private_leak_pair_cooldown_days: int = 7
+
+    # user leak relationship penalty
+    user_leak_trust_penalty: int = 35
+    user_leak_promises_broken_inc: int = 1
+
     # --- RNG 재현성(프로세스/머신이 달라도 동일하게 나오도록 안정 해시 사용)
     seed_salt: str = "trade_orchestration_v2"
 

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from .types import ActorPlan, OrchestrationConfig
 from . import policy
-from .market_state import get_active_thread_team_ids
+from .market_state import get_active_thread_team_ids, get_active_listing_team_ids
 
 
 def select_trade_actors(
@@ -32,19 +32,24 @@ def select_trade_actors(
 
     # Threads boost: 접촉 중인 팀은 며칠간 더 자주 시장에 등장하도록 한다.
     active_thread_team_ids: Set[str] = set()
-    if (
-        trade_market is not None
-        and today is not None
-        and bool(getattr(config, "enable_threads", True))
-    ):
-        try:
-            active_thread_team_ids = get_active_thread_team_ids(
-                trade_market,
-                today=today,
-                excluded_team_ids=excluded,
-            )
-        except Exception:
-            active_thread_team_ids = set()
+    active_listing_team_ids: Set[str] = set()
+    if trade_market is not None and today is not None:
+        if bool(getattr(config, "enable_threads", True)):
+            try:
+                active_thread_team_ids = get_active_thread_team_ids(
+                    trade_market,
+                    today=today,
+                    excluded_team_ids=excluded,
+                )
+            except Exception:
+                active_thread_team_ids = set()
+        if bool(getattr(config, "enable_trade_block", True)):
+            try:
+                active_listing_team_ids = {
+                    t for t in get_active_listing_team_ids(trade_market, today=today) if t not in excluded
+                }
+            except Exception:
+                active_listing_team_ids = set()
 
     try:
         tier_w_high = float(getattr(config, "pressure_tier_weight_multiplier_high", 1.15) or 1.0)
@@ -162,6 +167,13 @@ def select_trade_actors(
     if thread_mult <= 0:
         thread_mult = 1.0
 
+    try:
+        listing_mult = float(getattr(config, "trade_block_actor_weight_multiplier", 1.2) or 1.0)
+    except Exception:
+        listing_mult = 1.0
+    if listing_mult <= 0:
+        listing_mult = 1.0
+
     def _weight(p: ActorPlan) -> float:
         w = max(0.001, float(p.activity_score or 0.0))
         tier = (getattr(p, "pressure_tier", None) or "").upper()
@@ -171,6 +183,8 @@ def select_trade_actors(
             w *= tier_w_rush
         if p.team_id in active_thread_team_ids:
             w *= thread_mult
+        if p.team_id in active_listing_team_ids:
+            w *= listing_mult
         return w
 
     picked: List[ActorPlan] = []

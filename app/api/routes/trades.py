@@ -1,17 +1,33 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
 
 import state
+from league_repo import LeagueRepo
 from trades import agreements, negotiation_store
 from trades.apply import apply_deal_to_db
 from trades.errors import TradeError
 from trades.models import canonicalize_deal, parse_deal, serialize_deal
 from trades.validator import validate_deal
+from trades.orchestration.types import OrchestrationConfig
+from trades.orchestration.market_state import (
+    load_trade_market,
+    save_trade_market,
+    load_trade_memory,
+    save_trade_memory,
+    upsert_trade_listing,
+    remove_trade_listing,
+    list_team_trade_listings,
+    record_market_event,
+    bump_relationship,
+    get_rel_meta_date_iso,
+)
 from app.schemas.trades import (
+    TradeBlockListRequest,
+    TradeBlockUnlistRequest,
     TradeEvaluateRequest,
     TradeNegotiationCommitRequest,
     TradeNegotiationStartRequest,
@@ -25,14 +41,133 @@ from app.services.trade_facade import _trade_error_response
 router = APIRouter()
 
 
+def _normalize_offer_privacy(raw: Any, *, default: str = "PRIVATE") -> str:
+    v = str(raw or default).upper()
+    return "PUBLIC" if v == "PUBLIC" else "PRIVATE"
 
 
+def _extract_outgoing_player_ids_for_team(deal_payload: Dict[str, Any], *, from_team_id: str) -> List[str]:
+    out: List[str] = []
+    legs = deal_payload.get("legs") if isinstance(deal_payload, dict) else None
+    if not isinstance(legs, list):
+        return out
+    src = str(from_team_id).upper()
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("from_team") or "").upper() != src:
+            continue
+        assets = leg.get("assets")
+        if not isinstance(assets, list):
+            continue
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("kind") or "").upper() != "PLAYER":
+                continue
+            pid = a.get("player_id")
+            if pid:
+                out.append(str(pid))
+    # stable dedupe
+    uniq: List[str] = []
+    seen = set()
+    for pid in out:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        uniq.append(pid)
+    return uniq
 
 
+def _player_current_team_id(player_id: str, *, db_path: str) -> str:
+    pid = str(player_id)
+    with LeagueRepo(db_path) as repo:
+        team_map = repo.get_team_ids_by_players([pid]) or {}
+    return str((team_map or {}).get(pid) or "").upper()
 
 
+def _require_player_on_team(*, player_id: str, team_id: str, db_path: str) -> None:
+    current = _player_current_team_id(player_id, db_path=db_path)
+    expect = str(team_id).upper()
+    if not current or current != expect:
+        raise TradeError(
+            "TRADE_BLOCK_PLAYER_TEAM_MISMATCH",
+            "Player is not on the specified team",
+            {"player_id": str(player_id), "team_id": expect, "current_team_id": current or None},
+        )
 
 
+def _clamp_int(v: Any, *, lo: int, hi: int, default: int) -> int:
+    try:
+        x = int(v)
+    except Exception:
+        x = int(default)
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+
+@router.post("/api/trade/block/list")
+async def api_trade_block_list(req: TradeBlockListRequest):
+    try:
+        today = state.get_current_date_as_date()
+        db_path = state.get_db_path()
+        _require_player_on_team(player_id=req.player_id, team_id=req.team_id, db_path=db_path)
+        market = load_trade_market()
+        entry = upsert_trade_listing(
+            market,
+            today=today,
+            player_id=req.player_id,
+            team_id=req.team_id,
+            listed_by="USER",
+            visibility=req.visibility,
+            priority=req.priority,
+            reason_code=req.reason_code,
+        )
+        record_market_event(
+            market,
+            today=today,
+            event_type="TRADE_BLOCK_LISTED",
+            payload={"team_id": str(req.team_id).upper(), "player_id": str(req.player_id), "reason_code": str(req.reason_code or "MANUAL").upper()},
+        )
+        save_trade_market(market)
+        return {"ok": True, "listing": entry}
+    except TradeError as exc:
+        return _trade_error_response(exc)
+
+
+@router.post("/api/trade/block/unlist")
+async def api_trade_block_unlist(req: TradeBlockUnlistRequest):
+    try:
+        today = state.get_current_date_as_date()
+        db_path = state.get_db_path()
+        _require_player_on_team(player_id=req.player_id, team_id=req.team_id, db_path=db_path)
+        market = load_trade_market()
+        removed = remove_trade_listing(market, player_id=req.player_id)
+        if removed:
+            record_market_event(
+                market,
+                today=today,
+                event_type="TRADE_BLOCK_UNLISTED",
+                payload={"team_id": str(req.team_id).upper(), "player_id": str(req.player_id), "reason_code": str(req.reason_code or "MANUAL_REMOVE").upper()},
+            )
+            save_trade_market(market)
+        return {"ok": True, "removed": bool(removed)}
+    except TradeError as exc:
+        return _trade_error_response(exc)
+
+
+@router.get("/api/trade/block/{team_id}")
+async def api_trade_block_get(team_id: str, active_only: bool = True):
+    try:
+        today = state.get_current_date_as_date()
+        market = load_trade_market()
+        listings = list_team_trade_listings(market, team_id=team_id, active_only=bool(active_only), today=today)
+        return {"ok": True, "team_id": str(team_id).upper(), "active_only": bool(active_only), "listings": listings}
+    except TradeError as exc:
+        return _trade_error_response(exc)
 
 
 @router.post("/api/trade/submit")
@@ -113,8 +248,17 @@ async def api_trade_negotiation_start(req: TradeNegotiationStartRequest):
         # so they don't permanently consume the active-session cap.
         valid_until = (in_game_date + timedelta(days=2)).isoformat()
         negotiation_store.set_valid_until(session["session_id"], valid_until)
+        # default privacy metadata (backward-compatible)
+        default_privacy = _normalize_offer_privacy(getattr(req, "default_offer_privacy", None), default="PRIVATE")
+        negotiation_store.set_market_context_offer_meta(
+            session["session_id"],
+            {"offer_privacy": default_privacy, "leak_status": "NONE"},
+        )
         # Keep response consistent with stored session
         session["valid_until"] = valid_until
+        session.setdefault("market_context", {})
+        if isinstance(session["market_context"], dict):
+            session["market_context"]["offer_meta"] = {"offer_privacy": default_privacy, "leak_status": "NONE"}
         return {"ok": True, "session": session}
     except TradeError as exc:
         return _trade_error_response(exc)
@@ -140,7 +284,13 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
         validate_deal(deal, current_date=in_game_date, db_path=db_path, integrity_check=False)
         
         # Always persist the latest valid offer payload
-        negotiation_store.set_draft_deal(req.session_id, serialize_deal(deal))
+        deal_serialized = serialize_deal(deal)
+        negotiation_store.set_draft_deal(req.session_id, deal_serialized)
+
+        offer_privacy = _normalize_offer_privacy(getattr(req, "offer_privacy", None), default="PRIVATE")
+        expose_to_media = bool(getattr(req, "expose_to_media", False))
+        leak_status = "NONE"
+        cfg = OrchestrationConfig()
 
         # Local imports to keep integration flexible.
         from trades.valuation.service import evaluate_deal_for_team as eval_service  # type: ignore
@@ -208,6 +358,8 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                         "ai_verdict": to_jsonable(fast_decision.verdict),
                         "ai_decision": to_jsonable(fast_decision),
                         "ai_evaluation": fast_eval,
+                        "offer_privacy": offer_privacy,
+                        "leak_status": leak_status,
                     }
         except Exception:
             # Fast-accept should never crash the commit flow.
@@ -247,10 +399,157 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
             negotiation_store.set_last_offer(
                 req.session_id,
                 {
-                    "offer": serialize_deal(deal),
+                    "offer": deal_serialized,
                     "ai_verdict": to_jsonable(decision.verdict),
                     "ai_decision": to_jsonable(decision),
                     "ai_evaluation": eval_summary,
+                    "offer_privacy": offer_privacy,
+                    "leak_status": leak_status,
+                },
+            )
+        except Exception:
+            pass
+
+        # Offer privacy effects (market-level, never mutate DB SSOT)
+        leaked_player_ids: List[str] = []
+        try:
+            market = load_trade_market()
+            today = in_game_date
+
+            # PUBLIC: proposer(=user team) outgoing players auto-list
+            if offer_privacy == "PUBLIC":
+                outgoing = _extract_outgoing_player_ids_for_team(deal_serialized, from_team_id=session["user_team_id"])
+                ttl = int(getattr(cfg, "trade_block_auto_list_days_public_offer", 10) or 10)
+                if ttl <= 0:
+                    ttl = 1
+                for pid in outgoing:
+                    upsert_trade_listing(
+                        market,
+                        today=today,
+                        player_id=pid,
+                        team_id=session["user_team_id"],
+                        listed_by="AUTO_PUBLIC_OFFER",
+                        visibility="PUBLIC",
+                        priority=0.6,
+                        reason_code="PUBLIC_OFFER",
+                        expires_on=(today + timedelta(days=ttl+1)).isoformat(),
+                        source={"session_id": req.session_id, "offer_privacy": "PUBLIC"},
+                    )
+                    leaked_player_ids.append(pid)
+                if outgoing:
+                    record_market_event(
+                        market,
+                        today=today,
+                        event_type="TRADE_BLOCK_AUTO_LISTED_FROM_PUBLIC_OFFER",
+                        payload={"session_id": req.session_id, "team_id": str(session["user_team_id"]).upper(), "player_ids": outgoing},
+                    )
+
+            # PRIVATE: never auto-list. If user explicitly exposes, emit leak + relationship hit.
+            if offer_privacy == "PRIVATE" and expose_to_media:
+                mem = load_trade_memory()
+                pair_cd = int(getattr(cfg, "private_leak_pair_cooldown_days", 7) or 0)
+                allow_leak = True
+                if pair_cd > 0:
+                    last_iso = (
+                        get_rel_meta_date_iso(
+                            mem,
+                            team_a=str(session["user_team_id"]).upper(),
+                            team_b=str(session["other_team_id"]).upper(),
+                            key="last_private_offer_leak_at",
+                        )
+                        or get_rel_meta_date_iso(
+                            mem,
+                            team_a=str(session["other_team_id"]).upper(),
+                            team_b=str(session["user_team_id"]).upper(),
+                            key="last_private_offer_leak_at",
+                        )
+                    )
+                    if isinstance(last_iso, str):
+                        try:
+                            d0 = date.fromisoformat(last_iso[:10])
+                            if (today - d0).days < max(0, pair_cd):
+                                allow_leak = False
+                        except Exception:
+                            pass
+
+                if allow_leak:
+                    leak_status = "LEAKED_BY_USER"
+                    leaked_player_ids = _extract_outgoing_player_ids_for_team(deal_serialized, from_team_id=session["user_team_id"])
+                    record_market_event(
+                        market,
+                        today=today,
+                        event_type="PRIVATE_OFFER_LEAKED",
+                        payload={
+                            "session_id": req.session_id,
+                            "leaked_by": "USER",
+                            "user_team_id": str(session["user_team_id"]).upper(),
+                            "other_team_id": str(session["other_team_id"]).upper(),
+                            "player_ids": leaked_player_ids,
+                        },
+                    )
+                    trust_penalty = _clamp_int(
+                        getattr(cfg, "user_leak_trust_penalty", 35),
+                        lo=0,
+                        hi=100,
+                        default=35,
+                    )
+                    broken_inc = _clamp_int(
+                        getattr(cfg, "user_leak_promises_broken_inc", 1),
+                        lo=0,
+                        hi=10,
+                        default=1,
+                    )
+                    rel = session.get("relationship") if isinstance(session.get("relationship"), dict) else {}
+                    trust_now = _clamp_int(rel.get("trust", 0), lo=-100, hi=100, default=0)
+                    broken_now = _clamp_int(rel.get("promises_broken", 0), lo=0, hi=100, default=0)
+                    negotiation_store.set_relationship(
+                        req.session_id,
+                        {
+                            "trust": _clamp_int(trust_now - trust_penalty, lo=-100, hi=100, default=-trust_penalty),
+                            "promises_broken": _clamp_int(broken_now + broken_inc, lo=0, hi=100, default=broken_inc),
+                        },
+                    )
+                    bump_relationship(
+                        mem,
+                        team_a=str(session["user_team_id"]).upper(),
+                        team_b=str(session["other_team_id"]).upper(),
+                        today=today,
+                        patch={
+                            "counts": {
+                                "private_offer_leaked_by_user": 1,
+                                "trust_break_events": 1,
+                                "promises_broken_events": broken_inc,
+                            },
+                            "meta": {
+                                "last_private_offer_leak_at": today.isoformat(),
+                                "last_private_offer_leak_by": "USER",
+                                "last_private_offer_leak_session_id": str(req.session_id),
+                            },
+                        },
+                    )
+                    save_trade_memory(mem)
+                else:
+                    record_market_event(
+                        market,
+                        today=today,
+                        event_type="PRIVATE_OFFER_LEAK_SUPPRESSED",
+                        payload={
+                            "session_id": req.session_id,
+                            "user_team_id": str(session["user_team_id"]).upper(),
+                            "other_team_id": str(session["other_team_id"]).upper(),
+                            "reason": "PAIR_COOLDOWN",
+                        },
+                    )
+            save_trade_market(market)
+
+            # persist offer_meta snapshot
+            negotiation_store.set_market_context_offer_meta(
+                req.session_id,
+                {
+                    "offer_privacy": offer_privacy,
+                    "leak_status": leak_status,
+                    "leak_at": today.isoformat() if leak_status != "NONE" else None,
+                    "private_offer_exposed_player_ids": leaked_player_ids,
                 },
             )
         except Exception:
@@ -283,6 +582,8 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                 "ai_verdict": to_jsonable(decision.verdict),
                 "ai_decision": to_jsonable(decision),
                 "ai_evaluation": eval_summary,
+                "offer_privacy": offer_privacy,
+                "leak_status": leak_status,
             }
 
         # ------------------------------------------------------------------
@@ -337,6 +638,8 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                             "generated_at": in_game_date.isoformat(),
                             "base_hash": counter_prop.meta.get("base_hash") if isinstance(counter_prop.meta, dict) else None,
                             "ai_evaluation": eval_summary,
+                    "offer_privacy": offer_privacy,
+                    "leak_status": leak_status,
                         },
                     )
                 except Exception:
@@ -365,6 +668,8 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                     "ai_verdict": to_jsonable(decision.verdict),
                     "ai_decision": to_jsonable(decision),
                     "ai_evaluation": eval_summary,
+                    "offer_privacy": offer_privacy,
+                    "leak_status": leak_status,
                 }
 
             # If we couldn't build a legal/acceptable counter, fall back conservatively to REJECT.
@@ -419,6 +724,8 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
             "ai_verdict": to_jsonable(decision.verdict),
             "ai_decision": to_jsonable(decision),
             "ai_evaluation": eval_summary,
+                        "offer_privacy": offer_privacy,
+                        "leak_status": leak_status,
         }
     except TradeError as exc:
         return _trade_error_response(exc)
