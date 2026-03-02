@@ -106,6 +106,96 @@ class TradeOfferGrievanceTests(unittest.TestCase):
             self.assertIsNotNone(u)
             self.assertGreaterEqual(u.role_frustration_delta, 0.0)
 
+
+    def test_leak_targeted_always_applies_when_trade_request_level_zero(self):
+        players = {
+            "p1": PlayerSnapshot(
+                player_id="p1",
+                team_id="LAL",
+                pos="SG",
+                ovr=85,
+                mental={"ego": 95, "ambition": 90, "loyalty": 10, "coachability": 20, "adaptability": 20, "work_ethic": 30},
+                role_bucket="STAR",
+                leverage=0.9,
+                trade_request_level=0,
+                team_frustration=0.2,
+            )
+        }
+        out = compute_trade_offer_grievances(
+            proposer_team_id="LAL",
+            outgoing_player_ids=["p1"],
+            incoming_player_ids=[],
+            players_by_id=players,
+            season_year=2026,
+            now_date_iso="2026-01-15",
+            trigger_source="PRIVATE_OFFER_LEAKED",
+            session_id="s5",
+        )
+        self.assertEqual(len(out.updates), 1)
+        self.assertGreater(out.updates[0].team_frustration_delta, 0.0)
+
+    def test_leak_targeted_dampened_when_trade_request_level_one(self):
+        base_player = dict(
+            player_id="p1",
+            team_id="LAL",
+            pos="SG",
+            ovr=85,
+            mental={"ego": 95, "ambition": 90, "loyalty": 10, "coachability": 20, "adaptability": 20, "work_ethic": 30},
+            role_bucket="STAR",
+            leverage=0.9,
+            team_frustration=0.2,
+        )
+        out_lvl0 = compute_trade_offer_grievances(
+            proposer_team_id="LAL",
+            outgoing_player_ids=["p1"],
+            incoming_player_ids=[],
+            players_by_id={"p1": PlayerSnapshot(**base_player, trade_request_level=0)},
+            season_year=2026,
+            now_date_iso="2026-01-15",
+            trigger_source="PRIVATE_OFFER_LEAKED",
+            session_id="s6",
+        )
+        out_lvl1 = compute_trade_offer_grievances(
+            proposer_team_id="LAL",
+            outgoing_player_ids=["p1"],
+            incoming_player_ids=[],
+            players_by_id={"p1": PlayerSnapshot(**base_player, trade_request_level=1)},
+            season_year=2026,
+            now_date_iso="2026-01-15",
+            trigger_source="PRIVATE_OFFER_LEAKED",
+            session_id="s7",
+        )
+        self.assertEqual(len(out_lvl0.updates), 1)
+        self.assertEqual(len(out_lvl1.updates), 1)
+        self.assertLess(out_lvl1.updates[0].team_frustration_delta, out_lvl0.updates[0].team_frustration_delta)
+
+    def test_leak_targeted_skipped_when_trade_request_level_max(self):
+        players = {
+            "p1": PlayerSnapshot(
+                player_id="p1",
+                team_id="LAL",
+                pos="SG",
+                ovr=85,
+                mental={"ego": 95, "ambition": 90, "loyalty": 10, "coachability": 20, "adaptability": 20, "work_ethic": 30},
+                role_bucket="STAR",
+                leverage=0.9,
+                trade_request_level=2,
+                team_frustration=0.2,
+            )
+        }
+        out = compute_trade_offer_grievances(
+            proposer_team_id="LAL",
+            outgoing_player_ids=["p1"],
+            incoming_player_ids=[],
+            players_by_id=players,
+            season_year=2026,
+            now_date_iso="2026-01-15",
+            trigger_source="PRIVATE_OFFER_LEAKED",
+            session_id="s8",
+        )
+        self.assertEqual(len(out.updates), 0)
+        self.assertTrue(any(x.get("reason") == "TRADE_REQUEST_AT_MAX" for x in out.skipped))
+
     def test_custom_event_type_config_is_applied(self):
         players = {
             "p1": PlayerSnapshot(
