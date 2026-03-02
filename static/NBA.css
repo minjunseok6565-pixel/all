@@ -344,6 +344,73 @@ h1, h2, h3 { margin: 0 0 12px; }
   padding: 18px 8px !important;
 }
 
+.college-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.college-tab-row .btn.is-active {
+  background: var(--nba-red);
+}
+
+.college-panel { display: none; }
+.college-panel.active { display: block; }
+
+.college-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.college-card {
+  background: rgba(10, 18, 29, 0.78);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.college-card-head-inline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.college-table-wrap { overflow: auto; }
+
+.college-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 620px;
+}
+
+.college-table th,
+.college-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.college-form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.college-form-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-sub);
+}
+
+.college-actions-row {
+  display: flex;
+  gap: 10px;
+}
+
 .roster-table-wrap,
 .player-detail-panel {
   background: rgba(10, 18, 29, 0.78);
@@ -670,6 +737,10 @@ h1, h2, h3 { margin: 0 0 12px; }
   .schedule-card-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .college-two-col {
+    grid-template-columns: 1fr;
   }
 }
 
