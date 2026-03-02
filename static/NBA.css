@@ -877,3 +877,111 @@ h1, h2, h3 { margin: 0 0 12px; }
   color: #ff6f7d;
   font-weight: 700;
 }
+
+/* College screen */
+.college-tab-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0 16px;
+}
+
+.college-tab-row .is-active {
+  border-color: #ffd166;
+  box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.2) inset;
+}
+
+.college-panel {
+  display: none;
+}
+
+.college-panel.active {
+  display: block;
+}
+
+.college-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.college-card {
+  background: rgba(10, 18, 29, 0.82);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+  padding: 14px;
+}
+
+.college-card-head-inline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.college-card-head-inline label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #d5e0f4;
+}
+
+.college-card-head-inline select,
+.college-form-grid select {
+  background: #0f1828;
+  color: #f5f7fa;
+  border: 1px solid rgba(255,255,255,0.24);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.college-table-wrap {
+  overflow: auto;
+}
+
+.college-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+}
+
+.college-table th,
+.college-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  text-align: center;
+}
+
+.college-table th {
+  color: #d4def3;
+  letter-spacing: .04em;
+  font-size: .82rem;
+}
+
+.college-table td:nth-child(2),
+.college-table th:nth-child(2) {
+  text-align: left;
+}
+
+.college-form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.college-form-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.college-actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 1120px) {
+  .college-two-col {
+    grid-template-columns: 1fr;
+  }
+}
