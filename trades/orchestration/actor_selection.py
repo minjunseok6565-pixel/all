@@ -9,6 +9,69 @@ from . import policy
 from .market_state import get_active_thread_team_ids, get_active_listing_team_ids
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _public_trade_request_counts_by_team(
+    tick_ctx: Any,
+    *,
+    excluded_team_ids: Set[str],
+) -> Dict[str, int]:
+    """Best-effort map: team_id -> count of players with public trade requests(level>=2)."""
+    out: Dict[str, int] = {}
+    try:
+        provider = getattr(tick_ctx, "provider", None)
+        if provider is None:
+            return out
+        agency = getattr(provider, "agency_state_by_player", {})
+        if not isinstance(agency, dict):
+            return out
+    except Exception:
+        return out
+
+    public_pids: List[str] = []
+    for pid, st in agency.items():
+        if not isinstance(st, dict):
+            continue
+        tr = int(_safe_float(st.get("trade_request_level"), 0.0))
+        if tr >= 2:
+            public_pids.append(str(pid))
+
+    if not public_pids:
+        return out
+
+    team_map: Dict[str, str] = {}
+    try:
+        repo = getattr(provider, "repo", None)
+        if repo is not None and hasattr(repo, "get_team_ids_by_players"):
+            team_map = {
+                str(k): str(v).upper()
+                for k, v in dict(repo.get_team_ids_by_players(public_pids) or {}).items()
+                if k
+            }
+    except Exception:
+        team_map = {}
+
+    for pid in public_pids:
+        tid = str(team_map.get(pid) or "").upper()
+        if not tid:
+            try:
+                snap = provider.get_player_snapshot(str(pid))
+                tid = str(getattr(snap, "team_id", "") or "").upper()
+            except Exception:
+                tid = ""
+        if not tid or (excluded_team_ids and tid in excluded_team_ids):
+            continue
+        out[tid] = int(out.get(tid, 0)) + 1
+    return out
+
+
 def select_trade_actors(
     tick_ctx,
     *,
@@ -33,6 +96,10 @@ def select_trade_actors(
     # Threads boost: 접촉 중인 팀은 며칠간 더 자주 시장에 등장하도록 한다.
     active_thread_team_ids: Set[str] = set()
     active_listing_team_ids: Set[str] = set()
+    public_request_counts_by_team = _public_trade_request_counts_by_team(
+        tick_ctx,
+        excluded_team_ids=excluded,
+    )
     if trade_market is not None and today is not None:
         if bool(getattr(config, "enable_threads", True)):
             try:
@@ -174,6 +241,34 @@ def select_trade_actors(
     if listing_mult <= 0:
         listing_mult = 1.0
 
+    try:
+        public_req_mult = float(getattr(config, "trade_request_public_actor_weight_multiplier", 1.15) or 1.0)
+    except Exception:
+        public_req_mult = 1.0
+    if public_req_mult <= 0:
+        public_req_mult = 1.0
+
+    try:
+        public_req_no_listing_mult = float(getattr(config, "trade_request_public_no_listing_weight_multiplier", 1.08) or 1.0)
+    except Exception:
+        public_req_no_listing_mult = 1.0
+    if public_req_no_listing_mult <= 0:
+        public_req_no_listing_mult = 1.0
+
+    try:
+        public_req_with_listing_mult = float(getattr(config, "trade_request_public_with_listing_weight_multiplier", 1.06) or 1.0)
+    except Exception:
+        public_req_with_listing_mult = 1.0
+    if public_req_with_listing_mult <= 0:
+        public_req_with_listing_mult = 1.0
+
+    try:
+        actor_weight_cap = float(getattr(config, "actor_weight_multiplier_cap", 3.0) or 3.0)
+    except Exception:
+        actor_weight_cap = 3.0
+    if actor_weight_cap < 1.0:
+        actor_weight_cap = 1.0
+
     def _weight(p: ActorPlan) -> float:
         w = max(0.001, float(p.activity_score or 0.0))
         tier = (getattr(p, "pressure_tier", None) or "").upper()
@@ -185,6 +280,21 @@ def select_trade_actors(
             w *= thread_mult
         if p.team_id in active_listing_team_ids:
             w *= listing_mult
+
+        public_req_count = int(public_request_counts_by_team.get(str(p.team_id).upper(), 0) or 0)
+        if public_req_count > 0:
+            # Count-aware mild scaling (1,2,3+ requests) without runaway effects.
+            req_factor = min(1.0 + (0.20 * min(public_req_count - 1, 2)), 1.4)
+            w *= (1.0 + (public_req_mult - 1.0) * req_factor)
+            if p.team_id in active_listing_team_ids:
+                w *= public_req_with_listing_mult
+            else:
+                w *= public_req_no_listing_mult
+
+        base_w = max(0.001, float(p.activity_score or 0.0))
+        max_w = base_w * actor_weight_cap
+        if w > max_w:
+            w = max_w
         return w
 
     picked: List[ActorPlan] = []

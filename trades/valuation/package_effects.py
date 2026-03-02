@@ -291,6 +291,10 @@ class PackageEffectsConfig:
     defense_proxy_cap: float = 1.00
 
     # --- Agency distress valuation link (trade request / grievance)
+    # SSOT policy: valuation uses only trade_request_level and applies discount
+    # only when the request becomes public (level >= 2).
+    agency_public_trade_request_discount: float = 0.12
+    # Backward-compat knobs kept for older configs; no longer used in valuation.
     agency_trade_request_weight: float = 0.08
     agency_team_frustration_weight: float = 0.08
     agency_role_frustration_weight: float = 0.05
@@ -972,14 +976,10 @@ class PackageEffects:
             st = snap.meta.get("agency_state") if isinstance(snap.meta, dict) else None
             if not isinstance(st, Mapping):
                 return 0.0
-            tr = _clamp(_safe_float(st.get("trade_request_level"), 0.0) / 3.0, 0.0, 1.0)
-            tfr = _clamp(_safe_float(st.get("team_frustration"), 0.0), 0.0, 1.0)
-            rfr = _clamp(_safe_float(st.get("role_frustration"), 0.0), 0.0, 1.0)
-            raw = (
-                cfg.agency_trade_request_weight * tr
-                + cfg.agency_team_frustration_weight * tfr
-                + cfg.agency_role_frustration_weight * rfr
-            )
+            tr = int(_safe_float(st.get("trade_request_level"), 0.0))
+            if tr < 2:
+                return 0.0
+            raw = float(cfg.agency_public_trade_request_discount)
             return _clamp(raw, 0.0, cfg.agency_distress_cap)
 
         # incoming distress lowers willingness to pay
@@ -1017,10 +1017,9 @@ class PackageEffects:
                 meta={
                     "incoming_delta": float(in_delta),
                     "outgoing_delta": float(out_delta),
-                    "trade_request_weight": float(cfg.agency_trade_request_weight),
-                    "team_frustration_weight": float(cfg.agency_team_frustration_weight),
-                    "role_frustration_weight": float(cfg.agency_role_frustration_weight),
+                    "public_trade_request_discount": float(cfg.agency_public_trade_request_discount),
                     "distress_cap": float(cfg.agency_distress_cap),
+                    "policy": "PUBLIC_TRADE_REQUEST_ONLY",
                 },
             )
         )
@@ -1048,4 +1047,3 @@ def apply_package_effects(
         ctx=ctx,
         env=env,
     )
-
