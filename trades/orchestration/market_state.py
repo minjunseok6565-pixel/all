@@ -22,6 +22,7 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
     m.setdefault("human_controlled_team_ids", [])
     m.setdefault("tick_nonce", 0)
     m.setdefault("applied_exec_deal_ids", {})
+    m.setdefault("grievance_cursor", {})
     if not isinstance(m.get("listings"), dict):
         m["listings"] = {}
     if not isinstance(m.get("threads"), dict):
@@ -32,6 +33,8 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
         m["events"] = []
     if not isinstance(m.get("applied_exec_deal_ids"), dict):
         m["applied_exec_deal_ids"] = {}
+    if not isinstance(m.get("grievance_cursor"), dict):
+        m["grievance_cursor"] = {}
     if not isinstance(m.get("human_controlled_team_ids"), (list, tuple, set, str, type(None))):
         m["human_controlled_team_ids"] = []
     try:

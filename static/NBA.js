@@ -29,6 +29,7 @@ const els = {
   startScreen: document.getElementById("start-screen"),
   teamScreen: document.getElementById("team-screen"),
   mainScreen: document.getElementById("main-screen"),
+  scheduleScreen: document.getElementById("schedule-screen"),
   myTeamScreen: document.getElementById("my-team-screen"),
   playerDetailScreen: document.getElementById("player-detail-screen"),
   newGameBtn: document.getElementById("new-game-btn"),
@@ -42,6 +43,11 @@ const els = {
   nextGameDatetime: document.getElementById("next-game-datetime"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
+  scheduleBtn: document.getElementById("schedule-btn"),
+  scheduleBackBtn: document.getElementById("schedule-back-btn"),
+  scheduleTitle: document.getElementById("schedule-title"),
+  scheduleCompletedBody: document.getElementById("schedule-completed-body"),
+  scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
   standingsMenuBtn: document.getElementById("standings-menu-btn"),
   trainingScreen: document.getElementById("training-screen"),
@@ -79,6 +85,8 @@ function setLoading(show, msg = "") {
 
 function activateScreen(target) {
   [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen, els.standingsScreen].forEach((screen) => {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.scheduleScreen, els.myTeamScreen, els.playerDetailScreen].forEach((screen) => {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
@@ -122,6 +130,71 @@ function resetNextGameCard() {
   els.nextGameDatetime.textContent = "YYYY-MM-DD --:-- PM";
 }
 
+function formatLeader(leader) {
+  if (!leader || !leader.name) return "-";
+  return `${leader.name} ${num(leader.value, 0)}`;
+}
+
+function renderEmptyScheduleRow(colSpan, text) {
+  return `<tr><td colspan="${colSpan}" class="schedule-empty">${text}</td></tr>`;
+}
+
+function renderScheduleTables(games) {
+  const completed = (games || []).filter((g) => g?.is_completed);
+  const upcoming = (games || []).filter((g) => !g?.is_completed);
+
+  els.scheduleCompletedBody.innerHTML = completed.length
+    ? completed.map((g) => {
+      const result = g.result || {};
+      const record = g.record_after_game || {};
+      const leaders = g.leaders || {};
+      return `
+        <tr>
+          <td>${g.date_mmdd || "--/--"}</td>
+          <td class="schedule-opponent-cell">${g.opponent_label || "-"} <span class="schedule-opponent-name">${g.opponent_team_name || g.opponent_team_id || ""}</span></td>
+          <td><span class="schedule-result-badge ${result.wl === "W" ? "schedule-result-win" : "schedule-result-loss"}">${result.display || "-"}</span></td>
+          <td>${record.display || "-"}</td>
+          <td>${formatLeader(leaders.points)}</td>
+          <td>${formatLeader(leaders.rebounds)}</td>
+          <td>${formatLeader(leaders.assists)}</td>
+        </tr>
+      `;
+    }).join("")
+    : renderEmptyScheduleRow(7, "완료된 경기가 없습니다.");
+
+  els.scheduleUpcomingBody.innerHTML = upcoming.length
+    ? upcoming.map((g) => `
+      <tr>
+        <td>${g.date_mmdd || "--/--"}</td>
+        <td class="schedule-opponent-cell">${g.opponent_label || "-"} <span class="schedule-opponent-name">${g.opponent_team_name || g.opponent_team_id || ""}</span></td>
+        <td><span class="schedule-time-chip">${g.tipoff_time || "--:-- --"}</span></td>
+      </tr>
+    `).join("")
+    : renderEmptyScheduleRow(3, "예정된 경기가 없습니다.");
+}
+
+async function showScheduleScreen() {
+  if (!state.selectedTeamId) {
+    alert("먼저 팀을 선택해주세요.");
+    return;
+  }
+
+  setLoading(true, "스케줄 정보를 불러오는 중...");
+  try {
+    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+    const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    els.scheduleTitle.textContent = `${teamName} 정규 시즌 일정`;
+    renderScheduleTables(schedule?.games || []);
+    activateScreen(els.scheduleScreen);
+  } catch (e) {
+    els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, `스케줄 로딩 실패: ${e.message}`);
+    els.scheduleUpcomingBody.innerHTML = renderEmptyScheduleRow(3, "-");
+    activateScreen(els.scheduleScreen);
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function refreshMainDashboard() {
   if (!state.selectedTeamId) return;
 
@@ -148,7 +221,8 @@ async function refreshMainDashboard() {
     const gameDate = formatIsoDate(nextGame.date);
     els.teamAName.textContent = TEAM_FULL_NAMES[homeId] || homeId || "Team A";
     els.teamBName.textContent = TEAM_FULL_NAMES[awayId] || awayId || "Team B";
-    els.nextGameDatetime.textContent = `${gameDate} ${randomTipoffTime()}`;
+    const tipoffTime = nextGame.tipoff_time || randomTipoffTime();
+    els.nextGameDatetime.textContent = `${gameDate} ${tipoffTime}`;
   } catch (e) {
     resetNextGameCard();
     els.mainCurrentDate.textContent = "YYYY-MM-DD";
@@ -875,6 +949,8 @@ async function continueGame() {
 els.newGameBtn.addEventListener("click", () => createNewGame().catch((e) => alert(e.message)));
 els.continueBtn.addEventListener("click", () => continueGame().catch((e) => alert(e.message)));
 els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
+els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
+els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
