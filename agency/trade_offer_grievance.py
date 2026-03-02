@@ -37,10 +37,27 @@ ROLE_TIER: Dict[str, int] = {
 
 @dataclass(frozen=True, slots=True)
 class TradeOfferGrievanceConfig:
-    targeted_public_base_prob: float = 0.30
-    targeted_leak_base_prob: float = 0.38
-    targeted_delta_base: float = 0.04
-    targeted_delta_scale: float = 0.10
+    # PUBLIC_OFFER: deterministic targeted grievance bump (lower than leak).
+    public_targeted_delta_base: float = 0.055
+    public_targeted_delta_mental_weight: float = 0.055
+    public_targeted_delta_status_weight: float = 0.040
+    public_targeted_delta_context_weight: float = 0.020
+    public_targeted_delta_resilience_weight: float = 0.040
+    public_targeted_delta_min: float = 0.025
+    public_targeted_delta_max: float = 0.140
+
+    # PRIVATE_OFFER_LEAKED: deterministic (no roll) targeted grievance bump.
+    leaked_targeted_delta_base: float = 0.12
+    leaked_targeted_delta_mental_weight: float = 0.10
+    leaked_targeted_delta_status_weight: float = 0.08
+    leaked_targeted_delta_context_weight: float = 0.05
+    leaked_targeted_delta_resilience_weight: float = 0.06
+    leaked_targeted_delta_min: float = 0.08
+    leaked_targeted_delta_max: float = 0.30
+
+    # trade_request_level policy for leak-targeted grievance.
+    trade_request_level_max: int = 2
+    leaked_targeted_active_request_dampen: float = 0.45
 
     same_pos_base_prob: float = 0.18
     same_pos_delta_base: float = 0.03
@@ -152,6 +169,37 @@ def _event_type_for_targeted(trigger_source: str, cfg: TradeOfferGrievanceConfig
     return str(cfg.event_type_targeted_public or "TRADE_TARGETED_OFFER_PUBLIC").upper()
 
 
+def _resilience(mental: Mapping[str, Any]) -> float:
+    loy = mental_norm(mental, "loyalty")
+    coach = mental_norm(mental, "coachability")
+    adapt = mental_norm(mental, "adaptability")
+    work = mental_norm(mental, "work_ethic")
+    raw = 0.30 * loy + 0.25 * coach + 0.25 * adapt + 0.20 * work
+    return float(clamp01(raw))
+
+
+def _targeted_delta(*, source: str, cfg: TradeOfferGrievanceConfig, react: float, status_w: float, resilience: float, team_frustration: float) -> float:
+    tfr = float(clamp01(safe_float(team_frustration, 0.0)))
+    if str(source).upper() == "PRIVATE_OFFER_LEAKED":
+        raw = (
+            float(cfg.leaked_targeted_delta_base)
+            + float(cfg.leaked_targeted_delta_mental_weight) * float(react)
+            + float(cfg.leaked_targeted_delta_status_weight) * float(status_w)
+            + float(cfg.leaked_targeted_delta_context_weight) * tfr
+            - float(cfg.leaked_targeted_delta_resilience_weight) * float(resilience)
+        )
+        return float(max(float(cfg.leaked_targeted_delta_min), min(float(cfg.leaked_targeted_delta_max), float(raw))))
+
+    raw = (
+        float(cfg.public_targeted_delta_base)
+        + float(cfg.public_targeted_delta_mental_weight) * float(react)
+        + float(cfg.public_targeted_delta_status_weight) * float(status_w)
+        + float(cfg.public_targeted_delta_context_weight) * tfr
+        - float(cfg.public_targeted_delta_resilience_weight) * float(resilience)
+    )
+    return float(max(float(cfg.public_targeted_delta_min), min(float(cfg.public_targeted_delta_max), float(raw))))
+
+
 def compute_trade_offer_grievances(
     *,
     proposer_team_id: str,
@@ -194,21 +242,47 @@ def compute_trade_offer_grievances(
         if str(p.team_id).upper() != team_id:
             skipped.append({"player_id": pid, "reason": "NOT_ON_PROPOSER_TEAM"})
             continue
-        if int(safe_int(p.trade_request_level, 0)) > 0:
+        tr_level = int(safe_int(p.trade_request_level, 0))
+        if source != "PRIVATE_OFFER_LEAKED" and tr_level > 0:
             skipped.append({"player_id": pid, "reason": "TRADE_REQUEST_ALREADY_ACTIVE"})
+            continue
+        if source == "PRIVATE_OFFER_LEAKED" and tr_level >= int(max(0, safe_int(cfg.trade_request_level_max, 2))):
+            skipped.append(
+                {
+                    "player_id": pid,
+                    "reason": "TRADE_REQUEST_AT_MAX",
+                    "trade_request_level": int(tr_level),
+                }
+            )
             continue
 
         react = _mental_reactivity(p.mental)
         status_w = _status_weight(p.role_bucket, p.leverage)
-        base = float(cfg.targeted_leak_base_prob if source == "PRIVATE_OFFER_LEAKED" else cfg.targeted_public_base_prob)
-        p_fire = float(clamp01(base + 0.35 * react + 0.20 * status_w))
-
-        roll = stable_u01("trade_offer_grievance", source, session_id or "", now_date_iso, pid, "targeted")
-        if roll > p_fire:
-            skipped.append({"player_id": pid, "reason": "ROLL_MISS", "roll": float(roll), "p_fire": float(p_fire)})
-            continue
-
-        delta = float(clamp01(cfg.targeted_delta_base + cfg.targeted_delta_scale * (0.60 * react + 0.40 * status_w)))
+        resil = _resilience(p.mental)
+        p_fire = 1.0
+        roll = 0.0
+        if source == "PRIVATE_OFFER_LEAKED":
+            delta = _targeted_delta(
+                source=source,
+                cfg=cfg,
+                react=react,
+                status_w=status_w,
+                resilience=resil,
+                team_frustration=float(p.team_frustration),
+            )
+            if tr_level > 0:
+                delta *= float(clamp01(safe_float(cfg.leaked_targeted_active_request_dampen, 0.45)))
+                delta = float(max(0.0, delta))
+        else:
+            # PUBLIC is also deterministic; unlike leak, active trade-request players are skipped above.
+            delta = _targeted_delta(
+                source=source,
+                cfg=cfg,
+                react=react,
+                status_w=status_w,
+                resilience=resil,
+                team_frustration=float(p.team_frustration),
+            )
         tfr0 = float(clamp01(safe_float(p.team_frustration, 0.0)))
         rfr0 = float(clamp01(safe_float(p.role_frustration, 0.0)))
         tfr1 = float(clamp01(tfr0 + delta))
@@ -240,6 +314,7 @@ def compute_trade_offer_grievances(
                     "status_weight": float(status_w),
                     "p_fire": float(p_fire),
                     "roll": float(roll),
+                    "trade_request_level": int(tr_level),
                 },
             )
         )

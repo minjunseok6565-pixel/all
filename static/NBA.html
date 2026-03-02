@@ -48,7 +48,7 @@
           <button type="button" id="schedule-btn" class="menu-card">스케줄</button>
           <button type="button" id="training-menu-btn" class="menu-card">훈련</button>
           <button type="button" id="standings-menu-btn" class="menu-card">순위</button>
-          <button type="button" class="menu-card">대학</button>
+          <button type="button" id="college-menu-btn" class="menu-card">대학</button>
           <button type="button" class="menu-card">시장</button>
           <button type="button" class="menu-card">메디컬 센터</button>
         </aside>
@@ -299,6 +299,126 @@
           </div>
         </section>
       </div>
+    </section>
+
+    <section id="college-screen" class="panel" aria-hidden="true">
+      <div class="screen-header-row">
+        <div>
+          <p class="eyebrow">COLLEGE LEAGUE</p>
+          <h2>대학 리그</h2>
+          <p class="subtitle" id="college-meta-line">대학 팀 순위, 리더보드, 빅보드, 스카우팅을 관리합니다.</p>
+        </div>
+        <button id="college-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+      </div>
+
+      <div class="college-tab-row">
+        <button id="college-tab-teams" type="button" class="btn btn-secondary is-active">팀 순위</button>
+        <button id="college-tab-leaders" type="button" class="btn btn-secondary">리더보드</button>
+        <button id="college-tab-bigboard" type="button" class="btn btn-secondary">빅보드</button>
+        <button id="college-tab-scouting" type="button" class="btn btn-secondary">스카우팅</button>
+      </div>
+
+      <section id="college-panel-teams" class="college-panel active" aria-hidden="false">
+        <div class="college-two-col">
+          <article class="college-card">
+            <h3>대학 팀 순위</h3>
+            <div class="college-table-wrap">
+              <table class="college-table">
+                <thead>
+                  <tr>
+                    <th>RK</th><th>팀</th><th>컨퍼런스</th><th>W</th><th>L</th><th>SRS</th>
+                  </tr>
+                </thead>
+                <tbody id="college-teams-body"></tbody>
+              </table>
+            </div>
+          </article>
+          <article class="college-card">
+            <h3 id="college-roster-title">팀 로스터</h3>
+            <div class="college-table-wrap">
+              <table class="college-table">
+                <thead>
+                  <tr>
+                    <th>선수</th><th>포지션</th><th>학년</th><th>PTS</th><th>REB</th><th>AST</th>
+                  </tr>
+                </thead>
+                <tbody id="college-roster-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="college-panel-leaders" class="college-panel" aria-hidden="true">
+        <article class="college-card">
+          <div class="college-card-head-inline">
+            <h3>대학 리더보드</h3>
+            <label>정렬
+              <select id="college-leader-sort"></select>
+            </label>
+          </div>
+          <div class="college-table-wrap">
+            <table class="college-table">
+              <thead>
+                <tr>
+                  <th>RK</th><th>선수</th><th>팀</th><th>POS</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th>
+                </tr>
+              </thead>
+              <tbody id="college-leaders-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="college-panel-bigboard" class="college-panel" aria-hidden="true">
+        <article class="college-card">
+          <div class="college-card-head-inline">
+            <h3>전문가 빅보드</h3>
+            <label>전문가
+              <select id="college-expert-select"></select>
+            </label>
+          </div>
+          <div class="college-table-wrap">
+            <table class="college-table">
+              <thead>
+                <tr>
+                  <th>RANK</th><th>선수</th><th>POS</th><th>TIER</th><th>요약</th>
+                </tr>
+              </thead>
+              <tbody id="college-bigboard-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="college-panel-scouting" class="college-panel" aria-hidden="true">
+        <div class="college-two-col">
+          <article class="college-card">
+            <h3>스카우터 배정</h3>
+            <div class="college-form-grid">
+              <label>스카우터<select id="college-scout-select"></select></label>
+              <label>대상 선수<select id="college-scout-player-select"></select></label>
+              <div class="college-actions-row">
+                <button id="college-assign-btn" type="button" class="btn btn-primary">배정</button>
+                <button id="college-unassign-btn" type="button" class="btn btn-secondary">해제</button>
+              </div>
+            </div>
+          </article>
+          <article class="college-card">
+            <h3>스카우팅 리포트</h3>
+            <div class="college-table-wrap">
+              <table class="college-table">
+                <thead>
+                  <tr>
+                    <th>날짜</th><th>스카우터</th><th>선수</th><th>상태</th><th>요약</th>
+                  </tr>
+                </thead>
+                <tbody id="college-reports-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
     </section>
 
 

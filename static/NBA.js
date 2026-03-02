@@ -103,8 +103,32 @@ const els = {
   standingsMenuBtn: document.getElementById("standings-menu-btn"),
   trainingScreen: document.getElementById("training-screen"),
   standingsScreen: document.getElementById("standings-screen"),
+  collegeScreen: document.getElementById("college-screen"),
   trainingBackBtn: document.getElementById("training-back-btn"),
   standingsBackBtn: document.getElementById("standings-back-btn"),
+  collegeMenuBtn: document.getElementById("college-menu-btn"),
+  collegeBackBtn: document.getElementById("college-back-btn"),
+  collegeMetaLine: document.getElementById("college-meta-line"),
+  collegeTabTeams: document.getElementById("college-tab-teams"),
+  collegeTabLeaders: document.getElementById("college-tab-leaders"),
+  collegeTabBigboard: document.getElementById("college-tab-bigboard"),
+  collegeTabScouting: document.getElementById("college-tab-scouting"),
+  collegePanelTeams: document.getElementById("college-panel-teams"),
+  collegePanelLeaders: document.getElementById("college-panel-leaders"),
+  collegePanelBigboard: document.getElementById("college-panel-bigboard"),
+  collegePanelScouting: document.getElementById("college-panel-scouting"),
+  collegeTeamsBody: document.getElementById("college-teams-body"),
+  collegeRosterTitle: document.getElementById("college-roster-title"),
+  collegeRosterBody: document.getElementById("college-roster-body"),
+  collegeLeaderSort: document.getElementById("college-leader-sort"),
+  collegeLeadersBody: document.getElementById("college-leaders-body"),
+  collegeExpertSelect: document.getElementById("college-expert-select"),
+  collegeBigboardBody: document.getElementById("college-bigboard-body"),
+  collegeScoutSelect: document.getElementById("college-scout-select"),
+  collegeScoutPlayerSelect: document.getElementById("college-scout-player-select"),
+  collegeAssignBtn: document.getElementById("college-assign-btn"),
+  collegeUnassignBtn: document.getElementById("college-unassign-btn"),
+  collegeReportsBody: document.getElementById("college-reports-body"),
   teamTrainingTabBtn: document.getElementById("team-training-tab-btn"),
   playerTrainingTabBtn: document.getElementById("player-training-tab-btn"),
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
@@ -145,11 +169,195 @@ function activateScreen(target) {
     els.tacticsScreen,
     els.trainingScreen,
     els.standingsScreen,
+    els.collegeScreen,
   ].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
   });
+}
+
+function renderCollegeEmpty(tbody, colspan, msg) {
+  tbody.innerHTML = `<tr><td class="schedule-empty" colspan="${colspan}">${msg}</td></tr>`;
+}
+
+function collegeStat(player, key) {
+  const stats = player?.stats || {};
+  const n = Number(stats?.[key]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function switchCollegeTab(tab) {
+  const mapping = {
+    teams: [els.collegeTabTeams, els.collegePanelTeams],
+    leaders: [els.collegeTabLeaders, els.collegePanelLeaders],
+    bigboard: [els.collegeTabBigboard, els.collegePanelBigboard],
+    scouting: [els.collegeTabScouting, els.collegePanelScouting],
+  };
+  Object.values(mapping).forEach(([btn, panel]) => {
+    const active = btn === mapping[tab][0];
+    btn.classList.toggle("is-active", active);
+    panel.classList.toggle("active", active);
+    panel.setAttribute("aria-hidden", active ? "false" : "true");
+  });
+}
+
+function renderCollegeTeams(teams) {
+  if (!teams.length) {
+    renderCollegeEmpty(els.collegeTeamsBody, 6, "대학 팀 데이터가 없습니다.");
+    return;
+  }
+  const sorted = [...teams].sort((a, b) => {
+    const wa = Number(a?.wins ?? -9999);
+    const wb = Number(b?.wins ?? -9999);
+    if (wb !== wa) return wb - wa;
+    const la = Number(a?.losses ?? 9999);
+    const lb = Number(b?.losses ?? 9999);
+    if (la !== lb) return la - lb;
+    return Number(b?.srs ?? -9999) - Number(a?.srs ?? -9999);
+  });
+  els.collegeTeamsBody.innerHTML = "";
+  sorted.forEach((team, idx) => {
+    const tr = document.createElement("tr");
+    tr.className = "roster-row";
+    tr.innerHTML = `
+      <td>${idx + 1}</td>
+      <td class="standings-team-cell">${team?.name || team?.college_team_id || "-"}</td>
+      <td>${team?.conference || "-"}</td>
+      <td>${team?.wins ?? "-"}</td>
+      <td>${team?.losses ?? "-"}</td>
+      <td>${Number(team?.srs ?? 0).toFixed(2)}</td>
+    `;
+    tr.addEventListener("click", () => loadCollegeTeamDetail(team?.college_team_id).catch((e) => alert(e.message)));
+    els.collegeTeamsBody.appendChild(tr);
+  });
+  if (!state.selectedCollegeTeamId && sorted[0]?.college_team_id) {
+    state.selectedCollegeTeamId = sorted[0].college_team_id;
+  }
+}
+
+async function loadCollegeTeamDetail(teamId) {
+  if (!teamId) return;
+  const payload = await fetchJson(`/api/college/team-detail/${encodeURIComponent(teamId)}`);
+  const teamName = payload?.team?.name || teamId;
+  const roster = payload?.roster || [];
+  state.selectedCollegeTeamId = teamId;
+  els.collegeRosterTitle.textContent = `${teamName} 로스터`;
+  els.collegeRosterBody.innerHTML = roster.length ? roster.map((p) => `
+    <tr>
+      <td>${p?.name || "-"}</td>
+      <td>${p?.pos || "-"}</td>
+      <td>${p?.class_year || "-"}</td>
+      <td>${collegeStat(p, "pts").toFixed(1)}</td>
+      <td>${collegeStat(p, "reb").toFixed(1)}</td>
+      <td>${collegeStat(p, "ast").toFixed(1)}</td>
+    </tr>
+  `).join("") : `<tr><td class="schedule-empty" colspan="6">로스터 데이터가 없습니다.</td></tr>`;
+}
+
+async function loadCollegeLeaders() {
+  const sort = state.collegeLeadersSort || "pts";
+  const payload = await fetchJson(`/api/college/players?sort=${encodeURIComponent(sort)}&order=desc&limit=100`);
+  const players = payload?.players || [];
+  els.collegeLeadersBody.innerHTML = players.length ? players.map((p, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td>${p?.name || "-"}</td>
+      <td>${p?.college_team_name || p?.college_team_id || "-"}</td>
+      <td>${p?.pos || "-"}</td>
+      <td>${collegeStat(p, "pts").toFixed(1)}</td>
+      <td>${collegeStat(p, "reb").toFixed(1)}</td>
+      <td>${collegeStat(p, "ast").toFixed(1)}</td>
+      <td>${collegeStat(p, "stl").toFixed(1)}</td>
+      <td>${collegeStat(p, "blk").toFixed(1)}</td>
+    </tr>
+  `).join("") : `<tr><td class="schedule-empty" colspan="9">리더보드 데이터가 없습니다.</td></tr>`;
+}
+
+async function loadCollegeBigboard() {
+  const expertId = state.selectedCollegeExpertId;
+  if (!expertId) {
+    renderCollegeEmpty(els.collegeBigboardBody, 5, "전문가를 선택하세요.");
+    return;
+  }
+  const payload = await fetchJson(`/api/offseason/draft/bigboard/expert?expert_id=${encodeURIComponent(expertId)}&pool_mode=auto`);
+  const board = payload?.board || [];
+  els.collegeBigboardBody.innerHTML = board.length ? board.map((r) => `
+    <tr>
+      <td>${r?.rank ?? "-"}</td>
+      <td>${r?.name || "-"}</td>
+      <td>${r?.pos || "-"}</td>
+      <td>${r?.tier || "-"}</td>
+      <td>${r?.summary || "-"}</td>
+    </tr>
+  `).join("") : `<tr><td class="schedule-empty" colspan="5">빅보드 데이터가 없습니다.</td></tr>`;
+}
+
+async function loadCollegeScouting() {
+  if (!state.selectedTeamId) return;
+  const [scoutsPayload, playersPayload, reportsPayload] = await Promise.all([
+    fetchJson(`/api/scouting/scouts/${encodeURIComponent(state.selectedTeamId)}`),
+    fetchJson("/api/college/players?sort=pts&order=desc&limit=200"),
+    fetchJson(`/api/scouting/reports?team_id=${encodeURIComponent(state.selectedTeamId)}&limit=50`),
+  ]);
+  state.scoutingScouts = scoutsPayload?.scouts || [];
+  state.scoutingReports = reportsPayload?.reports || [];
+  const players = playersPayload?.players || [];
+
+  els.collegeScoutSelect.innerHTML = state.scoutingScouts.map((s) => `<option value="${s.scout_id}">${s.display_name} (${s.specialty_key})</option>`).join("");
+  els.collegeScoutPlayerSelect.innerHTML = players.map((p) => `<option value="${p.player_id}">${p.name} · ${p.college_team_name || p.college_team_id}</option>`).join("");
+
+  els.collegeReportsBody.innerHTML = state.scoutingReports.length ? state.scoutingReports.map((r) => `
+    <tr>
+      <td>${String(r?.as_of_date || "-").slice(0, 10)}</td>
+      <td>${r?.scout?.display_name || r?.scout?.scout_id || "-"}</td>
+      <td>${r?.player_snapshot?.name || r?.target_player_id || "-"}</td>
+      <td>${r?.status || "-"}</td>
+      <td>${(r?.report_text || "").slice(0, 80) || "(텍스트 리포트 없음)"}</td>
+    </tr>
+  `).join("") : `<tr><td class="schedule-empty" colspan="5">리포트가 없습니다. 배정 후 월말 진행 시 생성됩니다.</td></tr>`;
+}
+
+async function showCollegeScreen() {
+  if (!state.selectedTeamId) {
+    alert("먼저 팀을 선택해주세요.");
+    return;
+  }
+  setLoading(true, "대학 리그 정보를 불러오는 중입니다...");
+  try {
+    const [meta, teams, experts] = await Promise.all([
+      fetchJson("/api/college/meta"),
+      fetchJson("/api/college/teams"),
+      fetchJson("/api/offseason/draft/experts"),
+    ]);
+    state.collegeMeta = meta;
+    state.collegeTeams = teams || [];
+    state.collegeExperts = experts?.experts || [];
+
+    els.collegeMetaLine.textContent = `시즌 ${meta?.season_year || "-"} · 대학팀 ${meta?.college?.teams || 0}개 · 예정 드래프트 ${meta?.upcoming_draft_year || "-"}`;
+    renderCollegeTeams(state.collegeTeams);
+    if (state.selectedCollegeTeamId) {
+      await loadCollegeTeamDetail(state.selectedCollegeTeamId);
+    }
+
+    const sortOptions = ["pts", "reb", "ast", "stl", "blk", "mpg", "games", "ts_pct", "usg", "fg_pct"];
+    els.collegeLeaderSort.innerHTML = sortOptions.map((k) => `<option value="${k}">${k.toUpperCase()}</option>`).join("");
+    els.collegeLeaderSort.value = state.collegeLeadersSort;
+    await loadCollegeLeaders();
+
+    els.collegeExpertSelect.innerHTML = state.collegeExperts.map((e) => `<option value="${e.expert_id}">${e.display_name}</option>`).join("");
+    if (!state.selectedCollegeExpertId && state.collegeExperts[0]?.expert_id) {
+      state.selectedCollegeExpertId = state.collegeExperts[0].expert_id;
+    }
+    els.collegeExpertSelect.value = state.selectedCollegeExpertId;
+    await loadCollegeBigboard();
+
+    await loadCollegeScouting();
+    switchCollegeTab("teams");
+    activateScreen(els.collegeScreen);
+  } finally {
+    setLoading(false);
+  }
 }
 
 function showTeamSelection() { activateScreen(els.teamScreen); }
@@ -1168,8 +1376,51 @@ els.tacticsBackBtn.addEventListener("click", () => showMainScreen());
 els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offense"));
 els.tacticsDefenseBtn.addEventListener("click", () => toggleTacticsOptions("defense"));
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
+els.collegeMenuBtn.addEventListener("click", () => showCollegeScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
 els.standingsBackBtn.addEventListener("click", () => showMainScreen());
+els.collegeBackBtn.addEventListener("click", () => showMainScreen());
+els.collegeTabTeams.addEventListener("click", () => switchCollegeTab("teams"));
+els.collegeTabLeaders.addEventListener("click", () => switchCollegeTab("leaders"));
+els.collegeTabBigboard.addEventListener("click", () => switchCollegeTab("bigboard"));
+els.collegeTabScouting.addEventListener("click", () => switchCollegeTab("scouting"));
+els.collegeLeaderSort.addEventListener("change", () => {
+  state.collegeLeadersSort = els.collegeLeaderSort.value || "pts";
+  loadCollegeLeaders().catch((e) => alert(e.message));
+});
+els.collegeExpertSelect.addEventListener("change", () => {
+  state.selectedCollegeExpertId = els.collegeExpertSelect.value || "";
+  loadCollegeBigboard().catch((e) => alert(e.message));
+});
+els.collegeAssignBtn.addEventListener("click", async () => {
+  const scoutId = els.collegeScoutSelect.value;
+  const playerId = els.collegeScoutPlayerSelect.value;
+  if (!scoutId || !playerId) {
+    alert("스카우터와 선수를 선택하세요.");
+    return;
+  }
+  await fetchJson("/api/scouting/assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team_id: state.selectedTeamId, scout_id: scoutId, player_id: playerId, target_kind: "COLLEGE" })
+  });
+  await loadCollegeScouting();
+  alert("스카우터를 배정했습니다. 리포트는 월말 진행 시 생성됩니다.");
+});
+els.collegeUnassignBtn.addEventListener("click", async () => {
+  const scoutId = els.collegeScoutSelect.value;
+  if (!scoutId) {
+    alert("해제할 스카우터를 선택하세요.");
+    return;
+  }
+  await fetchJson("/api/scouting/unassign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team_id: state.selectedTeamId, scout_id: scoutId })
+  });
+  await loadCollegeScouting();
+  alert("배정을 해제했습니다.");
+});
 els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((btn) => {
   btn.addEventListener("click", () => renderTrainingDetail(btn.dataset.trainingType).catch((e) => alert(e.message)));
 });

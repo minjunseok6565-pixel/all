@@ -377,10 +377,27 @@ class StanceConfig:
 class TradeOfferGrievanceConfig:
     """Tuning for trade-offer grievance triggers (non-monthly, event-driven)."""
 
-    targeted_public_base_prob: float = 0.30
-    targeted_leak_base_prob: float = 0.38
-    targeted_delta_base: float = 0.04
-    targeted_delta_scale: float = 0.10
+    # PUBLIC_OFFER: deterministic targeted grievance bump (lower than leak).
+    public_targeted_delta_base: float = 0.055
+    public_targeted_delta_mental_weight: float = 0.055
+    public_targeted_delta_status_weight: float = 0.040
+    public_targeted_delta_context_weight: float = 0.020
+    public_targeted_delta_resilience_weight: float = 0.040
+    public_targeted_delta_min: float = 0.025
+    public_targeted_delta_max: float = 0.140
+
+    # PRIVATE_OFFER_LEAKED targeted grievance: deterministic delta with signal-based modulation.
+    leaked_targeted_delta_base: float = 0.12
+    leaked_targeted_delta_mental_weight: float = 0.10
+    leaked_targeted_delta_status_weight: float = 0.08
+    leaked_targeted_delta_context_weight: float = 0.05
+    leaked_targeted_delta_resilience_weight: float = 0.06
+    leaked_targeted_delta_min: float = 0.08
+    leaked_targeted_delta_max: float = 0.30
+
+    # trade_request_level policy: 0=full bump, 1=dampened bump, 2=max(skip)
+    trade_request_level_max: int = 2
+    leaked_targeted_active_request_dampen: float = 0.45
 
     same_pos_base_prob: float = 0.18
     same_pos_delta_base: float = 0.03

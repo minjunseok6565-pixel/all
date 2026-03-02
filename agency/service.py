@@ -69,6 +69,7 @@ def apply_trade_offer_grievances(
     incoming_player_ids: list[str],
     trigger_source: str,
     session_id: Optional[str] = None,
+    source_path: Optional[str] = None,
     cfg: AgencyConfig = DEFAULT_CONFIG,
 ) -> Dict[str, Any]:
     """Apply trade-offer grievance effects to agency SSOT.
@@ -204,10 +205,22 @@ def apply_trade_offer_grievances(
         tuning = cfg.trade_offer_grievance
         evt = cfg.event_types if isinstance(cfg.event_types, Mapping) else {}
         runtime_cfg = TradeOfferGrievanceRuntimeConfig(
-            targeted_public_base_prob=float(getattr(tuning, "targeted_public_base_prob", 0.30)),
-            targeted_leak_base_prob=float(getattr(tuning, "targeted_leak_base_prob", 0.38)),
-            targeted_delta_base=float(getattr(tuning, "targeted_delta_base", 0.04)),
-            targeted_delta_scale=float(getattr(tuning, "targeted_delta_scale", 0.10)),
+            public_targeted_delta_base=float(getattr(tuning, "public_targeted_delta_base", 0.055)),
+            public_targeted_delta_mental_weight=float(getattr(tuning, "public_targeted_delta_mental_weight", 0.055)),
+            public_targeted_delta_status_weight=float(getattr(tuning, "public_targeted_delta_status_weight", 0.040)),
+            public_targeted_delta_context_weight=float(getattr(tuning, "public_targeted_delta_context_weight", 0.020)),
+            public_targeted_delta_resilience_weight=float(getattr(tuning, "public_targeted_delta_resilience_weight", 0.040)),
+            public_targeted_delta_min=float(getattr(tuning, "public_targeted_delta_min", 0.025)),
+            public_targeted_delta_max=float(getattr(tuning, "public_targeted_delta_max", 0.140)),
+            leaked_targeted_delta_base=float(getattr(tuning, "leaked_targeted_delta_base", 0.12)),
+            leaked_targeted_delta_mental_weight=float(getattr(tuning, "leaked_targeted_delta_mental_weight", 0.10)),
+            leaked_targeted_delta_status_weight=float(getattr(tuning, "leaked_targeted_delta_status_weight", 0.08)),
+            leaked_targeted_delta_context_weight=float(getattr(tuning, "leaked_targeted_delta_context_weight", 0.05)),
+            leaked_targeted_delta_resilience_weight=float(getattr(tuning, "leaked_targeted_delta_resilience_weight", 0.06)),
+            leaked_targeted_delta_min=float(getattr(tuning, "leaked_targeted_delta_min", 0.08)),
+            leaked_targeted_delta_max=float(getattr(tuning, "leaked_targeted_delta_max", 0.30)),
+            trade_request_level_max=int(getattr(tuning, "trade_request_level_max", 2)),
+            leaked_targeted_active_request_dampen=float(getattr(tuning, "leaked_targeted_active_request_dampen", 0.45)),
             same_pos_base_prob=float(getattr(tuning, "same_pos_base_prob", 0.18)),
             same_pos_delta_base=float(getattr(tuning, "same_pos_delta_base", 0.03)),
             same_pos_delta_scale=float(getattr(tuning, "same_pos_delta_scale", 0.08)),
@@ -240,6 +253,7 @@ def apply_trade_offer_grievances(
                 "reason": "no_effect",
                 "skipped": result.skipped,
                 "meta": dict(result.meta or {}),
+                "source_path": str(source_path) if source_path else None,
             }
 
         # Merge updated values back into SSOT rows.
@@ -316,6 +330,7 @@ def apply_trade_offer_grievances(
         "event_ids": [str(ev.event_id) for ev in result.events],
         "skipped": result.skipped,
         "meta": dict(result.meta or {}),
+        "source_path": str(source_path) if source_path else None,
     }
 
 
