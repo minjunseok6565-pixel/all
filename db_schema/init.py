@@ -24,6 +24,7 @@ from . import (
     college,
     scouting,
     retirement,
+    two_way,
 )
 from .registry import EnsureColumnsFn, apply_all
 
@@ -48,6 +49,7 @@ DEFAULT_MODULES = (
     college,
     scouting,
     retirement,
+    two_way,
 )
 
 

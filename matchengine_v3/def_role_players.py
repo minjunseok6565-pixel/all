@@ -85,7 +85,7 @@ def _role_score(player: Any, role_profile: Mapping[str, float], *, get_stat: Cal
 
 
 def _extract_fixed_roles(defense: TeamState, roles: Sequence[str]) -> Dict[str, Player]:
-    """Return fixed role assignments from defense.roles if present and valid.
+    """Return fixed role assignments from defense_role_overrides if present and valid.
 
     Safety contract:
     - A fixed role pid is only honored if that player is currently on the court.
@@ -94,8 +94,14 @@ def _extract_fixed_roles(defense: TeamState, roles: Sequence[str]) -> Dict[str, 
     """
     fixed: Dict[str, Player] = {}
     pid_to_roles: dict[str, list[str]] = {}
+
+    overrides = getattr(defense, "defense_role_overrides", None)
+    if not isinstance(overrides, dict):
+        # Legacy fallback: historically TeamState.roles carried mixed semantics.
+        overrides = getattr(defense, "roles", {}) if isinstance(getattr(defense, "roles", None), dict) else {}
+
     for r in roles:
-        pid_raw = defense.roles.get(r)
+        pid_raw = overrides.get(r)
         if not pid_raw:
             continue
         pid = str(pid_raw).strip()

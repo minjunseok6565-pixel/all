@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 import state
 from league_service import LeagueService
 from team_utils import ui_cache_refresh_players
+from agency.service import apply_trade_offer_grievances
 
 from ..identity import deal_execution_id, deal_identity_hash
 from ..models import canonicalize_deal, serialize_deal
@@ -25,9 +26,12 @@ from .types import OrchestrationConfig, PromotionResult
 from . import policy
 from .market_state import (
     add_team_cooldown,
+    upsert_trade_listing,
     bump_relationship,
     record_market_event,
     get_rel_meta_date_iso,
+    is_private_leak_publicized,
+    mark_private_leak_publicized,
     touch_thread,
     apply_trade_executed_effects,
 )
@@ -46,6 +50,81 @@ def compute_deal_key(prop: Any) -> str:
 def _stable_deal_key(prop: Any) -> str:
     # Backward-compatible alias (internal callers). Prefer compute_deal_key().
     return compute_deal_key(prop)
+
+
+def _extract_outgoing_player_ids_for_team(deal_payload: Dict[str, Any], *, from_team_id: str) -> List[str]:
+    out: List[str] = []
+    legs = deal_payload.get("legs") if isinstance(deal_payload, dict) else None
+    if not isinstance(legs, list):
+        return out
+    src = str(from_team_id).upper()
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("from_team") or "").upper() != src:
+            continue
+        assets = leg.get("assets")
+        if not isinstance(assets, list):
+            continue
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("kind") or "").upper() != "PLAYER":
+                continue
+            pid = a.get("player_id")
+            if pid:
+                out.append(str(pid))
+    uniq: List[str] = []
+    seen: set[str] = set()
+    for pid in out:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        uniq.append(pid)
+    return uniq
+
+
+def _extract_incoming_player_ids_for_team(deal_payload: Dict[str, Any], *, to_team_id: str) -> List[str]:
+    incoming: List[str] = []
+    legs = deal_payload.get("legs") if isinstance(deal_payload, dict) else None
+    if not isinstance(legs, list):
+        return incoming
+    dst = str(to_team_id).upper()
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("to_team") or "").upper() != dst:
+            continue
+        assets = leg.get("assets")
+        if not isinstance(assets, list):
+            continue
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("kind") or "").upper() != "PLAYER":
+                continue
+            pid = a.get("player_id")
+            if pid:
+                incoming.append(str(pid))
+    uniq: List[str] = []
+    seen: set[str] = set()
+    for pid in incoming:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        uniq.append(pid)
+    return uniq
+
+
+def _get_season_year_from_state(*, fallback_year: int) -> int:
+    active = state.get_active_season_id()
+    if isinstance(active, str) and active.strip():
+        s0 = active.strip()
+        try:
+            return int(s0[:4])
+        except Exception:
+            pass
+    return int(fallback_year)
 
 
 def _clamp01(x: float) -> float:
@@ -673,6 +752,59 @@ def promote_and_commit(
                     else:
                         initiator_role = "UNKNOWN"
 
+                    # Offer privacy default: PRIVATE for AI-generated user offers.
+                    offer_privacy = str(getattr(config, "default_offer_privacy", "PRIVATE") or "PRIVATE").upper()
+                    if offer_privacy != "PUBLIC":
+                        offer_privacy = "PRIVATE"
+
+                    leak_status = "NONE"
+                    leaked_player_ids: List[str] = []
+                    if offer_privacy == "PRIVATE" and bool(getattr(config, "enable_private_offer_leaks", True)):
+                        allow_leak = True
+                        try:
+                            pair_cd = int(getattr(config, "private_leak_pair_cooldown_days", 7) or 0)
+                        except Exception:
+                            pair_cd = 0
+                        if pair_cd > 0:
+                            last_iso = (
+                                get_rel_meta_date_iso(trade_memory, team_a=recipient_team_id, team_b=proposer_team_id, key="last_private_offer_leak_at")
+                                or get_rel_meta_date_iso(trade_memory, team_a=proposer_team_id, team_b=recipient_team_id, key="last_private_offer_leak_at")
+                            )
+                            if last_iso:
+                                ds = _iso_days_since(today, last_iso)
+                                if ds is not None and ds < max(0, pair_cd):
+                                    allow_leak = False
+
+                        if allow_leak:
+                            try:
+                                p_base = float(getattr(config, "ai_private_leak_base_prob", 0.08) or 0.0)
+                            except Exception:
+                                p_base = 0.08
+                            try:
+                                p_bonus = float(getattr(config, "ai_private_leak_pressure_bonus", 0.22) or 0.0)
+                            except Exception:
+                                p_bonus = 0.22
+                            try:
+                                p_cap = float(getattr(config, "ai_private_leak_prob_cap", 0.30) or 0.30)
+                            except Exception:
+                                p_cap = 0.30
+                            p_leak = _clamp01(min(p_cap, max(0.0, p_base + p_bonus * float(deadline_pressure or 0.0))))
+                            if _stable_roll(seed=f"LEAK|{today.isoformat()}|{deal_key}|{proposer_team_id}|{recipient_team_id}", p=p_leak):
+                                leak_status = "LEAKED_BY_AI"
+                        else:
+                            record_market_event(
+                                trade_market,
+                                today=today,
+                                event_type="PRIVATE_OFFER_LEAK_SUPPRESSED",
+                                payload={
+                                    "deal_id": deal_key,
+                                    "session_id": sess_id,
+                                    "user_team_id": recipient_team_id,
+                                    "other_team_id": proposer_team_id,
+                                    "reason": "PAIR_COOLDOWN",
+                                },
+                            )
+
                     offer_meta = {
                         "deal_id": deal_key, "tick_date": today.isoformat(), "score": score,
                         "offer_tone": tone,
@@ -687,7 +819,125 @@ def promote_and_commit(
                         "proposer_team_id": proposer_team_id, "recipient_team_id": recipient_team_id,
                         "from_team_id": proposer_team_id, "to_team_id": recipient_team_id,
                         "initiator_team_id": initiator_team_id, "initiator_role": initiator_role,
+                        "offer_privacy": offer_privacy, "leak_status": leak_status,
+                        "leak_at": today.isoformat() if leak_status != "NONE" else None,
+                        "private_offer_exposed_player_ids": leaked_player_ids,
+                        "publicized_from_leak": False,
                     }
+                    if leak_status == "LEAKED_BY_AI":
+                        leaked_player_ids = _extract_outgoing_player_ids_for_team(deal_payload, from_team_id=proposer_team_id)
+                        offer_meta["private_offer_exposed_player_ids"] = list(leaked_player_ids)
+
+                    if leak_status == "LEAKED_BY_AI":
+                        record_market_event(
+                            trade_market,
+                            today=today,
+                            event_type="PRIVATE_OFFER_LEAKED",
+                            payload={
+                                "deal_id": deal_key,
+                                "session_id": sess_id,
+                                "leaked_by": "AI",
+                                "user_team_id": recipient_team_id,
+                                "other_team_id": proposer_team_id,
+                                "player_ids": leaked_player_ids,
+                            },
+                        )
+
+                        # Leak -> public conversion (idempotent, parity with user path)
+                        if bool(getattr(config, "enable_ai_leak_publicize", True)) and leaked_player_ids and not is_private_leak_publicized(
+                            trade_market,
+                            session_id=str(sess_id),
+                            deal_id=str(deal_key),
+                        ):
+                            ttl = int(getattr(config, "trade_block_auto_list_days_public_offer", 10) or 10)
+                            if ttl <= 0:
+                                ttl = 1
+                            for pid in leaked_player_ids:
+                                upsert_trade_listing(
+                                    trade_market,
+                                    today=today,
+                                    player_id=pid,
+                                    team_id=proposer_team_id,
+                                    listed_by="AUTO_PRIVATE_LEAK",
+                                    visibility="PUBLIC",
+                                    priority=0.62,
+                                    reason_code="PRIVATE_OFFER_LEAK_PUBLICIZED",
+                                    expires_on=(today + timedelta(days=ttl + 1)).isoformat(),
+                                    source={
+                                        "session_id": sess_id,
+                                        "deal_id": deal_key,
+                                        "offer_privacy": "PRIVATE",
+                                        "publicized_from": "LEAK",
+                                        "leaked_by": "AI",
+                                    },
+                                )
+                            record_market_event(
+                                trade_market,
+                                today=today,
+                                event_type="TRADE_OFFER_PUBLICIZED_FROM_LEAK",
+                                payload={
+                                    "deal_id": deal_key,
+                                    "session_id": sess_id,
+                                    "user_team_id": recipient_team_id,
+                                    "other_team_id": proposer_team_id,
+                                    "player_ids": leaked_player_ids,
+                                    "publicized_from": "LEAK",
+                                    "leaked_by": "AI",
+                                },
+                            )
+                            mark_private_leak_publicized(
+                                trade_market,
+                                session_id=str(sess_id),
+                                deal_id=str(deal_key),
+                                today=today,
+                                player_ids=leaked_player_ids,
+                                user_team_id=recipient_team_id,
+                                other_team_id=proposer_team_id,
+                                leaked_by="AI",
+                            )
+
+                        offer_meta["publicized_from_leak"] = bool(
+                            is_private_leak_publicized(trade_market, session_id=str(sess_id), deal_id=str(deal_key))
+                        )
+
+                        if bool(getattr(config, "enable_ai_leak_grievance", True)):
+                            try:
+                                incoming_ids = _extract_incoming_player_ids_for_team(deal_payload, to_team_id=proposer_team_id)
+                                db_path = str(getattr(tick_ctx, "db_path", None) or state.get_db_path())
+                                apply_trade_offer_grievances(
+                                    db_path=db_path,
+                                    season_year=_get_season_year_from_state(fallback_year=today.year),
+                                    now_date_iso=today.isoformat(),
+                                    proposer_team_id=proposer_team_id,
+                                    outgoing_player_ids=leaked_player_ids,
+                                    incoming_player_ids=incoming_ids,
+                                    trigger_source="PRIVATE_OFFER_LEAKED",
+                                    session_id=str(sess_id),
+                                    source_path="ORCHESTRATION_AI_PROMOTION",
+                                )
+                            except Exception as exc:
+                                result.errors.append({
+                                    "type": "AI_LEAK_GRIEVANCE_APPLY_FAILED",
+                                    "deal_id": deal_key,
+                                    "session_id": sess_id,
+                                    "exc": type(exc).__name__,
+                                })
+
+                        bump_relationship(
+                            trade_memory,
+                            team_a=recipient_team_id,
+                            team_b=proposer_team_id,
+                            today=today,
+                            patch={
+                                "counts": {"private_offer_leaked_by_ai": 1},
+                                "meta": {
+                                    "last_private_offer_leak_at": today.isoformat(),
+                                    "last_private_offer_leak_by": "AI",
+                                    "last_private_offer_leak_session_id": str(sess_id),
+                                },
+                            },
+                        )
+
                     set_market_context_offer_meta(sess_id, offer_meta)
 
                     add_team_cooldown(trade_market, team_id=other, today=today, days=int(config.cooldown_days_after_user_offer), reason="USER_OFFER_SENT", meta={"session_id": sess_id, "deal_id": deal_key})
@@ -712,6 +962,8 @@ def promote_and_commit(
                             "user_overpay_allowed": float(overpay_allowed or 0.0),
                             "exceed_overpay": float(exceed_overpay or 0.0),
                             "deadline_pressure": float(deadline_pressure or 0.0),
+                            "offer_privacy": offer_privacy,
+                            "leak_status": leak_status,
                         },
                     )
 

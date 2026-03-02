@@ -265,9 +265,14 @@ def validate_game_state(state: dict) -> None:
     _require_container(state, "trade_agreements", dict, "dict")
     _require_container(state, "negotiations", dict, "dict")
     _require_container(state, "asset_locks", dict, "dict")
-    _require_container(state, "trade_market", dict, "dict")
+    trade_market = _require_container(state, "trade_market", dict, "dict")
     _require_container(state, "trade_memory", dict, "dict")
     migrations = _require_container(state, "_migrations", dict, "dict")
+
+
+    # trade_market is derived state. grievance_cursor is optional but must be dict when present.
+    if "grievance_cursor" in trade_market and not isinstance(trade_market.get("grievance_cursor"), dict):
+        raise ValueError("GameState invalid: trade_market.grievance_cursor must be dict")
 
     _require_exact_keys(ui_cache, ALLOWED_UI_CACHE_KEYS, "ui_cache")
     if not isinstance(ui_cache.get("teams"), dict):

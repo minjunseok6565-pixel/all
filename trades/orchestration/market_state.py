@@ -22,6 +22,7 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
     m.setdefault("human_controlled_team_ids", [])
     m.setdefault("tick_nonce", 0)
     m.setdefault("applied_exec_deal_ids", {})
+    m.setdefault("grievance_cursor", {})
     if not isinstance(m.get("listings"), dict):
         m["listings"] = {}
     if not isinstance(m.get("threads"), dict):
@@ -32,6 +33,8 @@ def _ensure_trade_market_schema(m: Dict[str, Any]) -> Dict[str, Any]:
         m["events"] = []
     if not isinstance(m.get("applied_exec_deal_ids"), dict):
         m["applied_exec_deal_ids"] = {}
+    if not isinstance(m.get("grievance_cursor"), dict):
+        m["grievance_cursor"] = {}
     if not isinstance(m.get("human_controlled_team_ids"), (list, tuple, set, str, type(None))):
         m["human_controlled_team_ids"] = []
     try:
@@ -65,6 +68,243 @@ def load_trade_memory() -> Dict[str, Any]:
 
 def save_trade_memory(mem: Dict[str, Any]) -> None:
     state.trade_memory_set(_ensure_trade_memory_schema(mem))
+
+
+def _clamp01(x: Any, default: float = 0.5) -> float:
+    try:
+        xf = float(x)
+    except Exception:
+        return float(default)
+    if xf <= 0.0:
+        return 0.0
+    if xf >= 1.0:
+        return 1.0
+    return xf
+
+
+def _coerce_iso_date(raw: Any) -> Optional[str]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    s = raw[:10]
+    try:
+        date.fromisoformat(s)
+        return s
+    except Exception:
+        return None
+
+
+def _normalize_listing_entry(
+    player_id: str,
+    payload: Dict[str, Any],
+    *,
+    today_iso: Optional[str] = None,
+) -> Dict[str, Any]:
+    now_iso = _coerce_iso_date(today_iso) or date.today().isoformat()
+    p = dict(payload or {}) if isinstance(payload, dict) else {}
+    team_id = str(p.get("team_id") or "").upper()
+    listed_by = str(p.get("listed_by") or "USER").upper()
+    visibility = str(p.get("visibility") or "PUBLIC").upper()
+    status = str(p.get("status") or "ACTIVE").upper()
+    if visibility not in {"PUBLIC", "PRIVATE"}:
+        visibility = "PUBLIC"
+    if status not in {"ACTIVE", "INACTIVE"}:
+        status = "ACTIVE"
+
+    source = p.get("source") if isinstance(p.get("source"), dict) else {}
+    meta = p.get("meta") if isinstance(p.get("meta"), dict) else {}
+
+    out = {
+        "player_id": str(player_id),
+        "team_id": team_id,
+        "status": status,
+        "visibility": visibility,
+        "listed_by": listed_by,
+        "priority": _clamp01(p.get("priority"), default=0.5),
+        "reason_code": str(p.get("reason_code") or "MANUAL").upper(),
+        "created_at": _coerce_iso_date(p.get("created_at")) or now_iso,
+        "updated_at": _coerce_iso_date(p.get("updated_at")) or now_iso,
+        "expires_on": _coerce_iso_date(p.get("expires_on")),
+        "source": dict(source),
+        "meta": dict(meta),
+    }
+    return out
+
+
+def _get_listings_container(trade_market: Dict[str, Any]) -> Dict[str, Any]:
+    m = _ensure_trade_market_schema(trade_market)
+    raw = m.get("listings")
+    if not isinstance(raw, dict):
+        raw = {}
+        m["listings"] = raw
+    return raw
+
+
+def leak_publicize_cursor_key(*, session_id: Optional[str] = None, deal_id: Optional[str] = None) -> str:
+    sid = str(session_id or "").strip()
+    did = str(deal_id or "").strip()
+    if sid:
+        return f"PRIVATE_LEAK_PUBLICIZED::SESSION::{sid}"
+    if did:
+        return f"PRIVATE_LEAK_PUBLICIZED::DEAL::{did}"
+    return "PRIVATE_LEAK_PUBLICIZED::UNKNOWN"
+
+
+def is_private_leak_publicized(
+    trade_market: Dict[str, Any],
+    *,
+    session_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
+) -> bool:
+    m = _ensure_trade_market_schema(trade_market)
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    if not isinstance(cur, dict):
+        return False
+    keys: List[str] = []
+    if session_id:
+        keys.append(leak_publicize_cursor_key(session_id=session_id))
+    if deal_id:
+        keys.append(leak_publicize_cursor_key(deal_id=deal_id))
+    for k in keys:
+        raw = cur.get(k)
+        if isinstance(raw, dict) and raw.get("publicized") is True:
+            return True
+    return False
+
+
+def mark_private_leak_publicized(
+    trade_market: Dict[str, Any],
+    *,
+    today: date,
+    player_ids: List[str],
+    user_team_id: str,
+    other_team_id: str,
+    session_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
+    leaked_by: Optional[str] = None,
+) -> None:
+    m = _ensure_trade_market_schema(trade_market)
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    m["grievance_cursor"] = cur
+
+    payload = {
+        "publicized": True,
+        "date": str(today.isoformat()),
+        "session_id": str(session_id) if session_id else None,
+        "deal_id": str(deal_id) if deal_id else None,
+        "user_team_id": str(user_team_id).upper(),
+        "other_team_id": str(other_team_id).upper(),
+        "player_ids": [str(x) for x in (player_ids or []) if str(x)],
+        "leaked_by": str(leaked_by).upper() if leaked_by else None,
+    }
+
+    if session_id:
+        cur[leak_publicize_cursor_key(session_id=session_id)] = dict(payload)
+    if deal_id:
+        cur[leak_publicize_cursor_key(deal_id=deal_id)] = dict(payload)
+
+
+def upsert_trade_listing(
+    trade_market: Dict[str, Any],
+    *,
+    today: date,
+    player_id: str,
+    team_id: str,
+    listed_by: str,
+    visibility: str = "PUBLIC",
+    priority: float = 0.5,
+    reason_code: str = "MANUAL",
+    expires_on: Optional[str] = None,
+    source: Optional[Dict[str, Any]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    listings = _get_listings_container(trade_market)
+    pid = str(player_id)
+    now_iso = today.isoformat()
+    prev = listings.get(pid) if isinstance(listings.get(pid), dict) else {}
+    entry = _normalize_listing_entry(
+        pid,
+        {
+            **dict(prev or {}),
+            "player_id": pid,
+            "team_id": str(team_id).upper(),
+            "status": "ACTIVE",
+            "visibility": str(visibility or "PUBLIC").upper(),
+            "listed_by": str(listed_by or "USER").upper(),
+            "priority": _clamp01(priority),
+            "reason_code": str(reason_code or "MANUAL").upper(),
+            "created_at": prev.get("created_at") if isinstance(prev, dict) else now_iso,
+            "updated_at": now_iso,
+            "expires_on": _coerce_iso_date(expires_on),
+            "source": dict(source or (prev.get("source") if isinstance(prev, dict) else {}) or {}),
+            "meta": dict(meta or (prev.get("meta") if isinstance(prev, dict) else {}) or {}),
+        },
+        today_iso=now_iso,
+    )
+    listings[pid] = entry
+    return dict(entry)
+
+
+def remove_trade_listing(trade_market: Dict[str, Any], *, player_id: str) -> bool:
+    listings = _get_listings_container(trade_market)
+    pid = str(player_id)
+    if pid in listings:
+        listings.pop(pid, None)
+        return True
+    return False
+
+
+def list_team_trade_listings(
+    trade_market: Dict[str, Any],
+    *,
+    team_id: str,
+    active_only: bool = True,
+    today: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    listings = _get_listings_container(trade_market)
+    tid = str(team_id).upper()
+    out: List[Dict[str, Any]] = []
+    d = today
+    for pid, raw in listings.items():
+        if not isinstance(raw, dict):
+            continue
+        e = _normalize_listing_entry(str(pid), raw)
+        if e.get("team_id") != tid:
+            continue
+        if active_only:
+            if str(e.get("status") or "").upper() != "ACTIVE":
+                continue
+            exp = e.get("expires_on")
+            if d is not None and isinstance(exp, str):
+                try:
+                    if d >= date.fromisoformat(exp[:10]):
+                        continue
+                except Exception:
+                    pass
+        out.append(e)
+    out.sort(key=lambda x: (str(x.get("updated_at") or ""), str(x.get("player_id") or "")), reverse=True)
+    return out
+
+
+def get_active_listing_team_ids(trade_market: Dict[str, Any], *, today: date) -> Set[str]:
+    listings = _get_listings_container(trade_market)
+    out: Set[str] = set()
+    for pid, raw in listings.items():
+        if not isinstance(raw, dict):
+            continue
+        e = _normalize_listing_entry(str(pid), raw)
+        if str(e.get("status") or "").upper() != "ACTIVE":
+            continue
+        exp = e.get("expires_on")
+        if isinstance(exp, str):
+            try:
+                if today >= date.fromisoformat(exp[:10]):
+                    continue
+            except Exception:
+                continue
+        tid = str(e.get("team_id") or "").upper()
+        if tid:
+            out.add(tid)
+    return out
 
 
 def get_human_controlled_team_ids(
@@ -228,6 +468,28 @@ def pre_tick_cleanup(
 
     m["cooldowns"] = kept
     report.removed_cooldowns = removed
+
+    # --- listings cleanup (expiry + shape)
+    listings = m.get("listings") if isinstance(m.get("listings"), dict) else {}
+    kept_listings: Dict[str, Any] = {}
+    removed_listings = 0
+    for k, v in (listings or {}).items():
+        pid = str(k)
+        if not isinstance(v, dict):
+            removed_listings += 1
+            continue
+        e = _normalize_listing_entry(pid, v, today_iso=today.isoformat())
+        exp = e.get("expires_on")
+        if isinstance(exp, str):
+            try:
+                d_exp = date.fromisoformat(exp[:10])
+                if today >= d_exp:
+                    removed_listings += 1
+                    continue
+            except Exception:
+                pass
+        kept_listings[pid] = e
+    m["listings"] = kept_listings
 
     # --- threads cleanup (expiry + size cap)
     th = m.get("threads") if isinstance(m.get("threads"), dict) else {}

@@ -33,6 +33,8 @@ from matchengine_v2_adapter import adapt_matchengine_result_to_v2, build_context
 from matchengine_v3.sim_game import simulate_game
 from sim.roster_adapter import build_team_state_from_db
 import state
+from two_way_eligibility import get_two_way_exclusions_for_game
+from two_way_repo import is_player_on_active_two_way, record_two_way_appearance
 
 logger = logging.getLogger(__name__)
 
@@ -203,16 +205,26 @@ def run_simulated_game(
                 prepared_ready = None
                 attrs_mods_by_pid = None
 
+        tw_ex = get_two_way_exclusions_for_game(
+            repo=repo,
+            home_team_id=str(home_team_id).upper(),
+            away_team_id=str(away_team_id).upper(),
+            phase=str(phase),
+            season_year=int(season_year) if season_year is not None else int(league_context.get("season_year") or 0),
+        )
+
         home = build_team_state_from_db(
             repo=repo,
             team_id=str(home_team_id).upper(),
             tactics=home_tactics,
+            exclude_pids=set(tw_ex.home_exclude),
             attrs_mods_by_pid=attrs_mods_by_pid,
         )
         away = build_team_state_from_db(
             repo=repo,
             team_id=str(away_team_id).upper(),
             tactics=away_tactics,
+            exclude_pids=set(tw_ex.away_exclude),
             attrs_mods_by_pid=attrs_mods_by_pid,
         )
 
@@ -308,6 +320,39 @@ def run_simulated_game(
     game_obj = None
     if persist:
         game_obj = state.ingest_game_result(game_result=v2_result, game_date=game_date_str)
+
+    # Two-way usage tracking (regular season only): count actual participants once per game.
+    try:
+        phase_l = str(phase or "").lower()
+        if phase_l == "regular":
+            season_year_used = int(season_year) if season_year is not None else int(league_context.get("season_year") or 0)
+            teams_payload = (v2_result or {}).get("teams") or {}
+            with _repo_ctx() as repo2:
+                with repo2.transaction() as cur:
+                    for tid in (str(home_team_id).upper(), str(away_team_id).upper()):
+                        team_rows = (teams_payload.get(tid) or {}).get("players") or []
+                        for row in team_rows:
+                            pid = str(row.get("PlayerID") or "").strip()
+                            if not pid:
+                                continue
+                            try:
+                                mins = int(row.get("MIN", 0) or 0)
+                            except Exception:
+                                mins = 0
+                            if mins <= 0:
+                                continue
+                            if not is_player_on_active_two_way(cur, pid):
+                                continue
+                            record_two_way_appearance(
+                                cur,
+                                player_id=pid,
+                                season_year=season_year_used,
+                                game_id=str(game_id),
+                                phase=phase_l,
+                                now_iso=game_date_str,
+                            )
+    except Exception:
+        logger.warning("TWO_WAY_USAGE_RECORD_FAILED game_id=%s", str(game_id), exc_info=True)
 
     return {
         "context": context,

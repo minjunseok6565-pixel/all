@@ -373,6 +373,40 @@ class StanceConfig:
     decay_coachability_bonus: float = 0.02
 
 
+@dataclass(frozen=True, slots=True)
+class TradeOfferGrievanceConfig:
+    """Tuning for trade-offer grievance triggers (non-monthly, event-driven)."""
+
+    # PUBLIC_OFFER: deterministic targeted grievance bump (lower than leak).
+    public_targeted_delta_base: float = 0.055
+    public_targeted_delta_mental_weight: float = 0.055
+    public_targeted_delta_status_weight: float = 0.040
+    public_targeted_delta_context_weight: float = 0.020
+    public_targeted_delta_resilience_weight: float = 0.040
+    public_targeted_delta_min: float = 0.025
+    public_targeted_delta_max: float = 0.140
+
+    # PRIVATE_OFFER_LEAKED targeted grievance: deterministic delta with signal-based modulation.
+    leaked_targeted_delta_base: float = 0.12
+    leaked_targeted_delta_mental_weight: float = 0.10
+    leaked_targeted_delta_status_weight: float = 0.08
+    leaked_targeted_delta_context_weight: float = 0.05
+    leaked_targeted_delta_resilience_weight: float = 0.06
+    leaked_targeted_delta_min: float = 0.08
+    leaked_targeted_delta_max: float = 0.30
+
+    # trade_request_level policy: 0=full bump, 1=dampened bump, 2=max(skip)
+    trade_request_level_max: int = 2
+    leaked_targeted_active_request_dampen: float = 0.45
+
+    same_pos_base_prob: float = 0.18
+    same_pos_delta_base: float = 0.03
+    same_pos_delta_scale: float = 0.08
+    same_pos_min_leverage: float = 0.28
+    same_pos_max_ovr_gap: int = 3
+    same_pos_max_role_tier_gap: int = 2
+
+
 # ---------------------------------------------------------------------------
 # Player option / ETO decisions
 # ---------------------------------------------------------------------------
@@ -448,6 +482,9 @@ class AgencyConfig:
     # Team transition policy (evaluated team != current roster team)
     transition: TransitionConfig = field(default_factory=TransitionConfig)
 
+    # Event-driven trade-offer grievance tuning
+    trade_offer_grievance: TradeOfferGrievanceConfig = field(default_factory=TradeOfferGrievanceConfig)
+
     # Names for mental attributes in attrs_json
     mental_attr_keys: Mapping[str, str] = field(
         default_factory=lambda: {
@@ -467,6 +504,9 @@ class AgencyConfig:
             "help_demand": "HELP_DEMAND",
             "trade_request": "TRADE_REQUEST",
             "trade_request_public": "TRADE_REQUEST_PUBLIC",
+            "trade_targeted_offer_public": "TRADE_TARGETED_OFFER_PUBLIC",
+            "trade_targeted_offer_leaked": "TRADE_TARGETED_OFFER_LEAKED",
+            "same_pos_recruit_attempt": "SAME_POS_RECRUIT_ATTEMPT",
 
             # v2 issue families (stage-specific)
             "role_private": "ROLE_PRIVATE",

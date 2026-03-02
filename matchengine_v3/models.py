@@ -234,7 +234,10 @@ class TeamState:
     team_id: str
     name: str
     lineup: List[Player]
-    roles: Dict[str, str]  # role -> pid (chosen via UI)
+    # Offensive role slots for the *current* on-court 5 (C13 offense role key -> pid).
+    # NOTE: This field is offense-only. Defensive manual overrides are stored separately
+    # in defense_role_overrides to avoid semantic collisions.
+    roles: Dict[str, str]
     tactics: "TacticsConfig"
     on_court_pids: List[str] = field(default_factory=list)
 
@@ -251,9 +254,11 @@ class TeamState:
     # - rotation_target_sec_by_pid: per-player target minutes in seconds.
     # - rotation_offense_role_by_pid: per-player offensive role name (one of the C13 roles).
     # - rotation_lock_pids: players that should never be auto-subbed out (except foul-out).
+    # - defense_role_overrides: defensive scheme-role manual overrides (role_name -> pid).
     rotation_target_sec_by_pid: Dict[str, int] = field(default_factory=dict)
     rotation_offense_role_by_pid: Dict[str, str] = field(default_factory=dict)
     rotation_lock_pids: List[str] = field(default_factory=list)
+    defense_role_overrides: Dict[str, str] = field(default_factory=dict)
 
 
     # team totals

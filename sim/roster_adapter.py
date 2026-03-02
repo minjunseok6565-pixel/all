@@ -306,6 +306,113 @@ def resolve_effective_schemes(
     return (off, de)
 
 
+
+
+def _coerce_str_map(raw: Any) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not isinstance(raw, Mapping):
+        return out
+    for k, v in raw.items():
+        try:
+            kk = str(schema.normalize_player_id(k))
+        except Exception:
+            continue
+        vv = str(v or '').strip()
+        if not kk or not vv:
+            continue
+        out[kk] = vv
+    return out
+
+
+def _normalize_offense_role_payload(
+    *,
+    lineup: List[Player],
+    raw_tactics: Optional[Dict[str, Any]],
+    auto_role_by_pid: Mapping[str, str],
+) -> Dict[str, str]:
+    """Return effective pid->offense-role mapping (auto base + optional user overrides).
+
+    Priority:
+      1) USER_OFFENSE_ROLE_BY_PID / ROTATION_OFFENSE_ROLE_BY_PID / OFFENSE_ROLE_BY_PID
+         (top-level and context), if present and valid
+      2) auto_role_by_pid fallback
+
+    Invalid pids/roles are ignored with warnings.
+    """
+    effective: Dict[str, str] = {str(pid): str(role) for pid, role in (auto_role_by_pid or {}).items()}
+    if not raw_tactics:
+        return effective
+
+    roster_set = {str(p.pid) for p in (lineup or [])}
+    ctx = raw_tactics.get('context') if isinstance(raw_tactics, dict) else None
+    ctx = ctx if isinstance(ctx, dict) else {}
+
+    merged_raw: Dict[str, str] = {}
+    candidates = [
+        raw_tactics.get('user_offense_role_by_pid'),
+        raw_tactics.get('rotation_offense_role_by_pid'),
+        raw_tactics.get('offense_role_by_pid'),
+        ctx.get('USER_OFFENSE_ROLE_BY_PID'),
+        ctx.get('ROTATION_OFFENSE_ROLE_BY_PID'),
+        ctx.get('OFFENSE_ROLE_BY_PID'),
+    ]
+    for src in candidates:
+        merged_raw.update(_coerce_str_map(src))
+
+    for pid, role in merged_raw.items():
+        if pid not in roster_set:
+            _warn_limited('ROSTER_USER_OFF_ROLE_INVALID_PID', f'pid={pid} not in lineup; ignored')
+            continue
+        if role not in ALL_OFFENSE_ROLES:
+            _warn_limited('ROSTER_USER_OFF_ROLE_INVALID_KEY', f'pid={pid} role={role} invalid; ignored')
+            continue
+        effective[pid] = role
+
+    return effective
+
+
+def _normalize_defense_role_override_payload(
+    *,
+    lineup: List[Player],
+    raw_tactics: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Return validated defensive scheme-role override mapping (role_name -> pid)."""
+    if not raw_tactics:
+        return {}
+
+    roster_set = {str(p.pid) for p in (lineup or [])}
+    ctx = raw_tactics.get('context') if isinstance(raw_tactics, dict) else None
+    ctx = ctx if isinstance(ctx, dict) else {}
+
+    raw = (
+        raw_tactics.get('defense_role_overrides')
+        or raw_tactics.get('defense_roles')
+        or ctx.get('DEFENSE_ROLE_OVERRIDES')
+        or ctx.get('DEFENSE_ROLES')
+    )
+    if not isinstance(raw, Mapping):
+        return {}
+
+    out: Dict[str, str] = {}
+    pid_used: Dict[str, str] = {}
+    for role_name_raw, pid_raw in raw.items():
+        role_name = str(role_name_raw or '').strip()
+        pid = str(pid_raw or '').strip()
+        if not role_name or not pid:
+            continue
+        if pid not in roster_set:
+            _warn_limited('ROSTER_USER_DEF_ROLE_INVALID_PID', f'role={role_name} pid={pid} not in lineup; ignored')
+            continue
+        prev_role = pid_used.get(pid)
+        if prev_role is not None and prev_role != role_name:
+            _warn_limited('ROSTER_USER_DEF_ROLE_DUP_PID', f'pid={pid} assigned to multiple defensive roles; ignored role={role_name}')
+            continue
+        out[role_name] = pid
+        pid_used[pid] = role_name
+
+    return out
+
+
 def _assign_rotation_offense_role_by_pid(players: List[Player]) -> Dict[str, str]:
     """Assign a single canonical offensive role (C13) to each player.
 
@@ -587,9 +694,18 @@ def build_team_state_from_db(
     max_players = max(5, min(max_players, len(players)))
     lineup = _select_lineup(players, starters, bench, max_players=max_players)
 
-    # New canonical offensive roles (C13): roster-level SSOT + on-court role slots.
-    rotation_role_by_pid = _assign_rotation_offense_role_by_pid(lineup)
+    # New canonical offensive roles (C13): roster-level SSOT + optional user overrides.
+    auto_rotation_role_by_pid = _assign_rotation_offense_role_by_pid(lineup)
+    rotation_role_by_pid = _normalize_offense_role_payload(
+        lineup=lineup,
+        raw_tactics=tactics,
+        auto_role_by_pid=auto_rotation_role_by_pid,
+    )
     roles = _build_offense_role_slots_for_on_court(lineup[:5], rotation_role_by_pid)
+    defense_role_overrides = _normalize_defense_role_override_payload(
+        lineup=lineup,
+        raw_tactics=tactics,
+    )
     tactics_cfg = _build_tactics_config(tactics)
     _apply_default_coach_preset(str(tid), tactics_cfg)
     _apply_coach_preset_tactics(str(tid), tactics_cfg, tactics)
@@ -606,6 +722,7 @@ def build_team_state_from_db(
         tactics=tactics_cfg,
         roles=roles,
         rotation_offense_role_by_pid=dict(rotation_role_by_pid),
+        defense_role_overrides=dict(defense_role_overrides),
     )
     minutes = (tactics or {}).get("minutes") or {}
     if isinstance(minutes, dict) and minutes:

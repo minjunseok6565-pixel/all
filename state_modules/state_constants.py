@@ -32,6 +32,7 @@ DEFAULT_TRADE_RULES: Dict[str, Any] = {
     "first_apron_mult": 1.00,
     "second_apron_mult": 1.00,
     "new_fa_sign_ban_days": 90,
+    "two_way_sign_ban_days": 30,
     "aggregation_ban_days": 60,
     "max_pick_years_ahead": 7,
     "stepien_lookahead": 7,
@@ -46,6 +47,8 @@ _DEFAULT_TRADE_MARKET: Dict[str, Any] = {
     "cooldowns": {},
     "events": [],
     "applied_exec_deal_ids": {},
+    # Derived helper cursor for idempotent side-effects (no authority; DB remains SSOT)
+    "grievance_cursor": {},
 }
 
 _DEFAULT_TRADE_MEMORY: Dict[str, Any] = {

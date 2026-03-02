@@ -67,10 +67,12 @@ def build_rule_players_meta(
     CONTRACT_TYPES = {
         "SIGN_FREE_AGENT",
         "RE_SIGN_OR_EXTEND",
+        "SIGN_TWO_WAY",
         "RELEASE_TO_FA",
         # legacy spellings (dev)
         "signing",
         "re_sign_or_extend",
+        "sign_two_way",
         "release_to_free_agency",
     }
 

@@ -90,6 +90,21 @@ def _utc_now_iso() -> str:
     return game_time.now_utc_like_iso()
 
 
+
+
+def _state_season_year_ssot() -> int:
+    try:
+        import state
+
+        snap = state.get_league_context_snapshot() or {}
+        y = snap.get("season_year")
+        if y is None:
+            raise KeyError("season_year missing")
+        return int(y)
+    except Exception:
+        # Excel bootstrap fallback when state is unavailable (CLI import path).
+        return int(_dt.date.today().year)
+
 def _json_dumps(obj: Any) -> str:
     return json.dumps(
         obj,
@@ -123,6 +138,8 @@ def parse_height_in(value: Any) -> Optional[int]:
     s = str(value).strip()
     if not s or s.lower() in {"nan", "none"}:
         return None
+    if s == "--":
+        return 0
     m = _HEIGHT_RE.match(s)
     if not m:
         return None
@@ -1480,15 +1497,24 @@ class LeagueRepo:
             sal = row.get("salary_amount", None)
             if sal is None:
                 sal = row.get("Salary", None)
-            salary_amount = parse_salary_int(sal)
+            sal_raw = "" if sal is None else str(sal).strip()
+            is_two_way_boot = sal_raw == "--"
+            salary_amount = 0 if is_two_way_boot else parse_salary_int(sal)
 
             salary_by_year, contract_options = _extract_salary_and_options_excel(row, df_columns)
-            if salary_by_year:
-                start_year = min(int(k) for k in salary_by_year.keys())
-                years = max(len(salary_by_year), 1)
+            if salary_by_year or is_two_way_boot:
+                if salary_by_year:
+                    start_year = min(int(k) for k in salary_by_year.keys())
+                    years = max(len(salary_by_year), 1)
+                else:
+                    # Salary-free two-way bootstrap: keep one-season placeholder at current season.
+                    start_year = int(_state_season_year_ssot())
+                    years = 1
+                    salary_by_year = {str(start_year): 0.0}
                 contract_id = f"BOOT_{season_id_from_year(start_year)}_{pid}"
                 status = "ACTIVE" if str(tid).upper() != "FA" else "INACTIVE"
-                contracts_by_id[str(contract_id)] = {
+                contract_type = "TWO_WAY" if is_two_way_boot else "STANDARD"
+                c = {
                     "contract_id": contract_id,
                     "player_id": str(pid),
                     "team_id": str(tid).upper(),
@@ -1496,10 +1522,16 @@ class LeagueRepo:
                     "start_season_year": int(start_year),
                     "years": int(years),
                     "salary_by_year": salary_by_year,
-                    "options": [dict(x) for x in (contract_options or [])],
+                    "options": [] if is_two_way_boot else [dict(x) for x in (contract_options or [])],
                     "status": status,
-                    "contract_type": "STANDARD",
+                    "contract_type": contract_type,
                 }
+                if is_two_way_boot:
+                    c["two_way"] = True
+                    c["two_way_game_limit"] = 50
+                    c["postseason_eligible"] = False
+                    c["salary_free"] = True
+                contracts_by_id[str(contract_id)] = c
 
             # ovr
             ovr = row.get("ovr", None)
