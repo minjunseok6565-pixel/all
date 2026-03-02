@@ -46,7 +46,7 @@
           <button type="button" id="my-team-btn" class="menu-card menu-card-highlight">내 팀</button>
           <button type="button" class="menu-card">전술</button>
           <button type="button" class="menu-card">훈련</button>
-          <button type="button" class="menu-card">스케줄</button>
+          <button type="button" id="schedule-btn" class="menu-card">스케줄</button>
           <button type="button" class="menu-card">순위</button>
           <button type="button" class="menu-card">대학</button>
           <button type="button" class="menu-card">시장</button>
@@ -81,6 +81,61 @@
             <button type="button" class="menu-card next-game-action-btn">빠른 진행</button>
           </div>
         </section>
+      </div>
+    </section>
+
+    <section id="schedule-screen" class="panel" aria-hidden="true">
+      <div class="screen-header-row">
+        <div>
+          <p class="eyebrow">SCHEDULE</p>
+          <h2 id="schedule-title">정규 시즌 일정</h2>
+          <p class="subtitle">완료 경기 결과와 예정 경기를 한눈에 확인합니다.</p>
+        </div>
+        <button id="schedule-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+      </div>
+
+      <div class="schedule-shell">
+        <article class="schedule-card">
+          <div class="schedule-card-head">
+            <h3>완료 경기</h3>
+            <p class="schedule-meta">DATE · OPPONENT · RESULT · W-L · HI PTS/REB/AST</p>
+          </div>
+          <div class="schedule-table-wrap">
+            <table class="schedule-table schedule-table-completed">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>OPPONENT</th>
+                  <th>RESULT</th>
+                  <th>W-L</th>
+                  <th>Hi Points</th>
+                  <th>Hi Rebounds</th>
+                  <th>Hi Assists</th>
+                </tr>
+              </thead>
+              <tbody id="schedule-completed-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="schedule-card">
+          <div class="schedule-card-head">
+            <h3>예정 경기</h3>
+            <p class="schedule-meta">DATE · OPPONENT · TIME</p>
+          </div>
+          <div class="schedule-table-wrap">
+            <table class="schedule-table schedule-table-upcoming">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>OPPONENT</th>
+                  <th>TIME</th>
+                </tr>
+              </thead>
+              <tbody id="schedule-upcoming-body"></tbody>
+            </table>
+          </div>
+        </article>
       </div>
     </section>
 
