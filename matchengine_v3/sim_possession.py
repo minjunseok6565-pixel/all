@@ -231,7 +231,7 @@ def simulate_possession(
     # --- Matchups (Plan-1 MVP) ---
     # Build and maintain a 5v5 OFF_PID -> DEF_PID matchup map for the current on-court units.
     # This mapping is used by resolve.py to pick a primary defender and blend defensive values.
-    _ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _maybe_inject_matchup_force, _update_def_pressure_for_step = make_possession_tactics_ctx(
+    _ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _update_def_pressure_for_step = make_possession_tactics_ctx(
         offense=offense,
         defense=defense,
         game_state=game_state,
@@ -507,7 +507,6 @@ def simulate_possession(
         outcome = weighted_choice(rng, pri)
 
         _ensure_matchups(reason="pre_resolve")
-        _maybe_inject_matchup_force()
 
         term, payload = resolve_outcome(
             rng,

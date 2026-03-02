@@ -32,23 +32,10 @@ def handle_shot_clock_turnover(
     actor = _pick_default_actor(offense)
     offense.tov += 1
     offense.add_player_stat(actor.pid, "TOV", 1)
-    # Matchup info (best-effort; also consume any one-shot matchup_force)
+    # Matchup info (best-effort)
     defender_pid, matchup_source, matchup_event = matchups.get_primary_defender_pid(
         actor.pid, defense, ctx, off_player=actor
     )
-    try:
-        force = ctx.get("matchup_force")
-        if isinstance(force, dict):
-            f_off = str(force.get("off_pid") or "").strip()
-            f_def = str(force.get("def_pid") or "").strip()
-            if f_off and f_def and f_off == actor.pid and defense.is_on_court(f_def):
-                ttl = int(force.get("ttl", 1) or 1) - 1
-                if ttl <= 0:
-                    ctx.pop("matchup_force", None)
-                else:
-                    force["ttl"] = ttl
-    except Exception:
-        ctx.pop("matchup_force", None)
 
     payload_sc = {
         "outcome": outcome,

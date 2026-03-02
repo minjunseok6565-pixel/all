@@ -49,7 +49,7 @@ def make_possession_tactics_ctx(
     """Return possession-scoped tactical helpers.
 
     Returns:
-        (_ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _maybe_inject_matchup_force, _update_def_pressure_for_step)
+        (_ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _update_def_pressure_for_step)
     """
     # Bind helper names used by the extracted code (preserve original variable names).
     _player_stat = player_stat
@@ -72,34 +72,6 @@ def make_possession_tactics_ctx(
             return c if isinstance(c, dict) else {}
 
         dctx = _tctx(defense)
-
-        # --- LOCKS ---
-        locks_pairs: List[Tuple[str, str]] = []
-        raw_locks = dctx.get("MATCHUP_LOCKS")
-        if raw_locks is None:
-            # Match matchups._extract_locks: fallback only when the primary key is present but None.
-            raw_locks = dctx.get("MATCHUP_LOCK")
-        if isinstance(raw_locks, list):
-            for item in raw_locks:
-                if not isinstance(item, dict):
-                    continue
-                dp = str(item.get("def_pid") or "").strip()
-                op = str(item.get("off_pid") or "").strip()
-                if dp and op:
-                    locks_pairs.append((dp, op))
-        elif isinstance(raw_locks, dict):
-            if "def_pid" in raw_locks and "off_pid" in raw_locks:
-                dp = str(raw_locks.get("def_pid") or "").strip()
-                op = str(raw_locks.get("off_pid") or "").strip()
-                if dp and op:
-                    locks_pairs.append((dp, op))
-            else:
-                for dp, op in raw_locks.items():
-                    dps = str(dp or "").strip()
-                    ops = str(op or "").strip()
-                    if dps and ops:
-                        locks_pairs.append((dps, ops))
-        locks_pairs.sort()
 
         # --- HIDES ---
         hides: List[str] = []
@@ -143,39 +115,12 @@ def make_possession_tactics_ctx(
                 l_role = str(lockdown.get("off_role") or "").strip()
                 l_tag = str(lockdown.get("tag") or "").strip().upper()
 
-        # --- TEMP LOCKS (ctx) ---
-        temp_pairs: List[Tuple[str, str]] = []
-        raw_temp = ctx.get("matchups_temp_locks")
-        if isinstance(raw_temp, list):
-            for item in raw_temp:
-                if not isinstance(item, dict):
-                    continue
-                dp = str(item.get("def_pid") or "").strip()
-                op = str(item.get("off_pid") or "").strip()
-                if dp and op:
-                    temp_pairs.append((dp, op))
-        elif isinstance(raw_temp, dict):
-            if "def_pid" in raw_temp and "off_pid" in raw_temp:
-                dp = str(raw_temp.get("def_pid") or "").strip()
-                op = str(raw_temp.get("off_pid") or "").strip()
-                if dp and op:
-                    temp_pairs.append((dp, op))
-            else:
-                for dp, op in raw_temp.items():
-                    dps = str(dp or "").strip()
-                    ops = str(op or "").strip()
-                    if dps and ops:
-                        temp_pairs.append((dps, ops))
-        temp_pairs.sort()
-
         # Keep signature compact and stable.
         return "|".join(
             [
-                "L=" + ",".join([f"{a}>{b}" for a, b in locks_pairs]),
                 "H=" + ",".join(hides),
                 "A=" + ",".join([f"{d}:{p}:{r}" for d, p, r in assigns]),
                 "LD=" + ":".join([l_def, l_off, l_role, l_tag]),
-                "T=" + ",".join([f"{a}>{b}" for a, b in temp_pairs]),
             ]
         )
 
@@ -277,74 +222,6 @@ def make_possession_tactics_ctx(
                     pass
         except Exception as exc:
             _record_ctx_error("matchups.ensure", exc)
-
-    def _maybe_inject_matchup_force() -> None:
-        """Optionally inject a one-shot forced matchup for this possession step.
-
-        Input shape (offense.tactics.context):
-            MATCHUP_FORCE: {off_pid, def_pid, event?, reason?, force_actor?}
-        Output (ctx):
-            matchup_force: {off_pid, def_pid, event, reason, ttl=1}
-        """
-        if ctx.get("_matchup_force_injected"):
-            return
-        try:
-            tctx = getattr(getattr(offense, "tactics", None), "context", None)
-            # Policy A: Always consume (pop) the one-shot command the first time we see it
-            # in this possession, regardless of whether it is valid/applicable.
-            # This ensures the UX matches "one-shot" and prevents repetition across
-            # continuation segments or future possessions.
-            raw = None
-            if isinstance(tctx, dict):
-                raw = tctx.pop("MATCHUP_FORCE", None)
-            if not isinstance(raw, dict):
-                return
-
-            opid = str(raw.get("off_pid") or "").strip()
-            dpid = str(raw.get("def_pid") or "").strip()
-            if not opid or not dpid:
-                return
-            if not offense.is_on_court(opid) or not defense.is_on_court(dpid):
-                return
-
-            ev = str(raw.get("event") or "USER_FORCE").strip() or "USER_FORCE"
-            reason = raw.get("reason")
-            force_actor = bool(raw.get("force_actor", False))
-
-            ctx["matchup_force"] = {
-                "off_pid": opid,
-                "def_pid": dpid,
-                "event": ev,
-                "reason": (str(reason) if reason is not None else None),
-                "ttl": 1,
-            }
-            if force_actor:
-                ctx["force_actor_pid"] = opid
-
-            ctx["_matchup_force_injected"] = True
-
-            if bool(ctx.get("debug_matchups", False)):
-                try:
-                    emit_event(
-                        game_state,
-                        event_type="MATCHUP_EVENT",
-                        home=home_team,
-                        away=away_team,
-                        rules=rules,
-                        team_id=off_team_id,
-                        opp_team_id=def_team_id,
-                        pos_start=str(pos_origin),
-                        matchups_version=int(ctx.get("matchups_version", 0) or 0),
-                        event=ev,
-                        off_pid=opid,
-                        def_pid=dpid,
-                        reason=(str(reason) if reason is not None else None),
-                        ttl=1,
-                    )
-                except Exception:
-                    pass
-        except Exception as exc:
-            _record_ctx_error("matchups.force_inject", exc)
 
     # --- Help defense (possession-scoped) ---
     def _cache_help_levels() -> None:
@@ -699,8 +576,6 @@ def make_possession_tactics_ctx(
                     mult_by_base[kk] = clamp(vv, 0.25, 2.50)
 
             force_actor = bool(plan.get("force_actor", True))
-            force_matchup = bool(plan.get("force_matchup", True))
-
             # Emit intent first (text-replay can narrate "A targets B").
             try:
                 emit_event(
@@ -772,15 +647,6 @@ def make_possession_tactics_ctx(
                 ctx["hunt_action_mult_by_base"] = dict(mult_by_base)
             if force_actor:
                 ctx["force_actor_pid"] = actor_pid
-
-            if force_matchup and mode in ("ALLOW", "TRAP"):
-                ctx["matchup_force"] = {
-                    "off_pid": actor_pid,
-                    "def_pid": target_def_pid,
-                    "event": "HUNT",
-                    "reason": label,
-                    "ttl": 1,
-                }
 
             # Emit defensive response (text can narrate deny/trap).
             try:
@@ -1038,4 +904,4 @@ def make_possession_tactics_ctx(
             "label": label,
         }
 
-    return _ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _maybe_inject_matchup_force, _update_def_pressure_for_step
+    return _ensure_matchups, _cache_help_levels, _maybe_apply_hunt_plan, _update_def_pressure_for_step

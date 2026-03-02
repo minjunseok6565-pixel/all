@@ -174,38 +174,10 @@ def build_resolve_context(
     matchup_source: str = "fallback"
     matchup_event: Optional[str] = None
 
-    # Apply and consume one-shot forced matchup (ttl) if it targets this actor.
-    # IMPORTANT: ttl is only consumed when the forced matchup is *actually applied* on a terminal on-ball event.
     try:
-        force = ctx.get("matchup_force")
-        force_def_pid: Optional[str] = None
-        force_event: Optional[str] = None
-        if isinstance(force, dict):
-            f_off = str(force.get("off_pid") or "").strip()
-            f_def = str(force.get("def_pid") or "").strip()
-            if f_off and f_def and f_off == actor.pid and defense.is_on_court(f_def):
-                force_def_pid = f_def
-                force_event = str(force.get("event") or "") or None
-
-                is_terminal = bool(is_shot(outcome) or is_to(outcome) or (is_foul(outcome) and outcome.startswith("FOUL_DRAW_")))
-                if is_terminal:
-                    try:
-                        ttl = int(force.get("ttl", 1) or 1) - 1
-                        if ttl <= 0:
-                            ctx.pop("matchup_force", None)
-                        else:
-                            force["ttl"] = ttl
-                    except Exception:
-                        ctx.pop("matchup_force", None)
-
-        if force_def_pid:
-            defender_pid = force_def_pid
-            matchup_source = "force"
-            matchup_event = force_event
-        else:
-            defender_pid, matchup_source, matchup_event = matchups.get_primary_defender_pid(
-                actor.pid, defense, ctx, off_player=actor
-            )
+        defender_pid, matchup_source, matchup_event = matchups.get_primary_defender_pid(
+            actor.pid, defense, ctx, off_player=actor
+        )
     except Exception as e:
         _record_exception("matchup_primary_defender", e)
         defender_pid, matchup_source, matchup_event = None, "fallback", None

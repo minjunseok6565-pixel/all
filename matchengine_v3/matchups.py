@@ -9,10 +9,9 @@ This module provides a lightweight 5v5 matchup map for the possession simulator.
 Goals (v1):
   - Build a stable OFF_PID -> DEF_PID mapping for current on-court units.
   - Honor basic instructions from defense.tactics.context:
-      * MATCHUP_LOCKS: force (def_pid -> off_pid) assignments.
       * MATCHUP_HIDE_PIDS: discourage assigning those defenders to high-threat offensive players.
       * MATCHUP_ASSIGNMENTS: defender-first preferences (def_pid -> {primary_off_pid, secondary_off_role}).
-      * MATCHUP_LOCKDOWN: single hard lock (def_pid -> off_pid/off_role/tag).
+      * MATCHUP_LOCKDOWN: strong defender-first preference (def_pid -> off_pid/off_role/tag).
   - Honor temporary locks passed through ctx (ctx["matchups_temp_locks"]).
   - Provide a helper to fetch the primary defender for a given offensive pid.
 
@@ -97,17 +96,12 @@ def build_matchups(
             if target:
                 assignment_target[d] = str(target)
 
-    # Merge locks with precedence:
-    #   1) ctx.matchups_temp_locks (highest)
-    #   2) defense MATCHUP_LOCKDOWN
-    #   3) defense MATCHUP_LOCKS / MATCHUP_LOCK
-    locks_explicit = _extract_locks(defense)
-    lockdown_lock = _resolve_lockdown_lock(lockdown_spec, offense, off_players, off_pids, def_pids, threat)
+    # Resolve lockdown target to on-court OFF pid (strong preference, not hard lock).
+    lockdown_target = _resolve_lockdown_target(lockdown_spec, offense, off_players, off_pids, def_pids, threat)
+
+    # Merge temporary locks (ctx-driven, possession-scoped directives).
     locks_merged: List[Mapping[str, Any]] = []
     locks_merged.extend(temp_locks_raw)
-    if isinstance(lockdown_lock, Mapping) and lockdown_lock.get("def_pid") and lockdown_lock.get("off_pid"):
-        locks_merged.append(lockdown_lock)
-    locks_merged.extend(locks_explicit)
 
     # Normalize / filter locks to on-court only.
     locks = _normalize_locks(locks_merged, off_pids, def_pids)
@@ -168,6 +162,13 @@ def build_matchups(
         if assignment_target.get(def_pid) == off_pid:
             score += 18.0 + 22.0 * t_norm
 
+        # Lockdown bonus: same mechanism as assignment, but stronger.
+        if isinstance(lockdown_target, Mapping):
+            ld_def = str(lockdown_target.get("def_pid") or "")
+            ld_off = str(lockdown_target.get("off_pid") or "")
+            if ld_def and ld_off and def_pid == ld_def and off_pid == ld_off:
+                score += 34.0 + 30.0 * t_norm
+
         return float(score)
 
     fixed_score = sum(_pair_score(opid, dpid) for opid, dpid in fixed_pairs)
@@ -213,10 +214,11 @@ def build_matchups(
             if isinstance(x, Mapping)
         ],
         "lockdown": {
-            "def_pid": str(lockdown_lock.get("def_pid") or ""),
-            "off_pid": str(lockdown_lock.get("off_pid") or ""),
+            "def_pid": str(lockdown_target.get("def_pid") or ""),
+            "off_pid": str(lockdown_target.get("off_pid") or ""),
+            "mode": "strong_preference",
         }
-        if isinstance(lockdown_lock, Mapping) and lockdown_lock.get("def_pid") and lockdown_lock.get("off_pid")
+        if isinstance(lockdown_target, Mapping) and lockdown_target.get("def_pid") and lockdown_target.get("off_pid")
         else None,
         "assignments": [
             {"def_pid": str(dpid), "off_pid": str(opid)}
@@ -235,34 +237,22 @@ def get_primary_defender_pid(
     """Return (def_pid, source, event) for the given offensive pid.
 
     Source priority (v1):
-      1) ctx["matchup_force"] if it targets this off_pid
-      2) ctx["matchups_map"]
-      3) fallback best on-court defender by simple heuristics
-
-    Note: consumption (ttl decrement/pop) is handled by resolve.py per the contract.
+      1) ctx["matchups_map"]
+      2) fallback best on-court defender by simple heuristics
     """
 
     opid = str(off_pid or "")
     if not opid:
         return None, "fallback", None
 
-    # 1) one-shot force
-    force = ctx.get("matchup_force")
-    if isinstance(force, dict):
-        f_opid = str(force.get("off_pid") or "")
-        f_dpid = str(force.get("def_pid") or "")
-        if f_opid and f_dpid and f_opid == opid and defense.is_on_court(f_dpid):
-            ev = str(force.get("event") or "") or None
-            return f_dpid, "force", ev
-
-    # 2) possession map
+    # 1) possession map
     m = ctx.get("matchups_map")
     if isinstance(m, dict):
         dpid = str(m.get(opid) or "")
         if dpid and defense.is_on_court(dpid):
             return dpid, "map", None
 
-    # 3) fallback
+    # 2) fallback
     dpid = _fallback_defender_pid(defense, off_player)
     return dpid, "fallback", None
 
@@ -279,52 +269,6 @@ def _tactics_context(team: TeamState) -> Mapping[str, Any]:
         return ctx if isinstance(ctx, Mapping) else {}
     except Exception:
         return {}
-
-
-def _extract_locks(defense: TeamState) -> List[Dict[str, str]]:
-    """Extract MATCHUP_LOCKS from defense.tactics.context.
-
-    Accepted shapes:
-      - list of {"def_pid": "...", "off_pid": "..."}
-      - single dict with keys def_pid/off_pid
-      - dict mapping {def_pid: off_pid}
-    """
-    c = _tactics_context(defense)
-    raw = c.get("MATCHUP_LOCKS")
-    if raw is None:
-        raw = c.get("MATCHUP_LOCK")
-
-    if raw is None:
-        return []
-
-    out: List[Dict[str, str]] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict):
-                dpid = str(item.get("def_pid") or "")
-                opid = str(item.get("off_pid") or "")
-                if dpid and opid:
-                    out.append({"def_pid": dpid, "off_pid": opid})
-        return out
-
-    if isinstance(raw, dict):
-        # Case 1: explicit pair dict
-        if "def_pid" in raw and "off_pid" in raw:
-            dpid = str(raw.get("def_pid") or "")
-            opid = str(raw.get("off_pid") or "")
-            if dpid and opid:
-                return [{"def_pid": dpid, "off_pid": opid}]
-            return []
-
-        # Case 2: mapping def_pid -> off_pid
-        for dpid, opid in raw.items():
-            d = str(dpid or "")
-            o = str(opid or "")
-            if d and o:
-                out.append({"def_pid": d, "off_pid": o})
-        return out
-
-    return []
 
 
 def _extract_hides(defense: TeamState) -> List[str]:
@@ -433,7 +377,7 @@ def _extract_lockdown(defense: TeamState) -> Mapping[str, Any]:
     return out
 
 
-def _resolve_lockdown_lock(
+def _resolve_lockdown_target(
     lockdown_spec: Mapping[str, Any],
     offense: TeamState,
     off_players: Sequence[Player],
@@ -441,7 +385,7 @@ def _resolve_lockdown_lock(
     def_pids: Sequence[str],
     threat: Mapping[str, float],
 ) -> Optional[Dict[str, str]]:
-    """Resolve a MATCHUP_LOCKDOWN spec to a concrete {def_pid, off_pid} lock (on-court only)."""
+    """Resolve MATCHUP_LOCKDOWN to a concrete {def_pid, off_pid} target (on-court only)."""
     if not isinstance(lockdown_spec, Mapping) or not lockdown_spec:
         return None
 
