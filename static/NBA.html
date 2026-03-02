@@ -47,7 +47,7 @@
           <button type="button" class="menu-card">전술</button>
           <button type="button" id="training-menu-btn" class="menu-card">훈련</button>
           <button type="button" class="menu-card">스케줄</button>
-          <button type="button" class="menu-card">순위</button>
+          <button type="button" id="standings-menu-btn" class="menu-card">순위</button>
           <button type="button" class="menu-card">대학</button>
           <button type="button" class="menu-card">시장</button>
           <button type="button" class="menu-card">메디컬 센터</button>
@@ -149,6 +149,56 @@
         <p class="empty-copy">캘린더에서 날짜를 선택하고 훈련 버튼을 눌러 세부 설정을 확인하세요.</p>
       </section>
     </section>
+
+    <section id="standings-screen" class="panel" aria-hidden="true">
+      <div class="screen-header-row">
+        <div>
+          <p class="eyebrow">STANDINGS</p>
+          <h2>컨퍼런스 순위표</h2>
+          <p class="subtitle">정규시즌 확정 경기 기준 팀 순위를 확인합니다.</p>
+        </div>
+        <button id="standings-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+      </div>
+
+      <div class="standings-grid">
+        <section class="standings-card">
+          <div class="standings-card-header">
+            <h3>Eastern Conference</h3>
+          </div>
+          <div class="standings-table-wrap">
+            <table class="standings-table">
+              <thead>
+                <tr>
+                  <th>RK</th><th>TEAM</th><th>W</th><th>L</th><th>PCT</th><th>GB</th>
+                  <th>HOME</th><th>AWAY</th><th>DIV</th><th>CONF</th>
+                  <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
+                </tr>
+              </thead>
+              <tbody id="standings-east-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="standings-card">
+          <div class="standings-card-header">
+            <h3>Western Conference</h3>
+          </div>
+          <div class="standings-table-wrap">
+            <table class="standings-table">
+              <thead>
+                <tr>
+                  <th>RK</th><th>TEAM</th><th>W</th><th>L</th><th>PCT</th><th>GB</th>
+                  <th>HOME</th><th>AWAY</th><th>DIV</th><th>CONF</th>
+                  <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
+                </tr>
+              </thead>
+              <tbody id="standings-west-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+
 
     <section id="player-detail-screen" class="panel" aria-hidden="true">
       <div class="screen-header-row">

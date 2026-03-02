@@ -14,7 +14,7 @@ from league_repo import LeagueRepo
 from schema import normalize_player_id, normalize_team_id
 import state
 from analytics.stats.leaders import compute_leaderboards
-from team_utils import get_conference_standings, get_team_cards, get_team_detail
+from team_utils import get_conference_standings, get_conference_standings_table, get_team_cards, get_team_detail
 
 router = APIRouter()
 
@@ -90,6 +90,11 @@ async def api_playoff_stats_leaders():
 @router.get("/api/standings")
 async def api_standings():
     return get_conference_standings()
+
+
+@router.get("/api/standings/table")
+async def api_standings_table():
+    return get_conference_standings_table()
 
 
 @router.get("/api/teams")
