@@ -1,12 +1,16 @@
 :root {
-  --bg-primary: #0d1b2a;
-  --bg-secondary: #1b263b;
-  --nba-blue: #1d428a;
-  --nba-red: #c8102e;
-  --text-main: #f5f7fa;
-  --text-sub: #cfd6e4;
-  --card-bg: rgba(255, 255, 255, 0.06);
-  --card-border: rgba(255, 255, 255, 0.15);
+  --bg-primary: #0f1116;
+  --bg-secondary: #171a22;
+  --bg-elevated: #1d212b;
+  --nba-blue: #2f5ca8;
+  --nba-red: #cb1236;
+  --text-main: #f5f7fb;
+  --text-sub: #aab2c7;
+  --text-dim: #8893ad;
+  --card-bg: rgba(21, 24, 33, 0.88);
+  --card-bg-soft: rgba(28, 33, 44, 0.84);
+  --card-border: rgba(255, 255, 255, 0.11);
+  --card-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
 }
 
 * { box-sizing: border-box; }
@@ -15,13 +19,18 @@ body {
   font-family: "Pretendard", "Noto Sans KR", sans-serif;
   color: var(--text-main);
   min-height: 100vh;
-  background: radial-gradient(circle at top, #1d428a 0%, var(--bg-primary) 45%, #060b12 100%);
+  background:
+    radial-gradient(circle at 85% -15%, rgba(203, 18, 54, 0.2), transparent 46%),
+    radial-gradient(circle at 14% -8%, rgba(47, 92, 168, 0.24), transparent 38%),
+    linear-gradient(155deg, #0b0d12 0%, var(--bg-primary) 42%, #07090d 100%);
 }
 
 .bg-overlay {
   position: fixed;
   inset: 0;
-  background: linear-gradient(130deg, rgba(200, 16, 46, 0.15), rgba(29, 66, 138, 0.1));
+  background:
+    linear-gradient(132deg, rgba(203, 18, 54, 0.12), transparent 40%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015) 1px, transparent 1px, transparent 22px);
   pointer-events: none;
 }
 
@@ -36,10 +45,28 @@ body {
 .panel { display: none; }
 .panel.active { display: block; }
 
+#start-screen,
+#team-screen,
+#main-screen,
+#schedule-screen,
+#my-team-screen,
+#tactics-screen,
+#training-screen,
+#standings-screen,
+#college-screen,
+#player-detail-screen {
+  background: linear-gradient(150deg, rgba(29, 33, 44, 0.58), rgba(12, 14, 19, 0.82));
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  padding: 28px;
+  box-shadow: var(--card-shadow);
+  backdrop-filter: blur(8px);
+}
+
 h1, h2, h3 { margin: 0 0 12px; }
 .eyebrow {
   letter-spacing: 0.18em;
-  color: #ffd166;
+  color: #f4d06f;
   font-weight: 700;
   margin-bottom: 12px;
 }
@@ -51,11 +78,14 @@ h1, h2, h3 { margin: 0 0 12px; }
   padding: 12px 20px;
   border-radius: 10px;
   font-size: .95rem;
-  border: none;
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: transform 0.15s ease, opacity 0.15s ease;
+  transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-.btn:hover { transform: translateY(-1px); }
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.28);
+}
 .btn:disabled,
 .btn[aria-disabled="true"] {
   cursor: not-allowed;
@@ -63,8 +93,17 @@ h1, h2, h3 { margin: 0 0 12px; }
   filter: grayscale(0.8);
 }
 
-.btn-primary { background: var(--nba-red); color: white; }
-.btn-secondary { background: var(--nba-blue); color: white; }
+.btn-primary {
+  background: linear-gradient(135deg, #df1b44, #b10b2d);
+  border-color: rgba(255, 94, 126, 0.45);
+  color: white;
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, #2f5ca8, #1f3f7d);
+  border-color: rgba(124, 167, 250, 0.38);
+  color: white;
+}
 
 .hint { margin-top: 14px; color: #9fb2d4; }
 
@@ -103,7 +142,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .franchise-menu-panel {
-  background: rgba(10, 18, 29, 0.78);
+  background: var(--card-bg-soft);
   border: 1px solid var(--card-border);
   border-radius: 12px;
   padding: 12px;
@@ -117,7 +156,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .next-game-panel {
-  background: rgba(10, 18, 29, 0.78);
+  background: var(--card-bg-soft);
   border: 1px solid var(--card-border);
   border-radius: 12px;
   padding: 24px 24px 28px;
@@ -159,8 +198,8 @@ h1, h2, h3 { margin: 0 0 12px; }
   height: 130px;
   margin: 0 auto;
   border-radius: 50%;
-  border: 2px dashed rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.03);
+  border: 2px dashed rgba(255, 255, 255, 0.4);
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04));
 }
 
 .next-game-meta-row {
@@ -200,13 +239,14 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .team-card,
 .menu-card {
-  background: var(--card-bg);
+  background: linear-gradient(145deg, rgba(36, 41, 55, 0.85), rgba(20, 24, 33, 0.92));
   border: 1px solid var(--card-border);
   color: var(--text-main);
   padding: 16px;
   border-radius: 12px;
   text-align: left;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .menu-card {
@@ -216,12 +256,15 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .menu-card-highlight {
-  border-color: rgba(255, 209, 102, 0.6);
-  background: linear-gradient(135deg, rgba(255, 209, 102, 0.16), rgba(29, 66, 138, 0.26));
+  border-color: rgba(248, 93, 122, 0.66);
+  background: linear-gradient(135deg, rgba(203, 18, 54, 0.28), rgba(47, 92, 168, 0.22));
 }
 
 .team-card:hover,
-.menu-card:hover { border-color: rgba(255,255,255,0.45); }
+.menu-card:hover {
+  border-color: rgba(255,255,255,0.42);
+  background: linear-gradient(140deg, rgba(44, 51, 68, 0.95), rgba(24, 28, 38, 0.95));
+}
 .team-card small { display: block; color: #9fb2d4; margin-top: 6px; }
 
 .screen-header-row {
@@ -241,7 +284,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .schedule-card {
-  background: rgba(10, 18, 29, 0.78);
+  background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 14px;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
@@ -255,7 +298,7 @@ h1, h2, h3 { margin: 0 0 12px; }
   gap: 10px;
   padding: 16px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.11);
-  background: linear-gradient(120deg, rgba(29, 66, 138, 0.32), rgba(12, 20, 36, 0.35));
+  background: linear-gradient(120deg, rgba(203, 18, 54, 0.28), rgba(28, 35, 52, 0.55));
 }
 
 .schedule-card-head h3 {
@@ -352,7 +395,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .college-tab-row .btn.is-active {
-  background: var(--nba-red);
+  background: linear-gradient(135deg, #df1b44, #b10b2d);
 }
 
 .college-panel { display: none; }
@@ -365,7 +408,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .college-card {
-  background: rgba(10, 18, 29, 0.78);
+  background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 14px;
   padding: 14px;
@@ -413,7 +456,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .roster-table-wrap,
 .player-detail-panel {
-  background: rgba(10, 18, 29, 0.78);
+  background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 14px;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
@@ -509,7 +552,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .detail-card {
-  background: linear-gradient(140deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  background: linear-gradient(140deg, rgba(44, 51, 67, 0.86), rgba(20, 24, 33, 0.92));
   border: 1px solid rgba(255,255,255,0.16);
   border-radius: 24px;
   padding: 18px 20px;
@@ -687,8 +730,8 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 .loading-overlay.hidden { display: none; }
 .loading-box {
-  background: #101826;
-  border: 1px solid #334a73;
+  background: #171b25;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   padding: 24px;
   border-radius: 12px;
   min-width: 320px;
@@ -789,8 +832,9 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .training-calendar-panel {
-  border: 2px solid #444;
-  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  background: var(--card-bg);
   padding: 14px;
 }
 
@@ -802,9 +846,11 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .training-day-cell {
   min-height: 74px;
-  border: 1px solid #444;
-  background: repeating-linear-gradient(135deg, #f0f0f0, #f0f0f0 6px, #ececec 6px, #ececec 12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(36, 42, 57, 0.9), rgba(23, 27, 37, 0.95));
   font-size: 14px;
+  color: var(--text-main);
   text-align: left;
   padding: 8px;
   cursor: pointer;
@@ -816,16 +862,16 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .training-day-date { font-weight: 700; margin-bottom: 6px; }
-.training-day-note { font-size: 13px; color: #1f3c79; }
-.training-day-sub { font-size: 12px; color: #6a6a6a; margin-top: 4px; }
+.training-day-note { font-size: 13px; color: #9db8ef; }
+.training-day-sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 
 .training-day-cell.is-selected {
-  border: 2px solid #2746a5;
-  background: #dce7ff;
+  border: 2px solid rgba(248, 93, 122, 0.7);
+  background: linear-gradient(140deg, rgba(203, 18, 54, 0.28), rgba(47, 92, 168, 0.3));
 }
 
 .training-day-cell.is-game {
-  background: #efefef;
+  background: linear-gradient(145deg, rgba(65, 72, 91, 0.88), rgba(33, 38, 51, 0.94));
 }
 
 .training-type-buttons {
@@ -839,8 +885,9 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .training-detail-panel {
   margin-top: 18px;
-  border: 1px solid #bbb;
-  background: rgba(255,255,255,0.65);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  background: var(--card-bg);
   padding: 14px;
 }
 
@@ -869,7 +916,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .training-player-table th,
 .training-player-table td {
-  border: 1px solid #999;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   padding: 6px;
   text-align: left;
 }
@@ -882,7 +929,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 .standings-card {
-  background: rgba(10, 18, 29, 0.82);
+  background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 14px;
   overflow: hidden;
@@ -892,7 +939,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 .standings-card-header {
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(90deg, rgba(29, 66, 138, 0.35), rgba(200, 16, 46, 0.18));
+  background: linear-gradient(90deg, rgba(203, 18, 54, 0.32), rgba(47, 92, 168, 0.24));
 }
 
 .standings-card-header h3 {
@@ -953,7 +1000,7 @@ h1, h2, h3 { margin: 0 0 12px; }
 .tactics-shell {
   display: grid;
   gap: 18px;
-  background: rgba(8, 12, 24, 0.55);
+  background: var(--card-bg);
   border: 1px solid rgba(200, 214, 255, 0.2);
   border-radius: 16px;
   padding: 18px;
