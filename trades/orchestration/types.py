@@ -155,7 +155,9 @@ class OrchestrationConfig:
 
     # --- Trade block (listing) market effects
     enable_trade_block: bool = True
-    trade_block_actor_weight_multiplier: float = 1.20
+    trade_block_actor_weight_multiplier: float = 1.45
+    trade_block_public_request_multiplier: float = 1.10
+    public_trade_request_actor_add: float = 0.10
     trade_block_auto_list_days_public_offer: int = 10
 
     # --- Offer privacy / leaks

@@ -6,7 +6,56 @@ from typing import Any, Dict, List, Optional, Set
 
 from .types import ActorPlan, OrchestrationConfig
 from . import policy
-from .market_state import get_active_thread_team_ids, get_active_listing_team_ids
+from .market_state import get_active_thread_team_ids, get_active_listing_team_ids, list_team_trade_listings
+
+
+def _build_team_public_trade_request_count_map(tick_ctx) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    repo = getattr(tick_ctx, "repo", None)
+    conn = getattr(repo, "_conn", None)
+    if conn is None:
+        return out
+    try:
+        rows = conn.execute(
+            """
+            SELECT team_id, COUNT(1)
+            FROM player_agency_state
+            WHERE trade_request_level >= 2
+            GROUP BY team_id;
+            """
+        ).fetchall()
+    except Exception:
+        return out
+    for r in rows or []:
+        try:
+            tid = str(r[0] or "").upper()
+            cnt = int(r[1] or 0)
+        except Exception:
+            continue
+        if tid and cnt > 0:
+            out[tid] = cnt
+    return out
+
+
+def _build_listing_public_trade_request_count_map(
+    trade_market: Dict[str, Any],
+    *,
+    today: date,
+    team_ids: Set[str],
+    team_public_request_count: Dict[str, int],
+) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    if not team_ids:
+        return out
+    for tid in team_ids:
+        try:
+            listings = list_team_trade_listings(trade_market, team_id=tid, active_only=True, today=today)
+        except Exception:
+            continue
+        if not listings:
+            continue
+        out[tid] = min(len(listings), int(team_public_request_count.get(tid, 0) or 0))
+    return out
 
 
 def select_trade_actors(
@@ -50,6 +99,16 @@ def select_trade_actors(
                 }
             except Exception:
                 active_listing_team_ids = set()
+
+    team_public_request_count: Dict[str, int] = _build_team_public_trade_request_count_map(tick_ctx)
+    listing_public_request_count: Dict[str, int] = {}
+    if trade_market is not None and today is not None and active_listing_team_ids:
+        listing_public_request_count = _build_listing_public_trade_request_count_map(
+            trade_market,
+            today=today,
+            team_ids=active_listing_team_ids,
+            team_public_request_count=team_public_request_count,
+        )
 
     try:
         tier_w_high = float(getattr(config, "pressure_tier_weight_multiplier_high", 1.15) or 1.0)
@@ -174,6 +233,20 @@ def select_trade_actors(
     if listing_mult <= 0:
         listing_mult = 1.0
 
+    try:
+        listing_public_req_mult = float(getattr(config, "trade_block_public_request_multiplier", 1.10) or 1.0)
+    except Exception:
+        listing_public_req_mult = 1.0
+    if listing_public_req_mult <= 0:
+        listing_public_req_mult = 1.0
+
+    try:
+        public_req_add = float(getattr(config, "public_trade_request_actor_add", 0.10) or 0.0)
+    except Exception:
+        public_req_add = 0.0
+    if public_req_add < 0:
+        public_req_add = 0.0
+
     def _weight(p: ActorPlan) -> float:
         w = max(0.001, float(p.activity_score or 0.0))
         tier = (getattr(p, "pressure_tier", None) or "").upper()
@@ -185,6 +258,10 @@ def select_trade_actors(
             w *= thread_mult
         if p.team_id in active_listing_team_ids:
             w *= listing_mult
+            if int(listing_public_request_count.get(p.team_id, 0) or 0) > 0:
+                w *= listing_public_req_mult
+        if int(team_public_request_count.get(p.team_id, 0) or 0) > 0 and public_req_add > 0.0:
+            w += public_req_add
         return w
 
     picked: List[ActorPlan] = []
