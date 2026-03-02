@@ -61,6 +61,8 @@ const state = {
   trainingDraftSession: null,
   standingsData: null,
   tacticsDraft: null,
+  medicalOverview: null,
+  medicalSelectedPlayerId: null,
 };
 
 const els = {
@@ -104,9 +106,12 @@ const els = {
   trainingScreen: document.getElementById("training-screen"),
   standingsScreen: document.getElementById("standings-screen"),
   collegeScreen: document.getElementById("college-screen"),
+  medicalScreen: document.getElementById("medical-screen"),
   trainingBackBtn: document.getElementById("training-back-btn"),
   standingsBackBtn: document.getElementById("standings-back-btn"),
   collegeMenuBtn: document.getElementById("college-menu-btn"),
+  medicalMenuBtn: document.getElementById("medical-menu-btn"),
+  medicalBackBtn: document.getElementById("medical-back-btn"),
   collegeBackBtn: document.getElementById("college-back-btn"),
   collegeMetaLine: document.getElementById("college-meta-line"),
   collegeTabTeams: document.getElementById("college-tab-teams"),
@@ -142,6 +147,18 @@ const els = {
   playerDetailTitle: document.getElementById("player-detail-title"),
   playerDetailPanel: document.getElementById("player-detail-panel"),
   playerDetailContent: document.getElementById("player-detail-content"),
+  medicalTitle: document.getElementById("medical-title"),
+  medicalAsOf: document.getElementById("medical-as-of"),
+  medicalRosterCount: document.getElementById("medical-roster-count"),
+  medicalOutCount: document.getElementById("medical-out-count"),
+  medicalReturningCount: document.getElementById("medical-returning-count"),
+  medicalHighRiskCount: document.getElementById("medical-high-risk-count"),
+  medicalHealthFrustrationCount: document.getElementById("medical-health-frustration-count"),
+  medicalRiskBody: document.getElementById("medical-risk-body"),
+  medicalInjuredBody: document.getElementById("medical-injured-body"),
+  medicalHealthBody: document.getElementById("medical-health-body"),
+  medicalTimelineTitle: document.getElementById("medical-timeline-title"),
+  medicalTimelineList: document.getElementById("medical-timeline-list"),
   loadingOverlay: document.getElementById("loading-overlay"),
   loadingText: document.getElementById("loading-text")
 };
@@ -170,6 +187,7 @@ function activateScreen(target) {
     els.trainingScreen,
     els.standingsScreen,
     els.collegeScreen,
+    els.medicalScreen,
   ].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
@@ -1338,6 +1356,130 @@ function renderTacticsScreen() {
   bindLineupEvents();
 }
 
+
+function renderMedicalEmpty(tbody, colSpan, text) {
+  tbody.innerHTML = `<tr><td colspan="${colSpan}" class="schedule-empty">${text}</td></tr>`;
+}
+
+function riskTierClass(tier) {
+  const t = String(tier || '').toUpperCase();
+  if (t === 'HIGH') return 'status-danger';
+  if (t === 'MEDIUM') return 'status-warn';
+  return 'status-ok';
+}
+
+function renderMedicalTimeline(playerName, events) {
+  els.medicalTimelineTitle.textContent = playerName ? `${playerName} 최근 부상 타임라인` : '워치리스트에서 선수를 선택하세요.';
+  if (!events || !events.length) {
+    els.medicalTimelineList.innerHTML = '<p class="empty-copy">최근 이벤트가 없습니다.</p>';
+    return;
+  }
+  els.medicalTimelineList.innerHTML = events.map((e) => `
+    <article class="medical-timeline-item">
+      <p><strong>${e.date || '-'}</strong> · ${e.context || '-'}</p>
+      <p>${e.body_part || '-'} / ${e.injury_type || '-'} / severity ${num(e.severity, 0)}</p>
+      <p>OUT ~ ${e.out_until_date || '-'} · RETURNING ~ ${e.returning_until_date || '-'}</p>
+    </article>
+  `).join('');
+}
+
+async function loadMedicalTimeline(playerId, playerName) {
+  if (!playerId || !state.selectedTeamId) return;
+  setLoading(true, '선수 메디컬 타임라인을 불러오는 중...');
+  try {
+    const payload = await fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/players/${encodeURIComponent(playerId)}/timeline`);
+    const events = payload?.timeline?.events || [];
+    renderMedicalTimeline(playerName || payload?.player?.name || '-', events);
+  } catch (e) {
+    renderMedicalTimeline(playerName || '-', []);
+    alert(`타임라인 로딩 실패: ${e.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function renderMedicalOverview(overview) {
+  const summary = overview?.summary || {};
+  const statusCounts = summary?.injury_status_counts || {};
+  const riskCounts = summary?.risk_tier_counts || {};
+  const watch = overview?.watchlists || {};
+
+  els.medicalAsOf.textContent = `기준일 ${overview?.as_of_date || '-'}`;
+  els.medicalRosterCount.textContent = num(summary?.roster_count, 0);
+  els.medicalOutCount.textContent = num(statusCounts?.OUT, 0);
+  els.medicalReturningCount.textContent = `복귀 관리: ${num(statusCounts?.RETURNING, 0)}명`;
+  els.medicalHighRiskCount.textContent = num(riskCounts?.HIGH, 0);
+  els.medicalHealthFrustrationCount.textContent = num(summary?.health_frustration?.high_count, 0);
+
+  const riskRows = watch?.highest_risk || [];
+  if (!riskRows.length) {
+    renderMedicalEmpty(els.medicalRiskBody, 5, '위험 데이터가 없습니다.');
+  } else {
+    els.medicalRiskBody.innerHTML = '';
+    riskRows.forEach((r) => {
+      const tr = document.createElement('tr');
+      tr.className = 'roster-row';
+      tr.innerHTML = `
+        <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
+        <td><span class="status-line ${riskTierClass(r.injury_status)}">${r.injury_status || '-'}</span></td>
+        <td><strong class="${riskTierClass(r.risk_tier)}">${r.risk_tier || '-'} (${num(r.risk_score, 0)})</strong></td>
+        <td>${formatPercent(1 - num(r.condition?.short_term_fatigue, 0))} / ${formatPercent(1 - num(r.condition?.long_term_fatigue, 0))}</td>
+        <td>${num(r.condition?.sharpness, 0)}</td>
+      `;
+      tr.addEventListener('click', () => {
+        state.medicalSelectedPlayerId = r.player_id;
+        loadMedicalTimeline(r.player_id, r.name).catch((e) => alert(e.message));
+      });
+      els.medicalRiskBody.appendChild(tr);
+    });
+  }
+
+  const injuredRows = watch?.currently_unavailable || [];
+  els.medicalInjuredBody.innerHTML = injuredRows.length ? injuredRows.map((r) => `
+    <tr>
+      <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
+      <td><span class="status-line ${riskTierClass(r.recovery_status)}">${r.recovery_status || '-'}</span></td>
+      <td>${r.injury_current?.body_part || '-'} (${r.injury_current?.injury_type || '-'})</td>
+      <td>${r.injury_current?.out_until_date || '-'} ~ ${r.injury_current?.returning_until_date || '-'}</td>
+    </tr>
+  `).join('') : renderEmptyScheduleRow(4, '결장/복귀 관리 대상이 없습니다.');
+
+  const healthRows = watch?.health_frustration_high || [];
+  els.medicalHealthBody.innerHTML = healthRows.length ? healthRows.map((r) => `
+    <tr>
+      <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
+      <td>${num(r.health_frustration, 2)}</td>
+      <td>${num(r.trade_request_level, 0)}</td>
+      <td>${num(r.escalation_health, 0)}</td>
+    </tr>
+  `).join('') : renderEmptyScheduleRow(4, '건강 불만 상위 선수가 없습니다.');
+}
+
+async function showMedicalScreen() {
+  if (!state.selectedTeamId) {
+    alert('먼저 팀을 선택해주세요.');
+    return;
+  }
+  setLoading(true, '메디컬 센터 데이터를 불러오는 중...');
+  try {
+    const overview = await fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/overview`);
+    state.medicalOverview = overview;
+    const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    els.medicalTitle.textContent = `${teamName} 메디컬 센터`;
+    renderMedicalOverview(overview);
+    const first = (overview?.watchlists?.highest_risk || [])[0];
+    if (first?.player_id) {
+      state.medicalSelectedPlayerId = first.player_id;
+      await loadMedicalTimeline(first.player_id, first.name);
+    } else {
+      renderMedicalTimeline(null, []);
+    }
+    activateScreen(els.medicalScreen);
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function showTacticsScreen() {
   if (!state.selectedTeamId) {
     alert('먼저 팀을 선택해주세요.');
@@ -1377,7 +1519,9 @@ els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offe
 els.tacticsDefenseBtn.addEventListener("click", () => toggleTacticsOptions("defense"));
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
 els.collegeMenuBtn.addEventListener("click", () => showCollegeScreen().catch((e) => alert(e.message)));
+els.medicalMenuBtn.addEventListener("click", () => showMedicalScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
+els.medicalBackBtn.addEventListener("click", () => showMainScreen());
 els.standingsBackBtn.addEventListener("click", () => showMainScreen());
 els.collegeBackBtn.addEventListener("click", () => showMainScreen());
 els.collegeTabTeams.addEventListener("click", () => switchCollegeTab("teams"));

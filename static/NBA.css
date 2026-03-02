@@ -54,6 +54,7 @@ body {
 #training-screen,
 #standings-screen,
 #college-screen,
+#medical-screen,
 #player-detail-screen {
   background: linear-gradient(150deg, rgba(29, 33, 44, 0.58), rgba(12, 14, 19, 0.82));
   border: 1px solid var(--card-border);
@@ -1090,4 +1091,68 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 @media (max-width: 1024px) {
   .tactics-lineup-grid { grid-template-columns: 1fr; }
+}
+
+
+.status-warn { color: #f4d06f; }
+
+.medical-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.medical-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.medical-card {
+  background: var(--card-bg-soft);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.medical-big { font-size: 1.7rem; font-weight: 800; margin: 6px 0; }
+.medical-sub { color: var(--text-sub); margin: 0; }
+.medical-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.medical-chip {
+  display: inline-block;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: var(--text-sub);
+  font-size: .85rem;
+}
+
+.medical-table-wrap { overflow: auto; }
+.medical-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+.medical-table th,
+.medical-table td {
+  padding: 9px 8px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  text-align: left;
+  vertical-align: top;
+}
+.medical-timeline-list { display: grid; gap: 8px; max-height: 320px; overflow: auto; }
+.medical-timeline-item {
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255,255,255,.02);
+}
+.medical-timeline-item p { margin: 0 0 4px; color: #dfe7f7; }
+.medical-timeline-item p:last-child { margin-bottom: 0; color: var(--text-sub); }
+
+@media (max-width: 1100px) {
+  .medical-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .medical-layout { grid-template-columns: 1fr; }
 }

@@ -4,8 +4,8 @@ import json
 import os
 import sqlite3
 import hashlib
-from datetime import date
-from typing import Any, Dict, List, Optional
+from datetime import date, timedelta
+from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -74,6 +74,122 @@ def _pick_leader(rows: List[Dict[str, Any]], stat_keys: List[str]) -> Optional[D
             }
     return best
 
+
+def _attr_float(attrs: Any, *keys: str) -> Optional[float]:
+    if not isinstance(attrs, dict):
+        return None
+    lower_map = {str(k).lower(): v for k, v in attrs.items()}
+    for key in keys:
+        raw = lower_map.get(str(key).lower())
+        try:
+            if raw is None:
+                continue
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(v)))
+
+
+def _risk_tier_from_inputs(
+    *,
+    st_fatigue: float,
+    lt_fatigue: float,
+    age: int,
+    injury_freq: Optional[float],
+    durability: Optional[float],
+    reinjury_total: int,
+) -> Dict[str, Any]:
+    score = 0.0
+    score += _clamp(st_fatigue, 0.0, 1.0) * 30.0
+    score += _clamp(lt_fatigue, 0.0, 1.0) * 30.0
+    score += _clamp((int(age) - 28) / 10.0, 0.0, 1.0) * 15.0
+    if injury_freq is not None:
+        score += _clamp((float(injury_freq) - 1.0) / 9.0, 0.0, 1.0) * 15.0
+    if durability is not None:
+        score += (1.0 - _clamp(float(durability) / 100.0, 0.0, 1.0)) * 10.0
+    score += _clamp(float(reinjury_total) / 5.0, 0.0, 1.0) * 10.0
+    final = int(round(_clamp(score, 0.0, 100.0)))
+    if final >= 67:
+        tier = "HIGH"
+    elif final >= 34:
+        tier = "MEDIUM"
+    else:
+        tier = "LOW"
+    return {"risk_score": final, "risk_tier": tier}
+
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _build_risk_profile(
+    *,
+    row: Mapping[str, Any],
+    injury_state: Mapping[str, Any],
+    fatigue_state: Mapping[str, Any],
+    sharpness_state: Mapping[str, Any],
+    as_of_date: str,
+) -> Dict[str, Any]:
+    from injury.status import status_for_date
+
+    attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
+    st = float((fatigue_state or {}).get("st", 0.0) or 0.0)
+    lt = float((fatigue_state or {}).get("lt", 0.0) or 0.0)
+    sharpness = float((sharpness_state or {}).get("sharpness", 50.0) or 50.0)
+    age = int(row.get("age") or 0)
+    injury_freq = _attr_float(attrs, "injury_freq", "injuryfrequency", "injury_frequency")
+    durability = _attr_float(attrs, "durability", "dur")
+    reinjury = injury_state.get("reinjury_count") if isinstance(injury_state, dict) else {}
+    reinjury_total = sum(_safe_int(v, 0) for v in (reinjury or {}).values()) if isinstance(reinjury, dict) else 0
+    risk = _risk_tier_from_inputs(
+        st_fatigue=st,
+        lt_fatigue=lt,
+        age=age,
+        injury_freq=injury_freq,
+        durability=durability,
+        reinjury_total=reinjury_total,
+    )
+    status = status_for_date(injury_state, on_date_iso=as_of_date)
+    return {
+        "player_id": str(row.get("player_id") or ""),
+        "name": row.get("name"),
+        "pos": row.get("pos"),
+        "age": age,
+        "injury_status": status,
+        "injury_state": dict(injury_state or {}),
+        "condition": {
+            "short_term_fatigue": st,
+            "long_term_fatigue": lt,
+            "short_term_stamina": max(0.0, 1.0 - st),
+            "long_term_stamina": max(0.0, 1.0 - lt),
+            "sharpness": sharpness,
+        },
+        "risk_inputs": {
+            "injury_freq": injury_freq,
+            "durability": durability,
+            "age": age,
+            "lt_wear_proxy": lt,
+            "energy_proxy": max(0.0, 1.0 - st),
+            "reinjury_count": reinjury if isinstance(reinjury, dict) else {},
+        },
+        "risk_score": int(risk["risk_score"]),
+        "risk_tier": risk["risk_tier"],
+    }
 @router.get("/")
 async def root():
     """간단한 헬스체크 및 NBA.html 링크 안내."""
@@ -351,6 +467,207 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
     }
 
 
+@router.get("/api/medical/team/{team_id}/injury-risk")
+async def api_medical_injury_risk(
+    team_id: str,
+    season_year: Optional[int] = None,
+    min_risk_tier: Optional[str] = None,
+    include_healthy_only: bool = True,
+):
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    as_of_date = state.get_current_date_as_date().isoformat()
+
+    tier_order = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+    min_tier = str(min_risk_tier or "LOW").upper()
+    if min_tier not in tier_order:
+        raise HTTPException(status_code=400, detail="min_risk_tier must be one of: LOW, MEDIUM, HIGH")
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        roster_rows = repo.get_team_roster(tid)
+        pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
+        fatigue_by_pid: Dict[str, Dict[str, Any]] = {}
+        sharpness_by_pid: Dict[str, Dict[str, Any]] = {}
+        injury_by_pid: Dict[str, Dict[str, Any]] = {}
+
+        if pids:
+            from fatigue import repo as fatigue_repo
+            from readiness import repo as readiness_repo
+            from injury import repo as injury_repo
+
+            with repo.transaction() as cur:
+                fatigue_by_pid = fatigue_repo.get_player_fatigue_states(cur, pids)
+                if sy > 0:
+                    sharpness_by_pid = readiness_repo.get_player_sharpness_states(cur, pids, season_year=sy)
+                injury_by_pid = injury_repo.get_player_injury_states(cur, pids)
+
+    from injury.status import status_for_date
+
+    items: List[Dict[str, Any]] = []
+    for row in roster_rows:
+        pid = str(row.get("player_id"))
+        attrs = row.get("attrs") if isinstance(row.get("attrs"), dict) else {}
+        injury_state = injury_by_pid.get(pid) or {}
+        normalized_status = status_for_date(injury_state, on_date_iso=as_of_date)
+        if include_healthy_only and normalized_status != "HEALTHY":
+            continue
+
+        fatigue_row = fatigue_by_pid.get(pid) or {}
+        st = float(fatigue_row.get("st", 0.0) or 0.0)
+        lt = float(fatigue_row.get("lt", 0.0) or 0.0)
+        sharpness = float((sharpness_by_pid.get(pid) or {}).get("sharpness", 50.0) or 50.0)
+        age = int(row.get("age") or 0)
+        injury_freq = _attr_float(attrs, "injury_freq", "injuryfrequency", "injury_frequency")
+        durability = _attr_float(attrs, "durability", "dur")
+        reinjury = injury_state.get("reinjury_count") if isinstance(injury_state, dict) else {}
+        reinjury_total = sum(int(v or 0) for v in (reinjury or {}).values()) if isinstance(reinjury, dict) else 0
+        risk = _risk_tier_from_inputs(
+            st_fatigue=st,
+            lt_fatigue=lt,
+            age=age,
+            injury_freq=injury_freq,
+            durability=durability,
+            reinjury_total=reinjury_total,
+        )
+        if tier_order[risk["risk_tier"]] < tier_order[min_tier]:
+            continue
+
+        items.append(
+            {
+                "player_id": pid,
+                "name": row.get("name"),
+                "pos": row.get("pos"),
+                "age": age,
+                "injury_status": normalized_status,
+                "injury_state": injury_state,
+                "condition": {
+                    "short_term_fatigue": st,
+                    "long_term_fatigue": lt,
+                    "short_term_stamina": max(0.0, 1.0 - st),
+                    "long_term_stamina": max(0.0, 1.0 - lt),
+                    "sharpness": sharpness,
+                },
+                "risk_inputs": {
+                    "injury_freq": injury_freq,
+                    "durability": durability,
+                    "age": age,
+                    "lt_wear_proxy": lt,
+                    "energy_proxy": max(0.0, 1.0 - st),
+                    "reinjury_count": reinjury if isinstance(reinjury, dict) else {},
+                },
+                "risk_score": int(risk["risk_score"]),
+                "risk_tier": risk["risk_tier"],
+            }
+        )
+
+    items.sort(key=lambda x: (int(x.get("risk_score") or 0), str(x.get("name") or "")), reverse=True)
+    return {
+        "team_id": tid,
+        "season_year": sy,
+        "as_of_date": as_of_date,
+        "min_risk_tier": min_tier,
+        "include_healthy_only": bool(include_healthy_only),
+        "items": items,
+    }
+
+
+@router.get("/api/medical/team/{team_id}/injured")
+async def api_medical_injured_players(
+    team_id: str,
+    season_year: Optional[int] = None,
+    include_returning: bool = True,
+    include_event_history: bool = True,
+    history_days: int = 180,
+):
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    as_of = state.get_current_date_as_date()
+    as_of_iso = as_of.isoformat()
+    history_days = max(1, min(int(history_days or 180), 730))
+    start_iso = (as_of - timedelta(days=history_days)).isoformat()
+    end_iso = (as_of + timedelta(days=1)).isoformat()
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        roster_rows = repo.get_team_roster(tid)
+        pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
+
+        from injury import repo as injury_repo
+        from injury.status import status_for_date
+
+        with repo.transaction() as cur:
+            injury_by_pid = injury_repo.get_player_injury_states(cur, pids) if pids else {}
+            events = (
+                injury_repo.get_overlapping_injury_events(
+                    cur,
+                    pids,
+                    start_date=start_iso,
+                    end_date=end_iso,
+                )
+                if (include_event_history and pids)
+                else []
+            )
+
+    events_by_pid: Dict[str, List[Dict[str, Any]]] = {}
+    for e in events:
+        pid = str(e.get("player_id") or "")
+        if not pid:
+            continue
+        events_by_pid.setdefault(pid, []).append(e)
+
+    items: List[Dict[str, Any]] = []
+    for row in roster_rows:
+        pid = str(row.get("player_id"))
+        state_row = injury_by_pid.get(pid) or {}
+        recovery_status = status_for_date(state_row, on_date_iso=as_of_iso)
+        if recovery_status == "HEALTHY":
+            continue
+        if recovery_status == "RETURNING" and not include_returning:
+            continue
+
+        items.append(
+            {
+                "player_id": pid,
+                "name": row.get("name"),
+                "pos": row.get("pos"),
+                "recovery_status": recovery_status,
+                "is_injured": recovery_status in {"OUT", "RETURNING"},
+                "injury_current": {
+                    "injury_id": state_row.get("injury_id"),
+                    "start_date": state_row.get("start_date"),
+                    "body_part": state_row.get("body_part"),
+                    "injury_type": state_row.get("injury_type"),
+                    "severity": state_row.get("severity"),
+                    "out_until_date": state_row.get("out_until_date"),
+                    "returning_until_date": state_row.get("returning_until_date"),
+                    "temp_debuff": state_row.get("temp_debuff") or {},
+                    "perm_drop": state_row.get("perm_drop") or {},
+                    "reinjury_count": state_row.get("reinjury_count") or {},
+                    "last_processed_date": state_row.get("last_processed_date"),
+                },
+                "availability": {
+                    "out_until_date": state_row.get("out_until_date"),
+                    "returning_until_date": state_row.get("returning_until_date"),
+                },
+                "history": events_by_pid.get(pid, []) if include_event_history else None,
+            }
+        )
+
+    items.sort(key=lambda x: (str(x.get("availability", {}).get("out_until_date") or ""), str(x.get("name") or "")))
+    return {
+        "team_id": tid,
+        "season_year": sy,
+        "as_of_date": as_of_iso,
+        "include_returning": bool(include_returning),
+        "include_event_history": bool(include_event_history),
+        "history_days": history_days,
+        "items": items,
+    }
 
 
 
@@ -360,6 +677,244 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
 
 
 
+
+
+
+
+@router.get("/api/medical/team/{team_id}/overview")
+async def api_medical_team_overview(
+    team_id: str,
+    season_year: Optional[int] = None,
+    history_days: int = 180,
+    top_n: int = 5,
+):
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    as_of = state.get_current_date_as_date()
+    as_of_iso = as_of.isoformat()
+    history_days = max(1, min(int(history_days or 180), 730))
+    top_n = max(1, min(int(top_n or 5), 20))
+    health_high_threshold = 0.5
+
+    from agency import repo as agency_repo
+    from fatigue import repo as fatigue_repo
+    from injury import repo as injury_repo
+    from readiness import repo as readiness_repo
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        roster_rows = repo.get_team_roster(tid)
+        pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
+
+        with repo.transaction() as cur:
+            fatigue_by_pid = fatigue_repo.get_player_fatigue_states(cur, pids) if pids else {}
+            sharp_by_pid = readiness_repo.get_player_sharpness_states(cur, pids, season_year=sy) if (pids and sy > 0) else {}
+            injury_by_pid = injury_repo.get_player_injury_states(cur, pids) if pids else {}
+            agency_by_pid = agency_repo.get_player_agency_states(cur, pids) if pids else {}
+            start_iso = (as_of - timedelta(days=history_days)).isoformat()
+            end_iso = (as_of + timedelta(days=1)).isoformat()
+            recent_events = injury_repo.get_overlapping_injury_events(cur, pids, start_date=start_iso, end_date=end_iso) if pids else []
+
+    risk_items: List[Dict[str, Any]] = []
+    unavailable: List[Dict[str, Any]] = []
+    health_rows: List[Dict[str, Any]] = []
+
+    status_counts = {"OUT": 0, "RETURNING": 0, "HEALTHY": 0}
+    risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+
+    for row in roster_rows:
+        pid = str(row.get("player_id"))
+        prof = _build_risk_profile(
+            row=row,
+            injury_state=injury_by_pid.get(pid) or {},
+            fatigue_state=fatigue_by_pid.get(pid) or {},
+            sharpness_state=sharp_by_pid.get(pid) or {},
+            as_of_date=as_of_iso,
+        )
+        risk_items.append(prof)
+        status = str(prof.get("injury_status") or "HEALTHY")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        tier = str(prof.get("risk_tier") or "LOW")
+        risk_counts[tier] = risk_counts.get(tier, 0) + 1
+
+        if status in {"OUT", "RETURNING"}:
+            st = prof.get("injury_state") or {}
+            unavailable.append({
+                "player_id": pid,
+                "name": row.get("name"),
+                "pos": row.get("pos"),
+                "recovery_status": status,
+                "injury_current": {
+                    "body_part": st.get("body_part"),
+                    "injury_type": st.get("injury_type"),
+                    "severity": st.get("severity"),
+                    "out_until_date": st.get("out_until_date"),
+                    "returning_until_date": st.get("returning_until_date"),
+                },
+            })
+
+        agency_state = agency_by_pid.get(pid) or {}
+        hf = _safe_float(agency_state.get("health_frustration"), 0.0)
+        if agency_state:
+            health_rows.append({
+                "player_id": pid,
+                "name": row.get("name"),
+                "pos": row.get("pos"),
+                "health_frustration": hf,
+                "trade_request_level": _safe_int(agency_state.get("trade_request_level"), 0),
+                "cooldown_health_until": agency_state.get("cooldown_health_until"),
+                "escalation_health": _safe_int(agency_state.get("escalation_health"), 0),
+            })
+
+    risk_items_sorted = sorted(risk_items, key=lambda x: (int(x.get("risk_score") or 0), str(x.get("name") or "")), reverse=True)
+    unavailable_sorted = sorted(unavailable, key=lambda x: (str((x.get("injury_current") or {}).get("out_until_date") or ""), str(x.get("name") or "")))
+    health_sorted = sorted(health_rows, key=lambda x: (float(x.get("health_frustration") or 0.0), str(x.get("name") or "")), reverse=True)
+
+    # attach player names to events
+    name_by_pid = {str(r.get("player_id")): r.get("name") for r in roster_rows}
+    recent_events_sorted = sorted(recent_events, key=lambda x: str(x.get("date") or ""), reverse=True)
+    recent_event_items: List[Dict[str, Any]] = []
+    for e in recent_events_sorted[:top_n]:
+        pid = str(e.get("player_id") or "")
+        recent_event_items.append({
+            "injury_id": e.get("injury_id"),
+            "player_id": pid,
+            "name": name_by_pid.get(pid),
+            "date": e.get("date"),
+            "context": e.get("context"),
+            "body_part": e.get("body_part"),
+            "injury_type": e.get("injury_type"),
+            "severity": e.get("severity"),
+            "out_until_date": e.get("out_until_date"),
+            "returning_until_date": e.get("returning_until_date"),
+        })
+
+    hf_values = [float(r.get("health_frustration") or 0.0) for r in health_rows]
+    hf_count = len(hf_values)
+
+    return {
+        "team_id": tid,
+        "season_year": sy,
+        "as_of_date": as_of_iso,
+        "history_days": history_days,
+        "top_n": top_n,
+        "summary": {
+            "roster_count": len(roster_rows),
+            "injury_status_counts": status_counts,
+            "risk_tier_counts": risk_counts,
+            "health_frustration": {
+                "count_with_state": hf_count,
+                "high_count": sum(1 for v in hf_values if v >= health_high_threshold),
+                "max": max(hf_values) if hf_values else 0.0,
+                "avg": (sum(hf_values) / hf_count) if hf_values else 0.0,
+            },
+        },
+        "watchlists": {
+            "highest_risk": risk_items_sorted[:top_n],
+            "currently_unavailable": unavailable_sorted[:top_n],
+            "health_frustration_high": [r for r in health_sorted if float(r.get("health_frustration") or 0.0) >= health_high_threshold][:top_n],
+            "recent_injury_events": recent_event_items,
+        },
+    }
+
+
+@router.get("/api/medical/team/{team_id}/players/{player_id}/timeline")
+async def api_medical_player_timeline(
+    team_id: str,
+    player_id: str,
+    season_year: Optional[int] = None,
+    history_days: int = 365,
+    include_event_history: bool = True,
+):
+    db_path = state.get_db_path()
+    tid = str(normalize_team_id(team_id, strict=True))
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    as_of = state.get_current_date_as_date()
+    as_of_iso = as_of.isoformat()
+    history_days = max(1, min(int(history_days or 365), 730))
+
+    from agency import repo as agency_repo
+    from fatigue import repo as fatigue_repo
+    from injury import repo as injury_repo
+    from readiness import repo as readiness_repo
+    from injury.status import status_for_date
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+        roster_rows = repo.get_team_roster(tid)
+        row_by_pid = {str(r.get("player_id")): r for r in roster_rows}
+        row = row_by_pid.get(pid)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Player '{pid}' is not on team '{tid}' active roster")
+
+        with repo.transaction() as cur:
+            fatigue_state = fatigue_repo.get_player_fatigue_states(cur, [pid]).get(pid)
+            sharp_state = readiness_repo.get_player_sharpness_states(cur, [pid], season_year=sy).get(pid) if sy > 0 else None
+            injury_state = injury_repo.get_player_injury_states(cur, [pid]).get(pid)
+            agency_state = agency_repo.get_player_agency_states(cur, [pid]).get(pid)
+            events = []
+            if include_event_history:
+                start_iso = (as_of - timedelta(days=history_days)).isoformat()
+                end_iso = (as_of + timedelta(days=1)).isoformat()
+                events = injury_repo.get_overlapping_injury_events(cur, [pid], start_date=start_iso, end_date=end_iso)
+
+    prof = _build_risk_profile(
+        row=row,
+        injury_state=injury_state or {},
+        fatigue_state=fatigue_state or {},
+        sharpness_state=sharp_state or {},
+        as_of_date=as_of_iso,
+    )
+    recovery_status = status_for_date(injury_state or {}, on_date_iso=as_of_iso)
+
+    events_sorted = sorted(events, key=lambda x: str(x.get("date") or ""), reverse=True) if include_event_history else []
+
+    return {
+        "team_id": tid,
+        "player_id": pid,
+        "season_year": sy,
+        "as_of_date": as_of_iso,
+        "history_days": history_days,
+        "include_event_history": bool(include_event_history),
+        "player": {
+            "name": row.get("name"),
+            "pos": row.get("pos"),
+            "age": int(row.get("age") or 0),
+        },
+        "status": {
+            "recovery_status": recovery_status,
+            "is_injured": recovery_status in {"OUT", "RETURNING"},
+            "injury_status": prof.get("injury_status"),
+        },
+        "current": {
+            "injury_state": prof.get("injury_state") or {},
+            "availability": {
+                "out_until_date": (prof.get("injury_state") or {}).get("out_until_date"),
+                "returning_until_date": (prof.get("injury_state") or {}).get("returning_until_date"),
+            },
+            "condition": prof.get("condition") or {},
+            "risk": {
+                "risk_score": prof.get("risk_score"),
+                "risk_tier": prof.get("risk_tier"),
+                "risk_inputs": prof.get("risk_inputs") or {},
+            },
+            "health_psychology": {
+                "health_frustration": _safe_float((agency_state or {}).get("health_frustration"), 0.0),
+                "trade_request_level": _safe_int((agency_state or {}).get("trade_request_level"), 0),
+                "cooldown_health_until": (agency_state or {}).get("cooldown_health_until"),
+                "escalation_health": _safe_int((agency_state or {}).get("escalation_health"), 0),
+            },
+        },
+        "timeline": {
+            "events": events_sorted,
+        },
+    }
 
 
 @router.get("/api/roster-summary/{team_id}")
