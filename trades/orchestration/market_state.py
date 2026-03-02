@@ -139,6 +139,70 @@ def _get_listings_container(trade_market: Dict[str, Any]) -> Dict[str, Any]:
     return raw
 
 
+def leak_publicize_cursor_key(*, session_id: Optional[str] = None, deal_id: Optional[str] = None) -> str:
+    sid = str(session_id or "").strip()
+    did = str(deal_id or "").strip()
+    if sid:
+        return f"PRIVATE_LEAK_PUBLICIZED::SESSION::{sid}"
+    if did:
+        return f"PRIVATE_LEAK_PUBLICIZED::DEAL::{did}"
+    return "PRIVATE_LEAK_PUBLICIZED::UNKNOWN"
+
+
+def is_private_leak_publicized(
+    trade_market: Dict[str, Any],
+    *,
+    session_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
+) -> bool:
+    m = _ensure_trade_market_schema(trade_market)
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    if not isinstance(cur, dict):
+        return False
+    keys: List[str] = []
+    if session_id:
+        keys.append(leak_publicize_cursor_key(session_id=session_id))
+    if deal_id:
+        keys.append(leak_publicize_cursor_key(deal_id=deal_id))
+    for k in keys:
+        raw = cur.get(k)
+        if isinstance(raw, dict) and raw.get("publicized") is True:
+            return True
+    return False
+
+
+def mark_private_leak_publicized(
+    trade_market: Dict[str, Any],
+    *,
+    today: date,
+    player_ids: List[str],
+    user_team_id: str,
+    other_team_id: str,
+    session_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
+    leaked_by: Optional[str] = None,
+) -> None:
+    m = _ensure_trade_market_schema(trade_market)
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    m["grievance_cursor"] = cur
+
+    payload = {
+        "publicized": True,
+        "date": str(today.isoformat()),
+        "session_id": str(session_id) if session_id else None,
+        "deal_id": str(deal_id) if deal_id else None,
+        "user_team_id": str(user_team_id).upper(),
+        "other_team_id": str(other_team_id).upper(),
+        "player_ids": [str(x) for x in (player_ids or []) if str(x)],
+        "leaked_by": str(leaked_by).upper() if leaked_by else None,
+    }
+
+    if session_id:
+        cur[leak_publicize_cursor_key(session_id=session_id)] = dict(payload)
+    if deal_id:
+        cur[leak_publicize_cursor_key(deal_id=deal_id)] = dict(payload)
+
+
 def upsert_trade_listing(
     trade_market: Dict[str, Any],
     *,

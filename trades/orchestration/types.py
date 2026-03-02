@@ -165,6 +165,8 @@ class OrchestrationConfig:
     ai_private_leak_pressure_bonus: float = 0.22
     ai_private_leak_prob_cap: float = 0.30
     private_leak_pair_cooldown_days: int = 7
+    enable_ai_leak_publicize: bool = True
+    enable_ai_leak_grievance: bool = True
 
     # user leak relationship penalty
     user_leak_trust_penalty: int = 35
