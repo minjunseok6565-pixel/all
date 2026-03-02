@@ -146,6 +146,13 @@ class DealGeneratorConfig:
     # v2는 core 단계에서 target_seen 카운트 기반으로 score를 감점한다.
     target_repeat_penalty: float = 0.15
 
+    # --- market signal priority boosts (sell target ordering)
+    # Listed players should surface earlier, but not overwhelm core quality signals.
+    listed_player_priority_boost: float = 1.25
+    public_request_priority_boost: float = 0.55
+    listed_public_request_synergy_boost: float = 0.30
+    priority_signal_boost_cap: float = 1.75
+
     # --- opponent diversity / spam prevention
     opponent_repeat_penalty: float = 0.25
     opponent_multi_repeat_penalty: float = 0.18

@@ -2,13 +2,101 @@ from __future__ import annotations
 
 from datetime import date
 import random
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..generation_tick import TradeGenerationTickContext
 from ..asset_catalog import TradeAssetCatalog, IncomingPlayerRef, TeamOutgoingCatalog
 
 from .types import DealGeneratorConfig, DealGeneratorBudget, TargetCandidate, SellAssetCandidate
 from .utils import _is_locked_candidate
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _clamp01(x: Any) -> float:
+    xf = _safe_float(x, 0.0)
+    if xf <= 0.0:
+        return 0.0
+    if xf >= 1.0:
+        return 1.0
+    return xf
+
+
+def _active_public_listing_priority_by_player(
+    tick_ctx: TradeGenerationTickContext,
+    *,
+    team_id: str,
+) -> Dict[str, float]:
+    """Best-effort: active PUBLIC listing priority per player for a team.
+
+    SSOT preference:
+    1) tick-scoped `team_situation_ctx.trade_market` snapshot (same snapshot used by the running tick)
+    2) state fallback via load_trade_market() only when snapshot is unavailable
+    """
+    rows = None
+    try:
+        from trades.orchestration.market_state import list_team_trade_listings
+
+        market_snapshot = getattr(getattr(tick_ctx, "team_situation_ctx", None), "trade_market", None)
+        if isinstance(market_snapshot, dict):
+            rows = list_team_trade_listings(
+                market_snapshot,
+                team_id=str(team_id).upper(),
+                active_only=True,
+                today=getattr(tick_ctx, "current_date", None),
+            )
+    except Exception:
+        rows = None
+
+    if rows is None:
+        try:
+            from trades.orchestration.market_state import load_trade_market, list_team_trade_listings
+
+            market = load_trade_market()
+            rows = list_team_trade_listings(
+                market,
+                team_id=str(team_id).upper(),
+                active_only=True,
+                today=getattr(tick_ctx, "current_date", None),
+            )
+        except Exception:
+            return {}
+
+    out: Dict[str, float] = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("visibility") or "PUBLIC").upper() != "PUBLIC":
+            continue
+        pid = str(r.get("player_id") or "")
+        if not pid:
+            continue
+        out[pid] = _clamp01(r.get("priority"))
+    return out
+
+
+def _public_trade_request_level_by_player(tick_ctx: TradeGenerationTickContext) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    try:
+        provider = getattr(tick_ctx, "provider", None)
+        raw = getattr(provider, "agency_state_by_player", {}) if provider is not None else {}
+        if not isinstance(raw, dict):
+            return out
+        for pid, st in raw.items():
+            if not isinstance(st, dict):
+                continue
+            tr = int(_safe_float(st.get("trade_request_level"), 0.0))
+            out[str(pid)] = tr
+    except Exception:
+        return {}
+    return out
 
 
 # =============================================================================
@@ -134,7 +222,7 @@ def select_targets_sell(
     - locked(allow_locked 예외 포함) 선필터
     - recent_signing_banned_until 선필터
     - CORE: SOFT_SELL에서는 제외, SELL에서는 아주 드물게(4%) 허용
-    - 정렬: bucket priority -> surplus_score(desc) -> expiring(desc) -> market_total(asc) -> player_id
+    - 정렬: bucket priority -> market signal boost(desc) -> surplus_score(desc) -> expiring(desc) -> market_total(asc) -> player_id
     - 상위 head만 소폭 셔플해 매번 같은 쇼핑리스트가 되지 않게 한다
     """
 
@@ -164,7 +252,10 @@ def select_targets_sell(
         "CORE": 99,
     }
 
-    rows: List[Tuple[Tuple[int, float, float, float, str], SellAssetCandidate]] = []
+    rows: List[Tuple[Tuple[int, float, float, float, float, str], SellAssetCandidate]] = []
+
+    listed_priority_by_player = _active_public_listing_priority_by_player(tick_ctx, team_id=seller_u)
+    trade_request_level_by_player = _public_trade_request_level_by_player(tick_ctx)
 
     for pid, c in (out_cat.players or {}).items():
         if not pid:
@@ -208,7 +299,22 @@ def select_targets_sell(
             top_tags=tuple(getattr(c, "top_tags", None) or ()),
         )
 
-        sort_key = (pri, -surplus, -exp, value, str(pid))
+        listed_pri = _clamp01(listed_priority_by_player.get(str(pid), 0.0))
+        is_listed = listed_pri > 0.0
+        tr_level = int(trade_request_level_by_player.get(str(pid), 0) or 0)
+        is_public_request = tr_level >= 2
+
+        signal_boost = 0.0
+        if is_listed:
+            # Listing priority acts as a scalar but preserves a meaningful floor.
+            signal_boost += float(config.listed_player_priority_boost) * (0.65 + 0.35 * listed_pri)
+        if is_public_request:
+            signal_boost += float(config.public_request_priority_boost)
+        if is_listed and is_public_request:
+            signal_boost += float(config.listed_public_request_synergy_boost)
+        signal_boost = min(max(0.0, signal_boost), max(0.0, float(config.priority_signal_boost_cap)))
+
+        sort_key = (pri, -signal_boost, -surplus, -exp, value, str(pid))
         rows.append((sort_key, sale_cand))
 
     if not rows:
