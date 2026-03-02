@@ -16,6 +16,12 @@ const state = {
   currentDate: "",
   rosterRows: [],
   selectedPlayerId: null,
+  trainingSelectedDates: new Set(),
+  trainingCalendarDays: [],
+  trainingSessionsByDate: {},
+  trainingRoster: [],
+  trainingFamiliarity: { offense: [], defense: [] },
+  trainingDraftSession: null,
 };
 
 const els = {
@@ -35,6 +41,14 @@ const els = {
   nextGameDatetime: document.getElementById("next-game-datetime"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
+  trainingMenuBtn: document.getElementById("training-menu-btn"),
+  trainingScreen: document.getElementById("training-screen"),
+  trainingBackBtn: document.getElementById("training-back-btn"),
+  teamTrainingTabBtn: document.getElementById("team-training-tab-btn"),
+  playerTrainingTabBtn: document.getElementById("player-training-tab-btn"),
+  trainingCalendarGrid: document.getElementById("training-calendar-grid"),
+  trainingTypeButtons: document.getElementById("training-type-buttons"),
+  trainingDetailPanel: document.getElementById("training-detail-panel"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
@@ -58,7 +72,7 @@ function setLoading(show, msg = "") {
 }
 
 function activateScreen(target) {
-  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen].forEach((screen) => {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
@@ -444,6 +458,278 @@ async function confirmTeamSelection(teamId, fullName) {
   showMainScreen();
 }
 
+
+function dateToIso(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseIsoDate(iso) {
+  const v = String(iso || "").slice(0, 10);
+  const d = new Date(`${v}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function startOfWeek(date) {
+  const d = new Date(date.getTime());
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d;
+}
+
+function addDays(date, n) {
+  const d = new Date(date.getTime());
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+function trainingTypeLabel(t) {
+  const m = {
+    OFF_TACTICS: "공격",
+    DEF_TACTICS: "수비",
+    FILM: "필름",
+    SCRIMMAGE: "청백전",
+    RECOVERY: "휴식",
+    REST: "없음"
+  };
+  return m[String(t || "").toUpperCase()] || "-";
+}
+
+function buildCalendar4Weeks(currentDateIso) {
+  const today = parseIsoDate(currentDateIso) || new Date();
+  const first = startOfWeek(today);
+  const days = [];
+  for (let i = 0; i < 28; i += 1) {
+    const date = addDays(first, i);
+    days.push(dateToIso(date));
+  }
+  return days;
+}
+
+async function loadTrainingData() {
+  if (!state.selectedTeamId) return;
+  const currentDate = state.currentDate || await fetchInGameDate();
+  state.currentDate = currentDate;
+  const allDays = buildCalendar4Weeks(currentDate);
+  state.trainingCalendarDays = allDays;
+
+  const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+  const gameByDate = {};
+  (schedule.games || []).forEach((g) => {
+    const d = String(g.date || "").slice(0, 10);
+    if (!d) return;
+    const opp = g.home_team_id === state.selectedTeamId ? g.away_team_id : g.home_team_id;
+    gameByDate[d] = String(opp || "").toUpperCase();
+  });
+
+  const from = allDays[0];
+  const to = allDays[allDays.length - 1];
+  const stored = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/sessions?date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}`);
+  const sessions = { ...(stored.sessions || {}) };
+
+  const previewDates = allDays.filter((d) => d >= currentDate && !gameByDate[d]);
+  await Promise.all(previewDates.map(async (d) => {
+    if (sessions[d]) return;
+    try {
+      const res = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/session?date_iso=${encodeURIComponent(d)}`);
+      sessions[d] = { session: res.session, is_user_set: res.is_user_set };
+    } catch (e) {
+      // fail-soft
+    }
+  }));
+
+  const teamDetail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+  state.trainingRoster = teamDetail.roster || [];
+
+  const [offFam, defFam] = await Promise.all([
+    fetchJson(`/api/readiness/team/${encodeURIComponent(state.selectedTeamId)}/familiarity?scheme_type=offense`).catch(() => ({ items: [] })),
+    fetchJson(`/api/readiness/team/${encodeURIComponent(state.selectedTeamId)}/familiarity?scheme_type=defense`).catch(() => ({ items: [] })),
+  ]);
+  state.trainingFamiliarity = { offense: offFam.items || [], defense: defFam.items || [] };
+
+  state.trainingSessionsByDate = sessions;
+  state.trainingGameByDate = gameByDate;
+}
+
+function renderTrainingCalendar() {
+  const container = els.trainingCalendarGrid;
+  const today = state.currentDate;
+  container.innerHTML = "";
+
+  state.trainingCalendarDays.forEach((iso) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "training-day-cell";
+
+    const d = parseIsoDate(iso);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    const gameOpp = state.trainingGameByDate?.[iso];
+    const isPast = iso < today;
+    const isGameDay = !!gameOpp;
+    const selectable = !isPast && !isGameDay;
+
+    if (isGameDay) btn.classList.add("is-game");
+    if (state.trainingSelectedDates.has(iso)) btn.classList.add("is-selected");
+
+    const sessInfo = state.trainingSessionsByDate?.[iso];
+    const sessType = sessInfo?.session?.type;
+    const sessionLine = sessInfo
+      ? (sessInfo.is_user_set ? `지정 · ${trainingTypeLabel(sessType)}` : `AUTO · ${trainingTypeLabel(sessType)}`)
+      : "";
+
+    btn.innerHTML = `
+      <div class="training-day-date">${label}</div>
+      <div class="training-day-note">${gameOpp ? `vs ${gameOpp}` : ""}</div>
+      <div class="training-day-sub">${!gameOpp ? sessionLine : ""}</div>
+    `;
+
+    if (!selectable) {
+      btn.disabled = true;
+    } else {
+      btn.addEventListener("click", () => {
+        if (state.trainingSelectedDates.has(iso)) state.trainingSelectedDates.delete(iso);
+        else state.trainingSelectedDates.add(iso);
+        renderTrainingCalendar();
+      });
+    }
+
+    container.appendChild(btn);
+  });
+}
+
+function optionsHtml(list, fallback = []) {
+  const merged = [...new Set([...(list || []), ...fallback])];
+  return merged.map((x) => `<option value="${x}">${x}</option>`).join("");
+}
+
+async function renderTrainingDetail(type) {
+  const selected = [...state.trainingSelectedDates].sort();
+  if (!selected.length) {
+    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">적용할 날짜를 먼저 선택하세요.</p>';
+    return;
+  }
+
+  const baseSession = {
+    type,
+    offense_scheme_key: null,
+    defense_scheme_key: null,
+    participant_pids: [],
+    non_participant_type: "RECOVERY"
+  };
+
+  const offSchemes = state.trainingFamiliarity.offense.map((x) => x.scheme_key);
+  const defSchemes = state.trainingFamiliarity.defense.map((x) => x.scheme_key);
+
+  if (type === "OFF_TACTICS") baseSession.offense_scheme_key = offSchemes[0] || "PACE_5OUT";
+  if (type === "DEF_TACTICS") baseSession.defense_scheme_key = defSchemes[0] || "MAN_TO_MAN";
+  if (type === "FILM") {
+    baseSession.offense_scheme_key = offSchemes[0] || "PACE_5OUT";
+    baseSession.defense_scheme_key = defSchemes[0] || "MAN_TO_MAN";
+  }
+  if (type === "SCRIMMAGE") {
+    baseSession.participant_pids = state.trainingRoster.slice(0, 10).map((r) => String(r.player_id));
+    baseSession.non_participant_type = "RECOVERY";
+  }
+
+  state.trainingDraftSession = baseSession;
+
+  const firstDate = selected[0];
+  const preview = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ season_year: null, date_iso: firstDate, ...baseSession })
+  }).catch(() => null);
+
+  const famRows = (type === "OFF_TACTICS" ? state.trainingFamiliarity.offense : type === "DEF_TACTICS" ? state.trainingFamiliarity.defense : []);
+  const famHtml = famRows.length
+    ? `<ul class="kv-list">${famRows.map((r) => `<li>${r.scheme_key}: ${Math.round(Number(r.value || 0))}</li>`).join("")}</ul>`
+    : '<p class="empty-copy">숙련도 데이터가 없습니다.</p>';
+
+  let extra = "";
+  if (type === "OFF_TACTICS") {
+    extra = `<div class="training-inline-row"><label>공격 스킴</label><select id="training-off-scheme">${optionsHtml(offSchemes, ["PACE_5OUT"])}</select></div>${famHtml}`;
+  } else if (type === "DEF_TACTICS") {
+    extra = `<div class="training-inline-row"><label>수비 스킴</label><select id="training-def-scheme">${optionsHtml(defSchemes, ["MAN_TO_MAN"])}</select></div>${famHtml}`;
+  } else if (type === "SCRIMMAGE") {
+    const rosterRows = state.trainingRoster.map((r) => `
+      <tr>
+        <td>${r.name || r.player_id}</td>
+        <td>${Math.round(Number((r.short_term_stamina ?? 1) * 100))}%</td>
+        <td>${Math.round(Number((r.long_term_stamina ?? 1) * 100))}%</td>
+        <td>${Math.round(Number(r.sharpness ?? 50))}</td>
+      </tr>
+    `).join("");
+    extra = `
+      <p>5대5 라인업(참가자 PID 콤마 구분, 기본 10명):</p>
+      <textarea id="training-scrimmage-pids" rows="3" style="width:100%;">${baseSession.participant_pids.join(",")}</textarea>
+      <table class="training-player-table">
+        <thead><tr><th>선수</th><th>단기 체력</th><th>장기 체력</th><th>샤프니스</th></tr></thead>
+        <tbody>${rosterRows}</tbody>
+      </table>
+    `;
+  }
+
+  const prevText = preview
+    ? `<ul class="kv-list"><li>공격 익숙도 gain: ${preview.preview?.familiarity_gain?.offense_gain ?? 0}</li><li>수비 익숙도 gain: ${preview.preview?.familiarity_gain?.defense_gain ?? 0}</li><li>평균 샤프니스 delta: ${Object.values(preview.preview?.intensity_mult_by_pid || {}).length ? (Object.values(preview.preview.intensity_mult_by_pid).reduce((a, x) => a + Number(x.sharpness_delta || 0), 0) / Object.values(preview.preview.intensity_mult_by_pid).length).toFixed(2) : "0.00"}</li></ul>`
+    : '<p class="empty-copy">효과 프리뷰를 불러오지 못했습니다.</p>';
+
+  els.trainingDetailPanel.innerHTML = `
+    <div class="training-detail-grid">
+      <h3>${trainingTypeLabel(type)} 훈련 설정</h3>
+      <p>선택 날짜: ${selected.join(", ")}</p>
+      ${extra}
+      <div><strong>연습 효과 프리뷰</strong>${prevText}</div>
+      <div class="training-inline-row"><button id="training-apply-btn" class="btn btn-primary" type="button">선택 날짜에 적용</button></div>
+    </div>
+  `;
+
+  const offSel = document.getElementById("training-off-scheme");
+  const defSel = document.getElementById("training-def-scheme");
+  const scrimmagePids = document.getElementById("training-scrimmage-pids");
+  if (offSel) offSel.addEventListener("change", () => { state.trainingDraftSession.offense_scheme_key = offSel.value; });
+  if (defSel) defSel.addEventListener("change", () => { state.trainingDraftSession.defense_scheme_key = defSel.value; });
+  if (scrimmagePids) scrimmagePids.addEventListener("input", () => {
+    state.trainingDraftSession.participant_pids = scrimmagePids.value.split(",").map((x) => x.trim()).filter(Boolean);
+  });
+
+  const applyBtn = document.getElementById("training-apply-btn");
+  applyBtn.addEventListener("click", async () => {
+    const dates = [...state.trainingSelectedDates];
+    await Promise.all(dates.map((dateIso) => fetchJson("/api/practice/team/session/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        team_id: state.selectedTeamId,
+        date_iso: dateIso,
+        ...state.trainingDraftSession
+      })
+    })));
+    await loadTrainingData();
+    renderTrainingCalendar();
+    alert(`${dates.length}일에 훈련을 적용했습니다.`);
+  });
+}
+
+async function showTrainingScreen() {
+  if (!state.selectedTeamId) {
+    alert("먼저 팀을 선택해주세요.");
+    return;
+  }
+  setLoading(true, "훈련 화면 데이터를 불러오는 중...");
+  try {
+    state.trainingSelectedDates = new Set();
+    await loadTrainingData();
+    renderTrainingCalendar();
+    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">캘린더에서 날짜를 선택하고 훈련 버튼을 눌러 세부 설정을 확인하세요.</p>';
+    activateScreen(els.trainingScreen);
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function loadSavesStatus() {
   try {
     const saveResult = await fetchJson("/api/game/saves");
@@ -534,6 +820,11 @@ async function continueGame() {
 els.newGameBtn.addEventListener("click", () => createNewGame().catch((e) => alert(e.message)));
 els.continueBtn.addEventListener("click", () => continueGame().catch((e) => alert(e.message)));
 els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
+els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
+els.trainingBackBtn.addEventListener("click", () => showMainScreen());
+els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((btn) => {
+  btn.addEventListener("click", () => renderTrainingDetail(btn.dataset.trainingType).catch((e) => alert(e.message)));
+});
 els.backToMainBtn.addEventListener("click", () => showMainScreen());
 els.backToRosterBtn.addEventListener("click", () => activateScreen(els.myTeamScreen));
 
