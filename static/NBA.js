@@ -9,6 +9,43 @@ const TEAM_FULL_NAMES = {
   UTA: "유타 재즈", WAS: "워싱턴 위저즈"
 };
 
+const TACTICS_OFFENSE_SCHEMES = [
+  { key: "Spread_HeavyPnR", label: "heavy_pnr" },
+  { key: "Drive_Kick", label: "drive_kick" },
+  { key: "FiveOut", label: "five_out" },
+  { key: "Motion_SplitCut", label: "motion_split" },
+  { key: "DHO_Chicago", label: "dho_chicago" },
+  { key: "Post_InsideOut", label: "post_inside_out" },
+  { key: "Horns_Elbow", label: "horns_elbow" },
+  { key: "Transition_Early", label: "transition_early" }
+];
+
+const TACTICS_DEFENSE_SCHEMES = [
+  { key: "Drop", label: "drop" },
+  { key: "Switch_Everything", label: "switch_everything" },
+  { key: "Switch_1_4", label: "switch_1_4" },
+  { key: "Hedge_ShowRecover", label: "hedge_show_recover" },
+  { key: "Blitz_TrapPnR", label: "blitz_trap" },
+  { key: "AtTheLevel", label: "at_the_level" },
+  { key: "Zone", label: "zone" }
+];
+
+const TACTICS_OFFENSE_ROLES = [
+  "Engine_Primary", "Engine_Secondary", "Transition_Engine", "Shot_Creator", "Rim_Pressure",
+  "SpotUp_Spacer", "Movement_Shooter", "Cutter_Finisher", "Connector",
+  "Roll_Man", "ShortRoll_Hub", "Pop_Threat", "Post_Anchor"
+];
+
+const TACTICS_DEFENSE_ROLE_BY_SCHEME = {
+  Drop: ["PnR_POA_Defender", "PnR_Cover_Big_Drop", "Lowman_Helper", "Nail_Helper", "Weakside_Rotator"],
+  Switch_Everything: ["PnR_POA_Switch", "PnR_Cover_Big_Switch", "Switch_Wing_Strong", "Switch_Wing_Weak", "Backline_Anchor"],
+  Switch_1_4: ["PnR_POA_Switch_1_4", "PnR_Cover_Big_Switch_1_4", "Switch_Wing_Strong_1_4", "Switch_Wing_Weak_1_4", "Backline_Anchor"],
+  Hedge_ShowRecover: ["PnR_POA_Defender", "PnR_Cover_Big_HedgeRecover", "Lowman_Helper", "Nail_Helper", "Weakside_Rotator"],
+  Blitz_TrapPnR: ["PnR_POA_Blitz", "PnR_Cover_Big_Blitz", "Lowman_Helper", "Nail_Helper", "Weakside_Rotator"],
+  AtTheLevel: ["PnR_POA_AtTheLevel", "PnR_Cover_Big_AtTheLevel", "Lowman_Helper", "Nail_Helper", "Weakside_Rotator"],
+  Zone: ["Zone_Top_Left", "Zone_Top_Right", "Zone_Bottom_Left", "Zone_Bottom_Right", "Zone_Bottom_Center"]
+};
+
 const state = {
   lastSaveSlotId: null,
   selectedTeamId: null,
@@ -23,6 +60,7 @@ const state = {
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
   standingsData: null,
+  tacticsDraft: null,
 };
 
 const els = {
@@ -43,12 +81,25 @@ const els = {
   nextGameDatetime: document.getElementById("next-game-datetime"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
+  tacticsMenuBtn: document.getElementById("tactics-menu-btn"),
+  nextGameTacticsBtn: document.getElementById("next-game-tactics-btn"),
   scheduleBtn: document.getElementById("schedule-btn"),
   scheduleBackBtn: document.getElementById("schedule-back-btn"),
   scheduleTitle: document.getElementById("schedule-title"),
   scheduleCompletedBody: document.getElementById("schedule-completed-body"),
   scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
+  tacticsScreen: document.getElementById("tactics-screen"),
+  tacticsBackBtn: document.getElementById("tactics-back-btn"),
+  tacticsOffenseBtn: document.getElementById("tactics-offense-btn"),
+  tacticsDefenseBtn: document.getElementById("tactics-defense-btn"),
+  tacticsOffenseOptions: document.getElementById("tactics-offense-options"),
+  tacticsDefenseOptions: document.getElementById("tactics-defense-options"),
+  tacticsOffenseCurrent: document.getElementById("tactics-offense-current"),
+  tacticsDefenseCurrent: document.getElementById("tactics-defense-current"),
+  tacticsStarters: document.getElementById("tactics-starters"),
+  tacticsRotation: document.getElementById("tactics-rotation"),
+  tacticsRosterList: document.getElementById("tactics-roster-list"),
   standingsMenuBtn: document.getElementById("standings-menu-btn"),
   trainingScreen: document.getElementById("training-screen"),
   standingsScreen: document.getElementById("standings-screen"),
@@ -91,6 +142,7 @@ function activateScreen(target) {
     els.scheduleScreen,
     els.myTeamScreen,
     els.playerDetailScreen,
+    els.tacticsScreen,
     els.trainingScreen,
     els.standingsScreen,
   ].forEach((screen) => {
@@ -953,12 +1005,168 @@ async function continueGame() {
   }
 }
 
+
+function tacticsSchemeLabel(schemes, key) {
+  const found = (schemes || []).find((x) => x.key === key);
+  return found ? found.label : key;
+}
+
+function getDefenseRolesForScheme(key) {
+  return TACTICS_DEFENSE_ROLE_BY_SCHEME[key] || TACTICS_DEFENSE_ROLE_BY_SCHEME.Drop;
+}
+
+function buildTacticsDraft(roster) {
+  const names = (roster || []).map((r) => ({ id: String(r.player_id || ""), name: String(r.name || r.player_id || "-") })).filter((x) => x.id);
+  const starters = [];
+  const rotation = [];
+  for (let i = 0; i < 5; i += 1) {
+    const p = names[i];
+    starters.push({
+      pid: p?.id || "",
+      offenseRole: TACTICS_OFFENSE_ROLES[i % TACTICS_OFFENSE_ROLES.length],
+      defenseRole: getDefenseRolesForScheme("Drop")[i],
+      minutes: 32 - i
+    });
+  }
+  for (let i = 5; i < 10; i += 1) {
+    const p = names[i];
+    rotation.push({
+      pid: p?.id || "",
+      offenseRole: TACTICS_OFFENSE_ROLES[i % TACTICS_OFFENSE_ROLES.length],
+      defenseRole: getDefenseRolesForScheme("Drop")[i - 5],
+      minutes: 18 - (i - 5)
+    });
+  }
+  return { offenseScheme: "Spread_HeavyPnR", defenseScheme: "Drop", starters, rotation };
+}
+
+function renderSchemeOptions(kind) {
+  const isOff = kind === "offense";
+  const optionsEl = isOff ? els.tacticsOffenseOptions : els.tacticsDefenseOptions;
+  const list = isOff ? TACTICS_OFFENSE_SCHEMES : TACTICS_DEFENSE_SCHEMES;
+  const selected = isOff ? state.tacticsDraft.offenseScheme : state.tacticsDraft.defenseScheme;
+  optionsEl.innerHTML = list.map((s) => `<button type="button" data-key="${s.key}">${s.label}${s.key === selected ? " ✓" : ""}</button>`).join("");
+  optionsEl.querySelectorAll("button[data-key]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (isOff) state.tacticsDraft.offenseScheme = btn.dataset.key;
+      else {
+        state.tacticsDraft.defenseScheme = btn.dataset.key;
+        const defRoles = getDefenseRolesForScheme(btn.dataset.key);
+        [...state.tacticsDraft.starters, ...state.tacticsDraft.rotation].forEach((row, idx) => {
+          if (!defRoles.includes(row.defenseRole)) row.defenseRole = defRoles[idx % defRoles.length];
+        });
+      }
+      optionsEl.classList.add("hidden");
+      renderTacticsScreen();
+    });
+  });
+}
+
+function rosterNameByPid(pid) {
+  const row = (state.rosterRows || []).find((x) => String(x.player_id) === String(pid));
+  return row ? String(row.name || row.player_id) : "-";
+}
+
+function buildLineupRowHtml(group, idx, row, defenseRoles) {
+  const players = state.rosterRows || [];
+  const playerOptions = ['<option value="">- 선택 -</option>', ...players.map((r) => `<option value="${r.player_id}" ${String(r.player_id) === String(row.pid) ? "selected" : ""}>${r.name || r.player_id}</option>`)].join("");
+  const offOptions = TACTICS_OFFENSE_ROLES.map((role) => `<option value="${role}" ${role === row.offenseRole ? "selected" : ""}>${role}</option>`).join("");
+  const defOptions = defenseRoles.map((role) => `<option value="${role}" ${role === row.defenseRole ? "selected" : ""}>${role}</option>`).join("");
+  return `
+    <div class="tactics-lineup-row" data-group="${group}" data-idx="${idx}">
+      <select data-field="pid">${playerOptions}</select>
+      <select data-field="offenseRole">${offOptions}</select>
+      <select data-field="defenseRole">${defOptions}</select>
+      <input data-field="minutes" type="number" min="0" max="48" value="${Number(row.minutes || 0)}" />
+    </div>
+  `;
+}
+
+function validateDefenseRoleUnique(changedEl, nextValue) {
+  const all = [...document.querySelectorAll('.tactics-lineup-row select[data-field="defenseRole"]')];
+  const dup = all.find((el) => el !== changedEl && el.value === nextValue);
+  return !dup;
+}
+
+function bindLineupEvents() {
+  document.querySelectorAll('.tactics-lineup-row').forEach((rowEl) => {
+    const group = rowEl.dataset.group;
+    const idx = Number(rowEl.dataset.idx || 0);
+    rowEl.querySelectorAll('select, input').forEach((control) => {
+      control.addEventListener('change', () => {
+        const field = control.dataset.field;
+        const target = group === 'starters' ? state.tacticsDraft.starters[idx] : state.tacticsDraft.rotation[idx];
+        if (!target || !field) return;
+        if (field === 'defenseRole') {
+          if (!validateDefenseRoleUnique(control, control.value)) {
+            alert('수비 역할은 중복 선택할 수 없습니다.');
+            renderTacticsScreen();
+            return;
+          }
+          target.defenseRole = control.value;
+          return;
+        }
+        if (field === 'minutes') target.minutes = Math.max(0, Math.min(48, Number(control.value || 0)));
+        else target[field] = control.value;
+      });
+    });
+  });
+}
+
+function renderTacticsRosterList() {
+  els.tacticsRosterList.innerHTML = (state.rosterRows || []).length
+    ? state.rosterRows.map((r) => `<div class="tactics-roster-item">${r.name || r.player_id}</div>`).join("")
+    : '<p class="empty-copy">로스터 데이터가 없습니다.</p>';
+}
+
+function renderTacticsScreen() {
+  if (!state.tacticsDraft) return;
+  const defRoles = getDefenseRolesForScheme(state.tacticsDraft.defenseScheme);
+  els.tacticsOffenseCurrent.textContent = `현재: ${tacticsSchemeLabel(TACTICS_OFFENSE_SCHEMES, state.tacticsDraft.offenseScheme)}`;
+  els.tacticsDefenseCurrent.textContent = `현재: ${tacticsSchemeLabel(TACTICS_DEFENSE_SCHEMES, state.tacticsDraft.defenseScheme)}`;
+  els.tacticsStarters.innerHTML = state.tacticsDraft.starters.map((r, i) => buildLineupRowHtml('starters', i, r, defRoles)).join('');
+  els.tacticsRotation.innerHTML = state.tacticsDraft.rotation.map((r, i) => buildLineupRowHtml('rotation', i, r, defRoles)).join('');
+  renderTacticsRosterList();
+  bindLineupEvents();
+}
+
+async function showTacticsScreen() {
+  if (!state.selectedTeamId) {
+    alert('먼저 팀을 선택해주세요.');
+    return;
+  }
+  setLoading(true, '전술 데이터를 불러오는 중...');
+  try {
+    const detail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+    state.rosterRows = detail.roster || [];
+    if (!state.tacticsDraft) state.tacticsDraft = buildTacticsDraft(state.rosterRows);
+    renderSchemeOptions('offense');
+    renderSchemeOptions('defense');
+    renderTacticsScreen();
+    activateScreen(els.tacticsScreen);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function toggleTacticsOptions(kind) {
+  const target = kind === 'offense' ? els.tacticsOffenseOptions : els.tacticsDefenseOptions;
+  const other = kind === 'offense' ? els.tacticsDefenseOptions : els.tacticsOffenseOptions;
+  other.classList.add('hidden');
+  target.classList.toggle('hidden');
+}
+
 els.newGameBtn.addEventListener("click", () => createNewGame().catch((e) => alert(e.message)));
 els.continueBtn.addEventListener("click", () => continueGame().catch((e) => alert(e.message)));
 els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
+els.tacticsMenuBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
+els.nextGameTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
 els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
 els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
+els.tacticsBackBtn.addEventListener("click", () => showMainScreen());
+els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offense"));
+els.tacticsDefenseBtn.addEventListener("click", () => toggleTacticsOptions("defense"));
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
 els.standingsBackBtn.addEventListener("click", () => showMainScreen());
