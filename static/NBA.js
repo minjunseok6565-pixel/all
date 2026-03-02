@@ -22,6 +22,7 @@ const state = {
   trainingRoster: [],
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
+  standingsData: null,
 };
 
 const els = {
@@ -48,13 +49,18 @@ const els = {
   scheduleCompletedBody: document.getElementById("schedule-completed-body"),
   scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
+  standingsMenuBtn: document.getElementById("standings-menu-btn"),
   trainingScreen: document.getElementById("training-screen"),
+  standingsScreen: document.getElementById("standings-screen"),
   trainingBackBtn: document.getElementById("training-back-btn"),
+  standingsBackBtn: document.getElementById("standings-back-btn"),
   teamTrainingTabBtn: document.getElementById("team-training-tab-btn"),
   playerTrainingTabBtn: document.getElementById("player-training-tab-btn"),
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
   trainingTypeButtons: document.getElementById("training-type-buttons"),
   trainingDetailPanel: document.getElementById("training-detail-panel"),
+  standingsEastBody: document.getElementById("standings-east-body"),
+  standingsWestBody: document.getElementById("standings-west-body"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
@@ -78,6 +84,7 @@ function setLoading(show, msg = "") {
 }
 
 function activateScreen(target) {
+  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen, els.standingsScreen].forEach((screen) => {
   [els.startScreen, els.teamScreen, els.mainScreen, els.scheduleScreen, els.myTeamScreen, els.playerDetailScreen].forEach((screen) => {
   [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen].forEach((screen) => {
     const active = screen === target;
@@ -843,6 +850,55 @@ async function renderTeams() {
   });
 }
 
+
+function formatSignedDiff(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "0.0";
+  if (Math.abs(n) < 0.05) return "0.0";
+  return `${n > 0 ? "+" : ""}${n.toFixed(1)}`;
+}
+
+function renderStandingsRows(tbody, rows) {
+  tbody.innerHTML = "";
+  (rows || []).forEach((row) => {
+    const tr = document.createElement("tr");
+    const teamId = String(row?.team_id || "").toUpperCase();
+    const diff = Number(row?.diff || 0);
+    const diffClass = diff > 0 ? "standings-diff-positive" : diff < 0 ? "standings-diff-negative" : "";
+    tr.innerHTML = `
+      <td>${row?.rank ?? "-"}</td>
+      <td class="standings-team-cell">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</td>
+      <td>${row?.wins ?? 0}</td>
+      <td>${row?.losses ?? 0}</td>
+      <td>${row?.pct || ".000"}</td>
+      <td>${row?.gb_display ?? "-"}</td>
+      <td>${row?.home || "0-0"}</td>
+      <td>${row?.away || "0-0"}</td>
+      <td>${row?.div || "0-0"}</td>
+      <td>${row?.conf || "0-0"}</td>
+      <td>${Number(row?.ppg || 0).toFixed(1)}</td>
+      <td>${Number(row?.opp_ppg || 0).toFixed(1)}</td>
+      <td class="${diffClass}">${formatSignedDiff(row?.diff)}</td>
+      <td>${row?.strk || "-"}</td>
+      <td>${row?.l10 || "0-0"}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function showStandingsScreen() {
+  setLoading(true, "순위 데이터를 불러오는 중입니다...");
+  try {
+    const payload = await fetchJson("/api/standings/table");
+    state.standingsData = payload;
+    renderStandingsRows(els.standingsEastBody, payload?.east || []);
+    renderStandingsRows(els.standingsWestBody, payload?.west || []);
+    activateScreen(els.standingsScreen);
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function createNewGame() {
   setLoading(true, "새 게임을 준비하는 중입니다. 엑셀 로스터를 DB로 부팅하고 있습니다...");
   const slotId = `slot_${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
@@ -896,7 +952,9 @@ els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => al
 els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
 els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
+els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
+els.standingsBackBtn.addEventListener("click", () => showMainScreen());
 els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((btn) => {
   btn.addEventListener("click", () => renderTrainingDetail(btn.dataset.trainingType).catch((e) => alert(e.message)));
 });

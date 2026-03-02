@@ -802,3 +802,78 @@ h1, h2, h3 { margin: 0 0 12px; }
   padding: 6px;
   text-align: left;
 }
+
+/* Standings screen */
+.standings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.standings-card {
+  background: rgba(10, 18, 29, 0.82);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+}
+
+.standings-card-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, rgba(29, 66, 138, 0.35), rgba(200, 16, 46, 0.18));
+}
+
+.standings-card-header h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: 0.03em;
+}
+
+.standings-table-wrap {
+  overflow: auto;
+}
+
+.standings-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+}
+
+.standings-table th,
+.standings-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.standings-table thead th {
+  font-size: 0.82rem;
+  color: #d4def3;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+  background: rgba(18, 30, 47, 0.96);
+  z-index: 1;
+}
+
+.standings-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.standings-team-cell {
+  text-align: left !important;
+  font-weight: 700;
+  min-width: 188px;
+}
+
+.standings-diff-positive {
+  color: #2fdb8d;
+  font-weight: 700;
+}
+
+.standings-diff-negative {
+  color: #ff6f7d;
+  font-weight: 700;
+}
