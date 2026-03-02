@@ -32,6 +32,8 @@ Source of truth: FastAPI route decorators in `app/api/routes/*.py` (wired via `a
 - `/api/practice/team/{team_id}/plan` (`api_get_team_practice_plan`) - `app/api/routes/training.py:113`
 - `/api/practice/team/{team_id}/session` (`api_get_team_practice_session`) - `app/api/routes/training.py:152`
 - `/api/practice/team/{team_id}/sessions` (`api_list_team_practice_sessions`) - `app/api/routes/training.py:225`
+- `/api/readiness/team/{team_id}/familiarity` (`api_get_team_familiarity_status`) - `app/api/routes/training.py`
+- `/api/readiness/team/{team_id}/sharpness` (`api_get_team_sharpness_distribution`) - `app/api/routes/training.py`
 - `/api/roster-summary/{team_id}` (`roster_summary`) - `app/api/routes/core.py:306`
 - `/api/scouting/reports` (`api_scouting_reports`) - `app/api/routes/scouting.py:325`
 - `/api/scouting/scouts/{team_id}` (`api_scouting_list_scouts`) - `app/api/routes/scouting.py:22`
@@ -95,6 +97,7 @@ Source of truth: FastAPI route decorators in `app/api/routes/*.py` (wired via `a
 - `/api/postseason/setup` (`api_postseason_setup`) - `app/api/routes/postseason.py:36`
 - `/api/practice/team/plan/set` (`api_set_team_practice_plan`) - `app/api/routes/training.py:130`
 - `/api/practice/team/session/set` (`api_set_team_practice_session`) - `app/api/routes/training.py:253`
+- `/api/practice/team/{team_id}/preview` (`api_preview_team_practice_effect`) - `app/api/routes/training.py`
 - `/api/scouting/assign` (`api_scouting_assign`) - `app/api/routes/scouting.py:98`
 - `/api/scouting/unassign` (`api_scouting_unassign`) - `app/api/routes/scouting.py:232`
 - `/api/season/enter-offseason` (`api_enter_offseason`) - `app/api/routes/offseason.py:62`
