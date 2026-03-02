@@ -61,7 +61,7 @@ class AgencyDistressValuationLinkTests(unittest.TestCase):
         delta, steps, _ = eng.apply(
             team_id="LAL",
             incoming=[],
-            outgoing=[(self._tv("p1", 10.0), self._snap("p1", tr=3, tf=0.8, rf=0.7))],
+            outgoing=[(self._tv("p1", 10.0), self._snap("p1", tr=2, tf=0.8, rf=0.7))],
             ctx=self._ctx(),
             env=ValuationEnv.from_trade_rules({}, current_season_year=2026),
         )
@@ -78,6 +78,18 @@ class AgencyDistressValuationLinkTests(unittest.TestCase):
             env=ValuationEnv.from_trade_rules({}, current_season_year=2026),
         )
         self.assertLess(delta.total, 0.0)
+
+    def test_non_public_request_has_no_discount_even_with_high_frustration(self):
+        eng = self._engine()
+        delta, steps, _ = eng.apply(
+            team_id="LAL",
+            incoming=[(self._tv("p3", 9.0), self._snap("p3", tr=1, tf=1.0, rf=1.0))],
+            outgoing=[],
+            ctx=self._ctx(),
+            env=ValuationEnv.from_trade_rules({}, current_season_year=2026),
+        )
+        self.assertAlmostEqual(delta.total, 0.0, places=9)
+        self.assertFalse(any(s.code == "AGENCY_DISTRESS_VALUE_ADJUST" for s in steps))
 
 
 if __name__ == "__main__":

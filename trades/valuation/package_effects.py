@@ -290,11 +290,10 @@ class PackageEffectsConfig:
     defense_proxy_floor: float = 0.35
     defense_proxy_cap: float = 1.00
 
-    # --- Agency distress valuation link (trade request / grievance)
-    agency_trade_request_weight: float = 0.08
-    agency_team_frustration_weight: float = 0.08
-    agency_role_frustration_weight: float = 0.05
-    agency_distress_cap: float = 0.22
+    # --- Agency public trade-request leverage link
+    # Public request (level>=2) means market/negotiation leverage shifts against seller.
+    # This is a pricing/leverage adjustment, not a basketball ability downgrade.
+    agency_public_request_discount: float = 0.12
 
     eps: float = 1e-9
 
@@ -968,38 +967,40 @@ class PackageEffects:
     ) -> ValueComponents:
         cfg = self.config
 
-        def _distress_ratio(snap: PlayerSnapshot) -> float:
+        def _public_request_discount_ratio(snap: PlayerSnapshot) -> float:
             st = snap.meta.get("agency_state") if isinstance(snap.meta, dict) else None
             if not isinstance(st, Mapping):
                 return 0.0
-            tr = _clamp(_safe_float(st.get("trade_request_level"), 0.0) / 3.0, 0.0, 1.0)
-            tfr = _clamp(_safe_float(st.get("team_frustration"), 0.0), 0.0, 1.0)
-            rfr = _clamp(_safe_float(st.get("role_frustration"), 0.0), 0.0, 1.0)
-            raw = (
-                cfg.agency_trade_request_weight * tr
-                + cfg.agency_team_frustration_weight * tfr
-                + cfg.agency_role_frustration_weight * rfr
-            )
-            return _clamp(raw, 0.0, cfg.agency_distress_cap)
+            try:
+                tr_level = int(st.get("trade_request_level") or 0)
+            except Exception:
+                tr_level = 0
+            if tr_level < 2:
+                return 0.0
+            return _clamp(cfg.agency_public_request_discount, 0.0, 1.0)
 
-        # incoming distress lowers willingness to pay
+        # incoming public trade request lowers willingness to pay
         in_delta = 0.0
         out_delta = 0.0
+        incoming_public_request_count = 0
+        outgoing_public_request_count = 0
         for tv, snap in incoming:
             if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
                 continue
-            ratio = _distress_ratio(snap)
+            ratio = _public_request_discount_ratio(snap)
             if ratio <= cfg.eps:
                 continue
+            incoming_public_request_count += 1
             in_delta -= max(0.0, _team_total_grade(tv)) * ratio
 
-        # outgoing distress lowers seller's reservation value (easier to move)
+        # outgoing public trade request lowers seller's reservation value (easier to move)
         for tv, snap in outgoing:
             if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
                 continue
-            ratio = _distress_ratio(snap)
+            ratio = _public_request_discount_ratio(snap)
             if ratio <= cfg.eps:
                 continue
+            outgoing_public_request_count += 1
             out_delta += max(0.0, _team_total_grade(tv)) * ratio
 
         raw = in_delta + out_delta
@@ -1017,10 +1018,9 @@ class PackageEffects:
                 meta={
                     "incoming_delta": float(in_delta),
                     "outgoing_delta": float(out_delta),
-                    "trade_request_weight": float(cfg.agency_trade_request_weight),
-                    "team_frustration_weight": float(cfg.agency_team_frustration_weight),
-                    "role_frustration_weight": float(cfg.agency_role_frustration_weight),
-                    "distress_cap": float(cfg.agency_distress_cap),
+                    "incoming_public_request_count": int(incoming_public_request_count),
+                    "outgoing_public_request_count": int(outgoing_public_request_count),
+                    "public_request_discount": float(cfg.agency_public_request_discount),
                 },
             )
         )
@@ -1048,4 +1048,3 @@ def apply_package_effects(
         ctx=ctx,
         env=env,
     )
-
