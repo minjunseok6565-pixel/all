@@ -85,6 +85,7 @@ const els = {
   myTeamBtn: document.getElementById("my-team-btn"),
   tacticsMenuBtn: document.getElementById("tactics-menu-btn"),
   nextGameTacticsBtn: document.getElementById("next-game-tactics-btn"),
+  nextGameQuickBtn: document.getElementById("next-game-quick-btn"),
   scheduleBtn: document.getElementById("schedule-btn"),
   scheduleBackBtn: document.getElementById("schedule-back-btn"),
   scheduleTitle: document.getElementById("schedule-title"),
@@ -107,6 +108,7 @@ const els = {
   standingsScreen: document.getElementById("standings-screen"),
   collegeScreen: document.getElementById("college-screen"),
   medicalScreen: document.getElementById("medical-screen"),
+  gameResultScreen: document.getElementById("game-result-screen"),
   trainingBackBtn: document.getElementById("training-back-btn"),
   standingsBackBtn: document.getElementById("standings-back-btn"),
   collegeMenuBtn: document.getElementById("college-menu-btn"),
@@ -160,7 +162,17 @@ const els = {
   medicalTimelineTitle: document.getElementById("medical-timeline-title"),
   medicalTimelineList: document.getElementById("medical-timeline-list"),
   loadingOverlay: document.getElementById("loading-overlay"),
-  loadingText: document.getElementById("loading-text")
+  loadingText: document.getElementById("loading-text"),
+  gameResultTitle: document.getElementById("game-result-title"),
+  gameResultMeta: document.getElementById("game-result-meta"),
+  gameResultBackBtn: document.getElementById("game-result-back-btn"),
+  resultScoreboard: document.getElementById("result-scoreboard"),
+  resultTotalsHead: document.getElementById("result-totals-head"),
+  resultTotalsBody: document.getElementById("result-totals-body"),
+  resultBreakdowns: document.getElementById("result-breakdowns"),
+  resultFoulsBody: document.getElementById("result-fouls-body"),
+  resultConditionBody: document.getElementById("result-condition-body"),
+  resultPlayers: document.getElementById("result-players")
 };
 
 async function fetchJson(url, options = {}) {
@@ -188,11 +200,164 @@ function activateScreen(target) {
     els.standingsScreen,
     els.collegeScreen,
     els.medicalScreen,
+    els.gameResultScreen,
   ].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
   });
+}
+
+function fmtStat(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+function getTeamName(teamId) {
+  const t = String(teamId || "").toUpperCase();
+  return TEAM_FULL_NAMES[t] || t || "-";
+}
+
+function stringifyMap(obj) {
+  if (!obj || typeof obj !== "object") return "-";
+  const entries = Object.entries(obj);
+  if (!entries.length) return "-";
+  return entries.map(([k, v]) => `${k}: ${fmtStat(v)}`).join(" · ");
+}
+
+function renderGameResultScreen(result) {
+  if (!result || typeof result !== "object") {
+    throw new Error("경기 결과 데이터가 올바르지 않습니다.");
+  }
+
+  const game = result.game || {};
+  const teams = result.teams || {};
+  const final = result.final || {};
+  const gameState = result.game_state || {};
+
+  const homeId = String(game.home_team_id || "").toUpperCase();
+  const awayId = String(game.away_team_id || "").toUpperCase();
+  const teamIds = [homeId, awayId].filter(Boolean);
+
+  const homeScore = final[homeId] ?? "-";
+  const awayScore = final[awayId] ?? "-";
+  const winnerText = Number(homeScore) > Number(awayScore)
+    ? `${getTeamName(homeId)} 승리`
+    : Number(homeScore) < Number(awayScore)
+      ? `${getTeamName(awayId)} 승리`
+      : "무승부";
+
+  els.gameResultTitle.textContent = `${getTeamName(homeId)} vs ${getTeamName(awayId)}`;
+  els.gameResultMeta.textContent = `${String(game.date || "").slice(0, 10)} · ${winnerText} · OT ${game.overtime_periods ?? 0}`;
+
+  els.resultScoreboard.innerHTML = `
+    <div class="result-team-score">
+      <p class="result-team-name">${getTeamName(homeId)}</p>
+      <p class="result-team-value">${homeScore}</p>
+    </div>
+    <div class="result-score-divider">FINAL</div>
+    <div class="result-team-score">
+      <p class="result-team-name">${getTeamName(awayId)}</p>
+      <p class="result-team-value">${awayScore}</p>
+    </div>
+  `;
+
+  const totalKeySet = new Set();
+  teamIds.forEach((tid) => {
+    const totals = teams?.[tid]?.totals || {};
+    Object.keys(totals).forEach((k) => totalKeySet.add(k));
+  });
+  const totalKeys = [...totalKeySet].sort();
+  els.resultTotalsHead.innerHTML = `<tr><th>TEAM</th>${totalKeys.map((k) => `<th>${k}</th>`).join("")}</tr>`;
+  els.resultTotalsBody.innerHTML = teamIds.map((tid) => {
+    const totals = teams?.[tid]?.totals || {};
+    return `<tr><td>${tid}</td>${totalKeys.map((k) => `<td>${fmtStat(totals[k])}</td>`).join("")}</tr>`;
+  }).join("");
+
+  els.resultBreakdowns.innerHTML = teamIds.map((tid) => {
+    const breakdowns = teams?.[tid]?.breakdowns || {};
+    const rows = Object.entries(breakdowns);
+    return `
+      <article class="result-breakdown-card">
+        <h4>${getTeamName(tid)} (${tid})</h4>
+        ${rows.length ? rows.map(([k, v]) => `<p><strong>${k}</strong><span>${stringifyMap(v)}</span></p>`).join("") : `<p class="result-empty">데이터 없음</p>`}
+      </article>
+    `;
+  }).join("");
+
+  els.resultFoulsBody.innerHTML = teamIds.map((tid) => {
+    const tf = gameState?.team_fouls?.[tid];
+    const pf = stringifyMap(gameState?.player_fouls?.[tid]);
+    return `<tr><td>${tid}</td><td>${fmtStat(tf)}</td><td class="result-left">${pf}</td></tr>`;
+  }).join("");
+
+  els.resultConditionBody.innerHTML = teamIds.map((tid) => {
+    const fatigueText = stringifyMap(gameState?.fatigue?.[tid]);
+    const minutesText = stringifyMap(gameState?.minutes_played_sec?.[tid]);
+    return `<tr><td>${tid}</td><td class="result-left">${fatigueText}</td><td class="result-left">${minutesText}</td></tr>`;
+  }).join("");
+
+  els.resultPlayers.innerHTML = teamIds.map((tid) => {
+    const players = teams?.[tid]?.players || [];
+    const columns = new Set(["PlayerID", "Name", "PTS", "REB", "AST", "FGM", "FGA", "3PM", "3PA", "FTM", "FTA", "TOV", "STL", "BLK", "MIN"]);
+    players.forEach((row) => Object.keys(row || {}).forEach((k) => columns.add(k)));
+    const colList = [...columns];
+    return `
+      <section class="result-players-team">
+        <h4>${getTeamName(tid)} (${tid})</h4>
+        <div class="result-table-wrap">
+          <table class="result-table">
+            <thead><tr>${colList.map((c) => `<th>${c}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${players.length ? players.map((row) => `<tr>${colList.map((c) => `<td>${fmtStat(row?.[c])}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${colList.length}" class="result-empty">선수 박스스코어 없음</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }).join("");
+
+  activateScreen(els.gameResultScreen);
+}
+
+async function runQuickSimNextGame() {
+  if (!state.selectedTeamId) {
+    alert("먼저 팀을 선택해주세요.");
+    return;
+  }
+
+  setLoading(true, "빠른 진행 중... 경기 시뮬레이션을 실행하고 있습니다.");
+  try {
+    const currentDate = await fetchInGameDate();
+    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+    const games = schedule?.games || [];
+    const nextGame = games.find((g) => {
+      const date = String(g?.date || "").slice(0, 10);
+      return date >= currentDate && !isCompletedGame(g);
+    });
+
+    if (!nextGame) {
+      throw new Error("진행할 다음 경기가 없습니다.");
+    }
+
+    const payload = {
+      home_team_id: nextGame.home_team_id,
+      away_team_id: nextGame.away_team_id,
+      game_date: String(nextGame.date || "").slice(0, 10),
+    };
+
+    const result = await fetchJson("/api/simulate-game", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    renderGameResultScreen(result);
+    await refreshMainDashboard();
+  } finally {
+    setLoading(false);
+  }
 }
 
 function renderCollegeEmpty(tbody, colspan, msg) {
@@ -1511,6 +1676,7 @@ els.continueBtn.addEventListener("click", () => continueGame().catch((e) => aler
 els.myTeamBtn.addEventListener("click", () => showMyTeamScreen().catch((e) => alert(e.message)));
 els.tacticsMenuBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
 els.nextGameTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
+els.nextGameQuickBtn.addEventListener("click", () => runQuickSimNextGame().catch((e) => alert(e.message)));
 els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
 els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
@@ -1569,6 +1735,7 @@ els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((
   btn.addEventListener("click", () => renderTrainingDetail(btn.dataset.trainingType).catch((e) => alert(e.message)));
 });
 els.backToMainBtn.addEventListener("click", () => showMainScreen());
+els.gameResultBackBtn.addEventListener("click", () => showMainScreen());
 els.backToRosterBtn.addEventListener("click", () => activateScreen(els.myTeamScreen));
 
 loadSavesStatus();
