@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import hashlib
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,59 @@ from team_utils import get_conference_standings, get_team_cards, get_team_detail
 router = APIRouter()
 
 static_dir = os.path.join(BASE_DIR, "static")
+
+TEAM_FULL_NAMES: Dict[str, str] = {
+    "ATL": "Atlanta Hawks", "BOS": "Boston Celtics", "BKN": "Brooklyn Nets", "CHA": "Charlotte Hornets",
+    "CHI": "Chicago Bulls", "CLE": "Cleveland Cavaliers", "DAL": "Dallas Mavericks", "DEN": "Denver Nuggets",
+    "DET": "Detroit Pistons", "GSW": "Golden State Warriors", "HOU": "Houston Rockets", "IND": "Indiana Pacers",
+    "LAC": "LA Clippers", "LAL": "Los Angeles Lakers", "MEM": "Memphis Grizzlies", "MIA": "Miami Heat",
+    "MIL": "Milwaukee Bucks", "MIN": "Minnesota Timberwolves", "NOP": "New Orleans Pelicans", "NYK": "New York Knicks",
+    "OKC": "Oklahoma City Thunder", "ORL": "Orlando Magic", "PHI": "Philadelphia 76ers", "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers", "SAC": "Sacramento Kings", "SAS": "San Antonio Spurs", "TOR": "Toronto Raptors",
+    "UTA": "Utah Jazz", "WAS": "Washington Wizards",
+}
+
+
+def _format_mmdd(date_value: Any) -> str:
+    raw = str(date_value or "")[:10]
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return f"{raw[5:7]}/{raw[8:10]}"
+    return "--/--"
+
+
+def _deterministic_tipoff_time(game_id: Any) -> str:
+    slots = ("07:00 PM", "07:30 PM", "08:00 PM", "08:30 PM", "09:00 PM", "09:30 PM")
+    digest = hashlib.md5(str(game_id or "").encode("utf-8")).hexdigest()
+    idx = int(digest[:8], 16) % len(slots)
+    return slots[idx]
+
+
+def _num_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_leader(rows: List[Dict[str, Any]], stat_keys: List[str]) -> Optional[Dict[str, Any]]:
+    best: Optional[Dict[str, Any]] = None
+    best_value = float("-inf")
+    for row in rows:
+        value = None
+        for k in stat_keys:
+            value = _num_or_none(row.get(k))
+            if value is not None:
+                break
+        if value is None:
+            continue
+        if value > best_value:
+            best_value = value
+            best = {
+                "player_id": str(row.get("PlayerID") or ""),
+                "name": row.get("Name") or "",
+                "value": int(value),
+            }
+    return best
 
 @router.get("/")
 async def root():
@@ -402,7 +456,7 @@ async def two_way_summary(team_id: str):
 # -------------------------------------------------------------------------
 @router.get("/api/team-schedule/{team_id}")
 async def team_schedule(team_id: str):
-    """마스터 스케줄 기준으로 특정 팀의 전체 시즌 일정을 반환."""
+    """마스터 스케줄 기준으로 특정 팀의 전체 시즌 일정을 UI 친화 포맷으로 반환."""
     team_id = team_id.upper()
     if team_id not in ALL_TEAM_IDS:
         raise HTTPException(status_code=404, detail=f"Team '{team_id}' not found in league")
@@ -425,29 +479,92 @@ async def team_schedule(team_id: str):
     ]
     team_games.sort(key=lambda g: (g.get("date"), g.get("game_id")))
 
+    workflow_state = state.export_workflow_state() or {}
+    game_results = workflow_state.get("game_results") or {}
+    current_date = str(league.get("current_date") or "")[:10]
+    season_id = str(league.get("active_season_id") or "")
+
     formatted_games: List[Dict[str, Any]] = []
+    wins = 0
+    losses = 0
     for g in team_games:
+        game_id = g.get("game_id")
+        home_team_id = str(g.get("home_team_id") or "")
+        away_team_id = str(g.get("away_team_id") or "")
+        is_home = team_id == home_team_id
+        opponent_team_id = away_team_id if is_home else home_team_id
         home_score = g.get("home_score")
         away_score = g.get("away_score")
+        status = str(g.get("status") or "")
+        is_completed = home_score is not None and away_score is not None
         result_for_team = None
-        if home_score is not None and away_score is not None:
-            if team_id == g.get("home_team_id"):
+        record_after_game: Optional[Dict[str, Any]] = None
+        leaders: Optional[Dict[str, Any]] = None
+        result: Optional[Dict[str, Any]] = None
+
+        if is_completed:
+            if is_home:
                 result_for_team = "W" if home_score > away_score else "L"
             else:
                 result_for_team = "W" if away_score > home_score else "L"
 
+            if result_for_team == "W":
+                wins += 1
+            else:
+                losses += 1
+
+            score_for = int(home_score if is_home else away_score)
+            score_against = int(away_score if is_home else home_score)
+            result = {
+                "wl": result_for_team,
+                "score_for": score_for,
+                "score_against": score_against,
+                "display": f"{result_for_team} {score_for}-{score_against}",
+            }
+            record_after_game = {
+                "wins": wins,
+                "losses": losses,
+                "display": f"{wins}-{losses}",
+            }
+
+            gr = game_results.get(str(game_id)) if isinstance(game_results, dict) else None
+            team_box = ((gr or {}).get("teams") or {}).get(team_id) if isinstance(gr, dict) else None
+            rows = team_box.get("players") if isinstance(team_box, dict) else []
+            rows = rows if isinstance(rows, list) else []
+            leaders = {
+                "points": _pick_leader(rows, ["PTS"]),
+                "rebounds": _pick_leader(rows, ["REB", "TRB"]),
+                "assists": _pick_leader(rows, ["AST"]),
+            }
+
+        if not status:
+            status = "final" if is_completed else "scheduled"
+
         formatted_games.append({
-            "game_id": g.get("game_id"),
+            "game_id": game_id,
             "date": g.get("date"),
-            "home_team_id": g.get("home_team_id"),
-            "away_team_id": g.get("away_team_id"),
+            "date_mmdd": _format_mmdd(g.get("date")),
+            "home_team_id": home_team_id,
+            "away_team_id": away_team_id,
+            "is_home": is_home,
+            "opponent_team_id": opponent_team_id,
+            "opponent_team_name": TEAM_FULL_NAMES.get(opponent_team_id, opponent_team_id),
+            "opponent_label": f"{'vs' if is_home else '@'} {opponent_team_id}",
+            "status": status,
+            "is_completed": is_completed,
             "home_score": home_score,
             "away_score": away_score,
             "result_for_user_team": result_for_team,
+            "result": result,
+            "record_after_game": record_after_game,
+            "leaders": leaders,
+            "tipoff_time": None if is_completed else _deterministic_tipoff_time(game_id),
         })
 
     return {
         "team_id": team_id,
+        "season_id": season_id,
+        "current_date": current_date,
         "games": formatted_games,
     }
 
