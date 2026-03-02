@@ -78,10 +78,77 @@
           <div class="next-game-actions">
             <button type="button" class="menu-card next-game-action-btn">경기 진행</button>
             <button type="button" id="next-game-tactics-btn" class="menu-card next-game-action-btn">전술</button>
-            <button type="button" class="menu-card next-game-action-btn">빠른 진행</button>
+            <button type="button" id="next-game-quick-btn" class="menu-card next-game-action-btn">빠른 진행</button>
           </div>
         </section>
       </div>
+    </section>
+
+    <section id="game-result-screen" class="panel" aria-hidden="true">
+      <div class="screen-header-row">
+        <div>
+          <p class="eyebrow">GAME RESULT</p>
+          <h2 id="game-result-title">경기 결과</h2>
+          <p id="game-result-meta" class="subtitle">시뮬레이션 결과를 확인합니다.</p>
+        </div>
+        <button id="game-result-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+      </div>
+
+      <section class="result-scoreboard" id="result-scoreboard"></section>
+
+      <section class="result-grid-two">
+        <article class="result-card">
+          <div class="result-card-head">
+            <h3>팀 Totals</h3>
+          </div>
+          <div class="result-table-wrap">
+            <table class="result-table">
+              <thead id="result-totals-head"></thead>
+              <tbody id="result-totals-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="result-card">
+          <div class="result-card-head">
+            <h3>팀 Breakdowns</h3>
+          </div>
+          <div id="result-breakdowns" class="result-breakdown-list"></div>
+        </article>
+      </section>
+
+      <section class="result-grid-two">
+        <article class="result-card">
+          <div class="result-card-head">
+            <h3>팀 / 개인 파울</h3>
+          </div>
+          <div class="result-table-wrap">
+            <table class="result-table">
+              <thead><tr><th>TEAM</th><th>TEAM FOULS</th><th>PLAYER FOULS</th></tr></thead>
+              <tbody id="result-fouls-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="result-card">
+          <div class="result-card-head">
+            <h3>피로도 / 출장시간(초)</h3>
+          </div>
+          <div class="result-table-wrap">
+            <table class="result-table">
+              <thead><tr><th>TEAM</th><th>피로도</th><th>출장시간(초)</th></tr></thead>
+              <tbody id="result-condition-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="result-card">
+        <div class="result-card-head">
+          <h3>선수 박스스코어</h3>
+        </div>
+        <div id="result-players"></div>
+      </section>
     </section>
 
     <section id="schedule-screen" class="panel" aria-hidden="true">
