@@ -84,9 +84,16 @@ function setLoading(show, msg = "") {
 }
 
 function activateScreen(target) {
-  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen, els.standingsScreen].forEach((screen) => {
-  [els.startScreen, els.teamScreen, els.mainScreen, els.scheduleScreen, els.myTeamScreen, els.playerDetailScreen].forEach((screen) => {
-  [els.startScreen, els.teamScreen, els.mainScreen, els.myTeamScreen, els.playerDetailScreen, els.trainingScreen].forEach((screen) => {
+  [
+    els.startScreen,
+    els.teamScreen,
+    els.mainScreen,
+    els.scheduleScreen,
+    els.myTeamScreen,
+    els.playerDetailScreen,
+    els.trainingScreen,
+    els.standingsScreen,
+  ].forEach((screen) => {
     const active = screen === target;
     screen.classList.toggle("active", active);
     screen.setAttribute("aria-hidden", active ? "false" : "true");
