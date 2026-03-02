@@ -47,11 +47,276 @@ from .repo import (
 from .team_transition import apply_team_transition
 from .tick import apply_monthly_player_tick
 from .responses import DEFAULT_RESPONSE_CONFIG, apply_user_response
+from .trade_offer_grievance import (
+    PlayerSnapshot,
+    TradeOfferGrievanceConfig as TradeOfferGrievanceRuntimeConfig,
+    compute_trade_offer_grievances,
+)
 from .types import MonthlyPlayerInputs
 from .utils import clamp01, date_add_days, extract_mental_from_attrs, json_dumps, json_loads, make_event_id, norm_date_iso, norm_month_key, safe_float, safe_int
 
 
 logger = logging.getLogger(__name__)
+
+
+def apply_trade_offer_grievances(
+    *,
+    db_path: str,
+    season_year: int,
+    now_date_iso: str,
+    proposer_team_id: str,
+    outgoing_player_ids: list[str],
+    incoming_player_ids: list[str],
+    trigger_source: str,
+    session_id: Optional[str] = None,
+    cfg: AgencyConfig = DEFAULT_CONFIG,
+) -> Dict[str, Any]:
+    """Apply trade-offer grievance effects to agency SSOT.
+
+    This function orchestrates DB I/O only. Core grievance computation stays in
+    agency.trade_offer_grievance (pure logic).
+    """
+
+    team_id = str(proposer_team_id or "").upper()
+    date_iso = str(now_date_iso or "")[:10]
+    out_ids = [str(x) for x in (outgoing_player_ids or []) if str(x)]
+    in_ids = [str(x) for x in (incoming_player_ids or []) if str(x)]
+
+    if not team_id:
+        return {"ok": False, "reason": "missing_team_id"}
+    if not out_ids and not in_ids:
+        return {"ok": True, "applied": False, "reason": "no_candidate_players", "team_id": team_id}
+
+    with LeagueRepo(db_path) as repo:
+        repo.init_db()
+
+        # Active roster snapshots for proposer team (incumbent pool)
+        rows = repo._conn.execute(
+            """
+            SELECT
+                p.player_id,
+                r.team_id,
+                p.pos,
+                p.ovr,
+                p.attrs_json,
+                r.salary_amount
+            FROM roster r
+            JOIN players p ON p.player_id = r.player_id
+            WHERE r.status='active' AND UPPER(r.team_id)=?
+            ORDER BY p.player_id ASC;
+            """,
+            (team_id,),
+        ).fetchall()
+
+        roster_rows: list[Dict[str, Any]] = []
+        roster_ids: list[str] = []
+        for r in rows:
+            pid = str(r[0] or "")
+            if not pid:
+                continue
+            roster_ids.append(pid)
+            roster_rows.append(
+                {
+                    "player_id": pid,
+                    "team_id": str(r[1] or "").upper(),
+                    "pos": str(r[2] or "").upper(),
+                    "ovr": safe_int(r[3], 0),
+                    "attrs_json": r[4],
+                    "salary_amount": safe_float(r[5], 0.0),
+                }
+            )
+
+        if not roster_rows:
+            return {"ok": True, "applied": False, "reason": "no_active_roster_for_team", "team_id": team_id}
+
+        # Incoming targets may be outside proposer roster; fetch minimal info.
+        uniq_in = sorted({x for x in in_ids if x})
+        incoming_rows: Dict[str, Dict[str, Any]] = {}
+        if uniq_in:
+            placeholders = ",".join(["?"] * len(uniq_in))
+            inq = repo._conn.execute(
+                f"""
+                SELECT p.player_id, p.pos, p.ovr, p.attrs_json, r.team_id
+                FROM players p
+                LEFT JOIN roster r ON r.player_id = p.player_id
+                WHERE p.player_id IN ({placeholders});
+                """,
+                [*uniq_in],
+            ).fetchall()
+            for r in inq:
+                pid = str(r[0] or "")
+                if not pid:
+                    continue
+                incoming_rows[pid] = {
+                    "player_id": pid,
+                    "pos": str(r[1] or "").upper(),
+                    "ovr": safe_int(r[2], 0),
+                    "attrs_json": r[3],
+                    "team_id": str(r[4] or "").upper(),
+                }
+
+        # Expectations -> role_bucket/leverage for proposer roster players.
+        exp = compute_expectations_for_league(roster_rows, config=cfg.expectations)
+
+        # Agency state for proposer roster (targeted + incumbent candidates)
+        with repo.transaction() as cur:
+            states = get_player_agency_states(cur, roster_ids)
+
+        players_by_id: Dict[str, PlayerSnapshot] = {}
+
+        for rr in roster_rows:
+            pid = str(rr["player_id"])
+            st = states.get(pid) or {}
+            ex = exp.get(pid)
+            mental = extract_mental_from_attrs(rr.get("attrs_json"), keys=cfg.mental_attr_keys)
+
+            role_bucket = str((st.get("role_bucket") if isinstance(st, Mapping) else None) or (getattr(ex, "role_bucket", "UNKNOWN")))
+            leverage = float(clamp01((st.get("leverage") if isinstance(st, Mapping) else None) if st else getattr(ex, "leverage", 0.0)))
+
+            players_by_id[pid] = PlayerSnapshot(
+                player_id=pid,
+                team_id=team_id,
+                pos=str(rr.get("pos") or "").upper(),
+                ovr=int(safe_int(rr.get("ovr"), 0)),
+                mental=mental,
+                role_bucket=role_bucket,
+                leverage=leverage,
+                trade_request_level=int(safe_int(st.get("trade_request_level") if isinstance(st, Mapping) else 0, 0)),
+                team_frustration=float(clamp01(safe_float(st.get("team_frustration") if isinstance(st, Mapping) else 0.0, 0.0))),
+                role_frustration=float(clamp01(safe_float(st.get("role_frustration") if isinstance(st, Mapping) else 0.0, 0.0))),
+            )
+
+        for pid in uniq_in:
+            if pid in players_by_id:
+                continue
+            rr = incoming_rows.get(pid)
+            if not rr:
+                continue
+            mental = extract_mental_from_attrs(rr.get("attrs_json"), keys=cfg.mental_attr_keys)
+            players_by_id[pid] = PlayerSnapshot(
+                player_id=pid,
+                team_id=str(rr.get("team_id") or "").upper(),
+                pos=str(rr.get("pos") or "").upper(),
+                ovr=int(safe_int(rr.get("ovr"), 0)),
+                mental=mental,
+            )
+
+        tuning = cfg.trade_offer_grievance
+        evt = cfg.event_types if isinstance(cfg.event_types, Mapping) else {}
+        runtime_cfg = TradeOfferGrievanceRuntimeConfig(
+            targeted_public_base_prob=float(getattr(tuning, "targeted_public_base_prob", 0.30)),
+            targeted_leak_base_prob=float(getattr(tuning, "targeted_leak_base_prob", 0.38)),
+            targeted_delta_base=float(getattr(tuning, "targeted_delta_base", 0.04)),
+            targeted_delta_scale=float(getattr(tuning, "targeted_delta_scale", 0.10)),
+            same_pos_base_prob=float(getattr(tuning, "same_pos_base_prob", 0.18)),
+            same_pos_delta_base=float(getattr(tuning, "same_pos_delta_base", 0.03)),
+            same_pos_delta_scale=float(getattr(tuning, "same_pos_delta_scale", 0.08)),
+            same_pos_min_leverage=float(getattr(tuning, "same_pos_min_leverage", 0.28)),
+            same_pos_max_ovr_gap=int(getattr(tuning, "same_pos_max_ovr_gap", 3)),
+            same_pos_max_role_tier_gap=int(getattr(tuning, "same_pos_max_role_tier_gap", 2)),
+            event_type_targeted_public=str(evt.get("trade_targeted_offer_public") or "TRADE_TARGETED_OFFER_PUBLIC").upper(),
+            event_type_targeted_leaked=str(evt.get("trade_targeted_offer_leaked") or "TRADE_TARGETED_OFFER_LEAKED").upper(),
+            event_type_same_pos_recruit=str(evt.get("same_pos_recruit_attempt") or "SAME_POS_RECRUIT_ATTEMPT").upper(),
+        )
+
+        result = compute_trade_offer_grievances(
+            proposer_team_id=team_id,
+            outgoing_player_ids=out_ids,
+            incoming_player_ids=in_ids,
+            players_by_id=players_by_id,
+            season_year=int(season_year),
+            now_date_iso=date_iso,
+            trigger_source=str(trigger_source or "PUBLIC_OFFER"),
+            session_id=session_id,
+            cfg=runtime_cfg,
+        )
+
+        if not result.updates and not result.events:
+            return {
+                "ok": True,
+                "applied": False,
+                "team_id": team_id,
+                "trigger_source": str(trigger_source or "PUBLIC_OFFER").upper(),
+                "reason": "no_effect",
+                "skipped": result.skipped,
+                "meta": dict(result.meta or {}),
+            }
+
+        # Merge updated values back into SSOT rows.
+        states_upsert: Dict[str, Dict[str, Any]] = {}
+        roster_by_id = {str(r["player_id"]): r for r in roster_rows}
+        for u in result.updates:
+            pid = str(u.player_id)
+            base = dict(states.get(pid) or {})
+            if not base:
+                rr = roster_by_id.get(pid) or {}
+                ex = exp.get(pid)
+                base = {
+                    "player_id": pid,
+                    "team_id": team_id,
+                    "season_year": int(season_year),
+                    "role_bucket": str(getattr(ex, "role_bucket", "UNKNOWN")),
+                    "leverage": float(clamp01(getattr(ex, "leverage", 0.0))),
+                    "minutes_expected_mpg": float(getattr(ex, "expected_mpg", 0.0) or 0.0),
+                    "minutes_actual_mpg": 0.0,
+                    "trust": 0.5,
+                    "trade_request_level": 0,
+                    "context": {},
+                    "team_frustration": float(clamp01(safe_float(rr.get("team_frustration"), 0.0))),
+                    "role_frustration": float(clamp01(safe_float(rr.get("role_frustration"), 0.0))),
+                }
+
+            base["team_frustration"] = float(clamp01(u.team_frustration))
+            base["role_frustration"] = float(clamp01(u.role_frustration))
+
+            ctx = base.get("context") if isinstance(base.get("context"), dict) else {}
+            tg = ctx.get("trade_grievance") if isinstance(ctx.get("trade_grievance"), dict) else {}
+            tg["last_trigger_date"] = date_iso
+            tg["last_trigger_source"] = str(trigger_source or "PUBLIC_OFFER").upper()
+            tg["last_session_id"] = str(session_id) if session_id else None
+            tg["last_team_frustration_delta"] = float(u.team_frustration_delta)
+            tg["last_role_frustration_delta"] = float(u.role_frustration_delta)
+            ctx["trade_grievance"] = tg
+            base["context"] = ctx
+
+            states_upsert[pid] = base
+
+        ev_rows: list[Dict[str, Any]] = []
+        for ev in result.events:
+            ev_rows.append(
+                {
+                    "event_id": str(ev.event_id),
+                    "player_id": str(ev.player_id),
+                    "team_id": str(ev.team_id).upper(),
+                    "season_year": int(ev.season_year),
+                    "date": str(ev.date)[:10],
+                    "event_type": str(ev.event_type).upper(),
+                    "severity": float(clamp01(ev.severity)),
+                    "payload": dict(ev.payload or {}),
+                }
+            )
+
+        with repo.transaction() as cur:
+            upsert_player_agency_states(cur, states_upsert, now=str(now_date_iso))
+            insert_agency_events(cur, ev_rows, now=str(now_date_iso))
+
+    return {
+        "ok": True,
+        "applied": True,
+        "team_id": team_id,
+        "trigger_source": str(trigger_source or "PUBLIC_OFFER").upper(),
+        "updates": [
+            {
+                "player_id": str(u.player_id),
+                "team_frustration_delta": float(u.team_frustration_delta),
+                "role_frustration_delta": float(u.role_frustration_delta),
+            }
+            for u in result.updates
+        ],
+        "event_ids": [str(ev.event_id) for ev in result.events],
+        "skipped": result.skipped,
+        "meta": dict(result.meta or {}),
+    }
 
 
 def _meta_key_for_month(month_key: str) -> str:

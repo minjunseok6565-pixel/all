@@ -47,6 +47,8 @@ _DEFAULT_TRADE_MARKET: Dict[str, Any] = {
     "cooldowns": {},
     "events": [],
     "applied_exec_deal_ids": {},
+    # Derived helper cursor for idempotent side-effects (no authority; DB remains SSOT)
+    "grievance_cursor": {},
 }
 
 _DEFAULT_TRADE_MEMORY: Dict[str, Any] = {

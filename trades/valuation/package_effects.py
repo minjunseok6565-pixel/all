@@ -290,6 +290,12 @@ class PackageEffectsConfig:
     defense_proxy_floor: float = 0.35
     defense_proxy_cap: float = 1.00
 
+    # --- Agency distress valuation link (trade request / grievance)
+    agency_trade_request_weight: float = 0.08
+    agency_team_frustration_weight: float = 0.08
+    agency_role_frustration_weight: float = 0.05
+    agency_distress_cap: float = 0.22
+
     eps: float = 1e-9
 
 
@@ -353,7 +359,10 @@ class PackageEffects:
         # OFF/DEF upgrade adjustments
         delta7 = self._upgrade_adjustment(incoming, outgoing, ctx, steps)
 
-        total = delta1 + delta2 + delta3 + delta4 + delta5 + delta6 + delta7
+        # Agency distress (trade-request / grievance) impacts perceived value.
+        delta8 = self._agency_distress_adjustment(incoming, outgoing, steps)
+
+        total = delta1 + delta2 + delta3 + delta4 + delta5 + delta6 + delta7 + delta8
         meta["base_in"] = {"now": base_in.now, "future": base_in.future, "total": base_in.total, "mass": base_in_mass}
         meta["base_out"] = {"now": base_out.now, "future": base_out.future, "total": base_out.total, "mass": base_out_mass}
         meta["package_delta"] = {"now": total.now, "future": total.future, "total": total.total}
@@ -945,6 +954,73 @@ class PackageEffects:
                     "delta_off": delta_off,
                     "delta_def": delta_def,
                     "upgrade_scale": cfg.upgrade_scale,
+                },
+            )
+        )
+        return delta
+
+
+    def _agency_distress_adjustment(
+        self,
+        incoming: Sequence[Tuple[TeamValuation, AssetSnapshot]],
+        outgoing: Sequence[Tuple[TeamValuation, AssetSnapshot]],
+        steps: List[ValuationStep],
+    ) -> ValueComponents:
+        cfg = self.config
+
+        def _distress_ratio(snap: PlayerSnapshot) -> float:
+            st = snap.meta.get("agency_state") if isinstance(snap.meta, dict) else None
+            if not isinstance(st, Mapping):
+                return 0.0
+            tr = _clamp(_safe_float(st.get("trade_request_level"), 0.0) / 3.0, 0.0, 1.0)
+            tfr = _clamp(_safe_float(st.get("team_frustration"), 0.0), 0.0, 1.0)
+            rfr = _clamp(_safe_float(st.get("role_frustration"), 0.0), 0.0, 1.0)
+            raw = (
+                cfg.agency_trade_request_weight * tr
+                + cfg.agency_team_frustration_weight * tfr
+                + cfg.agency_role_frustration_weight * rfr
+            )
+            return _clamp(raw, 0.0, cfg.agency_distress_cap)
+
+        # incoming distress lowers willingness to pay
+        in_delta = 0.0
+        out_delta = 0.0
+        for tv, snap in incoming:
+            if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
+                continue
+            ratio = _distress_ratio(snap)
+            if ratio <= cfg.eps:
+                continue
+            in_delta -= max(0.0, _team_total_grade(tv)) * ratio
+
+        # outgoing distress lowers seller's reservation value (easier to move)
+        for tv, snap in outgoing:
+            if tv.kind != AssetKind.PLAYER or not isinstance(snap, PlayerSnapshot):
+                continue
+            ratio = _distress_ratio(snap)
+            if ratio <= cfg.eps:
+                continue
+            out_delta += max(0.0, _team_total_grade(tv)) * ratio
+
+        raw = in_delta + out_delta
+        if abs(raw) <= cfg.eps:
+            return ValueComponents.zero()
+
+        delta = _vc(now=raw, future=0.0)
+        steps.append(
+            ValuationStep(
+                stage=ValuationStage.PACKAGE,
+                mode=StepMode.ADD,
+                code="AGENCY_DISTRESS_VALUE_ADJUST",
+                label="에이전시 불만/트레이드요청 기반 가치 조정",
+                delta=delta,
+                meta={
+                    "incoming_delta": float(in_delta),
+                    "outgoing_delta": float(out_delta),
+                    "trade_request_weight": float(cfg.agency_trade_request_weight),
+                    "team_frustration_weight": float(cfg.agency_team_frustration_weight),
+                    "role_frustration_weight": float(cfg.agency_role_frustration_weight),
+                    "distress_cap": float(cfg.agency_distress_cap),
                 },
             )
         )

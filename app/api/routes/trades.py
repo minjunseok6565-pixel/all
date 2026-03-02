@@ -37,6 +37,7 @@ from app.schemas.trades import (
 from app.services.cache_facade import _try_ui_cache_refresh_players
 from app.services.contract_facade import _validate_repo_integrity
 from app.services.trade_facade import _trade_error_response
+from agency.service import apply_trade_offer_grievances
 
 router = APIRouter()
 
@@ -78,6 +79,87 @@ def _extract_outgoing_player_ids_for_team(deal_payload: Dict[str, Any], *, from_
         uniq.append(pid)
     return uniq
 
+
+
+
+def _extract_incoming_player_ids_for_team(deal_payload: Dict[str, Any], *, to_team_id: str) -> List[str]:
+    incoming: List[str] = []
+    legs = deal_payload.get("legs") if isinstance(deal_payload, dict) else None
+    if not isinstance(legs, list):
+        return incoming
+    dst = str(to_team_id).upper()
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("to_team") or "").upper() != dst:
+            continue
+        assets = leg.get("assets")
+        if not isinstance(assets, list):
+            continue
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("kind") or "").upper() != "PLAYER":
+                continue
+            pid = a.get("player_id")
+            if pid:
+                incoming.append(str(pid))
+    uniq: List[str] = []
+    seen = set()
+    for pid in incoming:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        uniq.append(pid)
+    return uniq
+
+
+def _get_season_year_from_state(*, fallback_year: int) -> int:
+    active = state.get_active_season_id()
+    if isinstance(active, str) and active.strip():
+        s0 = active.strip()
+        try:
+            return int(s0[:4])
+        except Exception:
+            pass
+    # defensive fallback for malformed state; keep deterministic positive int
+    return int(fallback_year)
+
+
+
+def _leak_publicize_cursor_key(*, session_id: str) -> str:
+    return f"PRIVATE_LEAK_PUBLICIZED::{str(session_id)}"
+
+
+def _is_private_leak_publicized(trade_market: Dict[str, Any], *, session_id: str) -> bool:
+    m = trade_market if isinstance(trade_market, dict) else {}
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    key = _leak_publicize_cursor_key(session_id=session_id)
+    raw = cur.get(key) if isinstance(cur, dict) else None
+    return bool(isinstance(raw, dict) and raw.get("publicized") is True)
+
+
+def _mark_private_leak_publicized(
+    trade_market: Dict[str, Any],
+    *,
+    session_id: str,
+    today: date,
+    player_ids: List[str],
+    user_team_id: str,
+    other_team_id: str,
+) -> None:
+    m = trade_market if isinstance(trade_market, dict) else {}
+    cur = m.get("grievance_cursor") if isinstance(m.get("grievance_cursor"), dict) else {}
+    m["grievance_cursor"] = cur
+    key = _leak_publicize_cursor_key(session_id=session_id)
+    cur[key] = {
+        "publicized": True,
+        "date": str(today.isoformat()),
+        "session_id": str(session_id),
+        "user_team_id": str(user_team_id).upper(),
+        "other_team_id": str(other_team_id).upper(),
+        "player_ids": [str(x) for x in (player_ids or []) if str(x)],
+    }
 
 def _player_current_team_id(player_id: str, *, db_path: str) -> str:
     pid = str(player_id)
@@ -348,6 +430,23 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                         if isinstance(ev, dict):
                             fast_eval = dict(ev)
 
+                    # Fast-accept path: still apply grievance side effects once (PUBLIC only).
+                    try:
+                        if str(offer_privacy).upper() == "PUBLIC":
+                            proposer_tid = str(session["user_team_id"]).upper()
+                            apply_trade_offer_grievances(
+                                db_path=db_path,
+                                season_year=_get_season_year_from_state(fallback_year=in_game_date.year),
+                                now_date_iso=in_game_date.isoformat(),
+                                proposer_team_id=proposer_tid,
+                                outgoing_player_ids=_extract_outgoing_player_ids_for_team(deal_serialized, from_team_id=proposer_tid),
+                                incoming_player_ids=_extract_incoming_player_ids_for_team(deal_serialized, to_team_id=proposer_tid),
+                                trigger_source="PUBLIC_OFFER",
+                                session_id=str(req.session_id),
+                            )
+                    except Exception:
+                        pass
+
                     return {
                         "ok": True,
                         "accepted": True,
@@ -487,6 +586,49 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                             "player_ids": leaked_player_ids,
                         },
                     )
+
+                    # Leak -> public conversion (idempotent per session).
+                    if leaked_player_ids and not _is_private_leak_publicized(market, session_id=str(req.session_id)):
+                        ttl = int(getattr(cfg, "trade_block_auto_list_days_public_offer", 10) or 10)
+                        if ttl <= 0:
+                            ttl = 1
+                        for pid in leaked_player_ids:
+                            upsert_trade_listing(
+                                market,
+                                today=today,
+                                player_id=pid,
+                                team_id=session["user_team_id"],
+                                listed_by="AUTO_PRIVATE_LEAK",
+                                visibility="PUBLIC",
+                                priority=0.62,
+                                reason_code="PRIVATE_OFFER_LEAK_PUBLICIZED",
+                                expires_on=(today + timedelta(days=ttl + 1)).isoformat(),
+                                source={
+                                    "session_id": req.session_id,
+                                    "offer_privacy": "PRIVATE",
+                                    "publicized_from": "LEAK",
+                                },
+                            )
+                        record_market_event(
+                            market,
+                            today=today,
+                            event_type="TRADE_OFFER_PUBLICIZED_FROM_LEAK",
+                            payload={
+                                "session_id": req.session_id,
+                                "user_team_id": str(session["user_team_id"]).upper(),
+                                "other_team_id": str(session["other_team_id"]).upper(),
+                                "player_ids": leaked_player_ids,
+                            },
+                        )
+                        _mark_private_leak_publicized(
+                            market,
+                            session_id=str(req.session_id),
+                            today=today,
+                            player_ids=leaked_player_ids,
+                            user_team_id=str(session["user_team_id"]).upper(),
+                            other_team_id=str(session["other_team_id"]).upper(),
+                        )
+
                     trust_penalty = _clamp_int(
                         getattr(cfg, "user_leak_trust_penalty", 35),
                         lo=0,
@@ -550,9 +692,38 @@ async def api_trade_negotiation_commit(req: TradeNegotiationCommitRequest):
                     "leak_status": leak_status,
                     "leak_at": today.isoformat() if leak_status != "NONE" else None,
                     "private_offer_exposed_player_ids": leaked_player_ids,
+                    "publicized_from_leak": bool(
+                        str(leak_status).upper() != "NONE" and _is_private_leak_publicized(market, session_id=str(req.session_id))
+                    ),
                 },
             )
         except Exception:
+            pass
+
+        # Apply agency grievance effects exactly once per commit call (best-effort).
+        try:
+            proposer_tid = str(session["user_team_id"]).upper()
+            outgoing_ids = _extract_outgoing_player_ids_for_team(deal_serialized, from_team_id=proposer_tid)
+            incoming_ids = _extract_incoming_player_ids_for_team(deal_serialized, to_team_id=proposer_tid)
+            grievance_source = "PUBLIC_OFFER"
+            if str(leak_status).upper() != "NONE":
+                grievance_source = "PRIVATE_OFFER_LEAKED"
+            elif str(offer_privacy).upper() != "PUBLIC":
+                grievance_source = "NONE"
+
+            if grievance_source != "NONE":
+                apply_trade_offer_grievances(
+                    db_path=db_path,
+                    season_year=_get_season_year_from_state(fallback_year=in_game_date.year),
+                    now_date_iso=in_game_date.isoformat(),
+                    proposer_team_id=proposer_tid,
+                    outgoing_player_ids=outgoing_ids,
+                    incoming_player_ids=incoming_ids,
+                    trigger_source=grievance_source,
+                    session_id=str(req.session_id),
+                )
+        except Exception:
+            # Never block trade negotiation flow by agency side effects.
             pass
 
         # Decide action
