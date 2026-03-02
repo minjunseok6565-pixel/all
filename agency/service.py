@@ -69,6 +69,7 @@ def apply_trade_offer_grievances(
     incoming_player_ids: list[str],
     trigger_source: str,
     session_id: Optional[str] = None,
+    source_path: Optional[str] = None,
     cfg: AgencyConfig = DEFAULT_CONFIG,
 ) -> Dict[str, Any]:
     """Apply trade-offer grievance effects to agency SSOT.
@@ -240,6 +241,7 @@ def apply_trade_offer_grievances(
                 "reason": "no_effect",
                 "skipped": result.skipped,
                 "meta": dict(result.meta or {}),
+                "source_path": str(source_path) if source_path else None,
             }
 
         # Merge updated values back into SSOT rows.
@@ -316,6 +318,7 @@ def apply_trade_offer_grievances(
         "event_ids": [str(ev.event_id) for ev in result.events],
         "skipped": result.skipped,
         "meta": dict(result.meta or {}),
+        "source_path": str(source_path) if source_path else None,
     }
 
 
