@@ -217,6 +217,7 @@ class RepoValuationDataContext(ValuationDataProvider):
     # contract ledger snapshot maps (SSOT: repo.get_contract_ledger_snapshot())
     contracts_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     active_contract_id_by_player: Dict[str, str] = field(default_factory=dict)
+    agency_state_by_player: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # optional pick expectations
     pick_expectations: PickExpectationMap = field(default_factory=dict)
@@ -289,7 +290,10 @@ class RepoValuationDataContext(ValuationDataProvider):
             salary_amount=_safe_float(salary_amount, None),
             attrs=attrs,
             contract=contract,
-            meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+            meta=self._merge_player_meta_with_agency(
+                (dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+                pid,
+            ),
         )
         self._player_cache[pid] = snap
         return snap
@@ -412,7 +416,10 @@ class RepoValuationDataContext(ValuationDataProvider):
                         salary_amount=_safe_float(salary_amount, None),
                         attrs=attrs,
                         contract=contract,
-                        meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+                        meta=self._merge_player_meta_with_agency(
+                            (dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+                            pid,
+                        ),
                     )
                 except Exception:
                     continue
@@ -453,10 +460,54 @@ class RepoValuationDataContext(ValuationDataProvider):
                             salary_amount=_safe_float(salary_amount, None),
                             attrs=attrs,
                             contract=contract,
-                            meta=(dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+                            meta=self._merge_player_meta_with_agency(
+                                (dict(p.get("meta") or {}) if isinstance(p, dict) else {}),
+                                pid,
+                            ),
                         )
                     except Exception:
                         continue
+
+    def _merge_player_meta_with_agency(self, base_meta: Dict[str, Any], player_id: str) -> Dict[str, Any]:
+        out = dict(base_meta or {})
+        agency_state = self.agency_state_by_player.get(str(player_id))
+        if isinstance(agency_state, dict) and agency_state:
+            out["agency_state"] = dict(agency_state)
+        return out
+
+
+def _load_agency_state_snapshot(repo_obj: "LeagueRepo") -> Dict[str, Dict[str, Any]]:
+    """Best-effort snapshot for valuation modifiers tied to agency state."""
+    try:
+        row = repo_obj._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_agency_state' LIMIT 1;"
+        ).fetchone()
+        if not row:
+            return {}
+        rows = repo_obj._conn.execute(
+            """
+            SELECT
+                player_id,
+                trade_request_level,
+                team_frustration,
+                role_frustration
+            FROM player_agency_state;
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        pid = str(r[0] or "")
+        if not pid:
+            continue
+        out[pid] = {
+            "trade_request_level": _safe_int(r[1], 0),
+            "team_frustration": _safe_float(r[2], 0.0),
+            "role_frustration": _safe_float(r[3], 0.0),
+        }
+    return out
 
 
 
@@ -503,6 +554,7 @@ def build_repo_valuation_data_context(
 
     assets: Optional[Dict[str, Any]] = dict(assets_snapshot) if assets_snapshot is not None else None
     ledger: Optional[Dict[str, Any]] = dict(contract_ledger) if contract_ledger is not None else None
+    agency_state_by_player: Dict[str, Dict[str, Any]] = {}
 
     if repo is not None:
         # Use shared repo without opening/closing.
@@ -510,6 +562,7 @@ def build_repo_valuation_data_context(
             assets = repo.get_trade_assets_snapshot() or {}
         if ledger is None:
             ledger = repo.get_contract_ledger_snapshot() or {}
+        agency_state_by_player = _load_agency_state_snapshot(repo)
     else:
         # Avoid opening the DB twice: open once if either snapshot is missing.
         if assets is None or ledger is None:
@@ -518,6 +571,7 @@ def build_repo_valuation_data_context(
                     assets = repo_obj.get_trade_assets_snapshot() or {}
                 if ledger is None:
                     ledger = repo_obj.get_contract_ledger_snapshot() or {}
+                agency_state_by_player = _load_agency_state_snapshot(repo_obj)
 
     if assets is None:  # pragma: no cover
         assets = {}
@@ -570,5 +624,6 @@ def build_repo_valuation_data_context(
         fixed_assets_map=fixed_assets_map,
         contracts_map=contracts_map,
         active_contract_id_by_player=active_contract_id_by_player,
+        agency_state_by_player=agency_state_by_player,
         pick_expectations=pe,
     )

@@ -373,6 +373,23 @@ class StanceConfig:
     decay_coachability_bonus: float = 0.02
 
 
+@dataclass(frozen=True, slots=True)
+class TradeOfferGrievanceConfig:
+    """Tuning for trade-offer grievance triggers (non-monthly, event-driven)."""
+
+    targeted_public_base_prob: float = 0.30
+    targeted_leak_base_prob: float = 0.38
+    targeted_delta_base: float = 0.04
+    targeted_delta_scale: float = 0.10
+
+    same_pos_base_prob: float = 0.18
+    same_pos_delta_base: float = 0.03
+    same_pos_delta_scale: float = 0.08
+    same_pos_min_leverage: float = 0.28
+    same_pos_max_ovr_gap: int = 3
+    same_pos_max_role_tier_gap: int = 2
+
+
 # ---------------------------------------------------------------------------
 # Player option / ETO decisions
 # ---------------------------------------------------------------------------
@@ -448,6 +465,9 @@ class AgencyConfig:
     # Team transition policy (evaluated team != current roster team)
     transition: TransitionConfig = field(default_factory=TransitionConfig)
 
+    # Event-driven trade-offer grievance tuning
+    trade_offer_grievance: TradeOfferGrievanceConfig = field(default_factory=TradeOfferGrievanceConfig)
+
     # Names for mental attributes in attrs_json
     mental_attr_keys: Mapping[str, str] = field(
         default_factory=lambda: {
@@ -467,6 +487,9 @@ class AgencyConfig:
             "help_demand": "HELP_DEMAND",
             "trade_request": "TRADE_REQUEST",
             "trade_request_public": "TRADE_REQUEST_PUBLIC",
+            "trade_targeted_offer_public": "TRADE_TARGETED_OFFER_PUBLIC",
+            "trade_targeted_offer_leaked": "TRADE_TARGETED_OFFER_LEAKED",
+            "same_pos_recruit_attempt": "SAME_POS_RECRUIT_ATTEMPT",
 
             # v2 issue families (stage-specific)
             "role_private": "ROLE_PRIVATE",
