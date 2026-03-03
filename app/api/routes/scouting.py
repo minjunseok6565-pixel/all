@@ -322,6 +322,102 @@ async def api_scouting_unassign(req: ScoutingUnassignRequest):
         raise HTTPException(status_code=500, detail=f"Failed to unassign scout: {e}") from e
 
 
+
+
+@router.get("/api/scouting/inbox-summary")
+async def api_scouting_inbox_summary(
+    team_id: str,
+    period_key: Optional[str] = None,
+):
+    """Team scouting inbox summary for UI badges/cards."""
+    try:
+        tid = str(normalize_team_id(team_id, strict=True))
+        pk = str(period_key).strip() if period_key else str(state.get_current_date_as_date().isoformat())[:7]
+        if len(pk) != 7 or pk[4] != "-":
+            raise HTTPException(status_code=400, detail="period_key must be YYYY-MM")
+
+        db_path = state.get_db_path()
+        with LeagueRepo(db_path) as repo:
+            repo.init_db()
+            scouts = repo._conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active
+                FROM scouting_scouts
+                WHERE team_id=?;
+                """,
+                (tid,),
+            ).fetchone()
+
+            active_assignments = repo._conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM scouting_assignments
+                WHERE team_id=? AND status='ACTIVE';
+                """,
+                (tid,),
+            ).fetchone()
+
+            total_reports = repo._conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM scouting_reports
+                WHERE team_id=?;
+                """,
+                (tid,),
+            ).fetchone()
+
+            period_reports = repo._conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM scouting_reports
+                WHERE team_id=? AND period_key=?;
+                """,
+                (tid, pk),
+            ).fetchone()
+
+            last_report = repo._conn.execute(
+                """
+                SELECT report_id, as_of_date, target_player_id, scout_id
+                FROM scouting_reports
+                WHERE team_id=?
+                ORDER BY as_of_date DESC, created_at DESC
+                LIMIT 1;
+                """,
+                (tid,),
+            ).fetchone()
+
+        scouts_total = int(scouts[0] or 0) if scouts else 0
+        scouts_active = int(scouts[1] or 0) if scouts and scouts[1] is not None else 0
+        assignments_active = int(active_assignments[0] or 0) if active_assignments else 0
+
+        return {
+            "ok": True,
+            "team_id": tid,
+            "period_key": pk,
+            "reports_total": int(total_reports[0] or 0) if total_reports else 0,
+            "reports_this_period": int(period_reports[0] or 0) if period_reports else 0,
+            "active_assignments": assignments_active,
+            "idle_scouts": max(0, scouts_active - assignments_active),
+            "last_report": (
+                {
+                    "report_id": str(last_report[0]),
+                    "as_of_date": str(last_report[1])[:10] if last_report[1] else None,
+                    "target_player_id": str(last_report[2]),
+                    "scout_id": str(last_report[3]),
+                }
+                if last_report
+                else None
+            ),
+            "total_scouts": int(scouts_total),
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build scouting inbox summary: {e}") from e
+
 @router.get("/api/scouting/reports")
 async def api_scouting_reports(
     team_id: str,
