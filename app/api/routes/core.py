@@ -141,6 +141,14 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _parse_iso_date(value: Any, *, field: str) -> date:
+    raw = str(value or "")[:10]
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid {field}: expected YYYY-MM-DD")
+
+
 def _build_risk_profile(
     *,
     row: Mapping[str, Any],
@@ -838,135 +846,16 @@ async def api_medical_team_overview(
     history_days: int = 180,
     top_n: int = 5,
 ):
-    db_path = state.get_db_path()
-    tid = str(normalize_team_id(team_id, strict=True))
     league_ctx = state.get_league_context_snapshot() or {}
     sy = int(season_year or (league_ctx.get("season_year") or 0))
     as_of = state.get_current_date_as_date()
-    as_of_iso = as_of.isoformat()
-    history_days = max(1, min(int(history_days or 180), 730))
-    top_n = max(1, min(int(top_n or 5), 20))
-    health_high_threshold = 0.5
-
-    from agency import repo as agency_repo
-    from fatigue import repo as fatigue_repo
-    from injury import repo as injury_repo
-    from readiness import repo as readiness_repo
-    with LeagueRepo(db_path) as repo:
-        repo.init_db()
-        roster_rows = repo.get_team_roster(tid)
-        pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
-
-        with repo.transaction() as cur:
-            fatigue_by_pid = fatigue_repo.get_player_fatigue_states(cur, pids) if pids else {}
-            sharp_by_pid = readiness_repo.get_player_sharpness_states(cur, pids, season_year=sy) if (pids and sy > 0) else {}
-            injury_by_pid = injury_repo.get_player_injury_states(cur, pids) if pids else {}
-            agency_by_pid = agency_repo.get_player_agency_states(cur, pids) if pids else {}
-            start_iso = (as_of - timedelta(days=history_days)).isoformat()
-            end_iso = (as_of + timedelta(days=1)).isoformat()
-            recent_events = injury_repo.get_overlapping_injury_events(cur, pids, start_date=start_iso, end_date=end_iso) if pids else []
-
-    risk_items: List[Dict[str, Any]] = []
-    unavailable: List[Dict[str, Any]] = []
-    health_rows: List[Dict[str, Any]] = []
-
-    status_counts = {"OUT": 0, "RETURNING": 0, "HEALTHY": 0}
-    risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
-
-    for row in roster_rows:
-        pid = str(row.get("player_id"))
-        prof = _build_risk_profile(
-            row=row,
-            injury_state=injury_by_pid.get(pid) or {},
-            fatigue_state=fatigue_by_pid.get(pid) or {},
-            sharpness_state=sharp_by_pid.get(pid) or {},
-            as_of_date=as_of_iso,
-        )
-        risk_items.append(prof)
-        status = str(prof.get("injury_status") or "HEALTHY")
-        status_counts[status] = status_counts.get(status, 0) + 1
-        tier = str(prof.get("risk_tier") or "LOW")
-        risk_counts[tier] = risk_counts.get(tier, 0) + 1
-
-        if status in {"OUT", "RETURNING"}:
-            st = prof.get("injury_state") or {}
-            unavailable.append({
-                "player_id": pid,
-                "name": row.get("name"),
-                "pos": row.get("pos"),
-                "recovery_status": status,
-                "injury_current": {
-                    "body_part": st.get("body_part"),
-                    "injury_type": st.get("injury_type"),
-                    "severity": st.get("severity"),
-                    "out_until_date": st.get("out_until_date"),
-                    "returning_until_date": st.get("returning_until_date"),
-                },
-            })
-
-        agency_state = agency_by_pid.get(pid) or {}
-        hf = _safe_float(agency_state.get("health_frustration"), 0.0)
-        if agency_state:
-            health_rows.append({
-                "player_id": pid,
-                "name": row.get("name"),
-                "pos": row.get("pos"),
-                "health_frustration": hf,
-                "trade_request_level": _safe_int(agency_state.get("trade_request_level"), 0),
-                "cooldown_health_until": agency_state.get("cooldown_health_until"),
-                "escalation_health": _safe_int(agency_state.get("escalation_health"), 0),
-            })
-
-    risk_items_sorted = sorted(risk_items, key=lambda x: (int(x.get("risk_score") or 0), str(x.get("name") or "")), reverse=True)
-    unavailable_sorted = sorted(unavailable, key=lambda x: (str((x.get("injury_current") or {}).get("out_until_date") or ""), str(x.get("name") or "")))
-    health_sorted = sorted(health_rows, key=lambda x: (float(x.get("health_frustration") or 0.0), str(x.get("name") or "")), reverse=True)
-
-    # attach player names to events
-    name_by_pid = {str(r.get("player_id")): r.get("name") for r in roster_rows}
-    recent_events_sorted = sorted(recent_events, key=lambda x: str(x.get("date") or ""), reverse=True)
-    recent_event_items: List[Dict[str, Any]] = []
-    for e in recent_events_sorted[:top_n]:
-        pid = str(e.get("player_id") or "")
-        recent_event_items.append({
-            "injury_id": e.get("injury_id"),
-            "player_id": pid,
-            "name": name_by_pid.get(pid),
-            "date": e.get("date"),
-            "context": e.get("context"),
-            "body_part": e.get("body_part"),
-            "injury_type": e.get("injury_type"),
-            "severity": e.get("severity"),
-            "out_until_date": e.get("out_until_date"),
-            "returning_until_date": e.get("returning_until_date"),
-        })
-
-    hf_values = [float(r.get("health_frustration") or 0.0) for r in health_rows]
-    hf_count = len(hf_values)
-
-    return {
-        "team_id": tid,
-        "season_year": sy,
-        "as_of_date": as_of_iso,
-        "history_days": history_days,
-        "top_n": top_n,
-        "summary": {
-            "roster_count": len(roster_rows),
-            "injury_status_counts": status_counts,
-            "risk_tier_counts": risk_counts,
-            "health_frustration": {
-                "count_with_state": hf_count,
-                "high_count": sum(1 for v in hf_values if v >= health_high_threshold),
-                "max": max(hf_values) if hf_values else 0.0,
-                "avg": (sum(hf_values) / hf_count) if hf_values else 0.0,
-            },
-        },
-        "watchlists": {
-            "highest_risk": risk_items_sorted[:top_n],
-            "currently_unavailable": unavailable_sorted[:top_n],
-            "health_frustration_high": [r for r in health_sorted if float(r.get("health_frustration") or 0.0) >= health_high_threshold][:top_n],
-            "recent_injury_events": recent_event_items,
-        },
-    }
+    return _medical_team_overview_payload(
+        team_id=team_id,
+        season_year=sy,
+        as_of=as_of,
+        history_days=history_days,
+        top_n=top_n,
+    )
 
 
 @router.get("/api/medical/team/{team_id}/players/{player_id}/timeline")
@@ -1064,6 +953,326 @@ async def api_medical_player_timeline(
         "timeline": {
             "events": events_sorted,
         },
+    }
+
+
+@router.get("/api/medical/team/{team_id}/alerts")
+async def api_medical_team_alerts(
+    team_id: str,
+    season_year: Optional[int] = None,
+    history_days: int = 180,
+    top_n: int = 5,
+    as_of_date: Optional[str] = None,
+):
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    as_of = _parse_iso_date(as_of_date, field="as_of_date") if as_of_date else state.get_current_date_as_date()
+
+    overview_now = _medical_team_overview_payload(
+        team_id=team_id,
+        season_year=sy,
+        as_of=as_of,
+        history_days=history_days,
+        top_n=top_n,
+    )
+    overview_prev = _medical_team_overview_payload(
+        team_id=team_id,
+        season_year=sy,
+        as_of=(as_of - timedelta(days=7)),
+        history_days=history_days,
+        top_n=top_n,
+    )
+
+    tid = str(overview_now.get("team_id") or "")
+    schedule = await team_schedule(tid)
+    current_date = str(schedule.get("current_date") or as_of.isoformat())[:10]
+    cur_dt = date.fromisoformat(current_date)
+    end_dt = cur_dt + timedelta(days=7)
+
+    next_games: List[Dict[str, Any]] = []
+    for g in (schedule.get("games") or []):
+        d_raw = str(g.get("date") or "")[:10]
+        if not d_raw:
+            continue
+        try:
+            gd = date.fromisoformat(d_raw)
+        except ValueError:
+            continue
+        if cur_dt <= gd < end_dt:
+            next_games.append({"date": d_raw, "game": g})
+
+    next_games.sort(key=lambda x: x["date"])
+    b2b = 0
+    for i in range(1, len(next_games)):
+        d0 = date.fromisoformat(next_games[i - 1]["date"])
+        d1 = date.fromisoformat(next_games[i]["date"])
+        if (d1 - d0).days == 1:
+            b2b += 1
+
+    high = (overview_now.get("watchlists") or {}).get("highest_risk") or []
+    primary = high[0] if high else None
+
+    out_now = int((((overview_now.get("summary") or {}).get("injury_status_counts") or {}).get("OUT") or 0))
+    out_prev = int((((overview_prev.get("summary") or {}).get("injury_status_counts") or {}).get("OUT") or 0))
+    hr_now = int((((overview_now.get("summary") or {}).get("risk_tier_counts") or {}).get("HIGH") or 0))
+    hr_prev = int((((overview_prev.get("summary") or {}).get("risk_tier_counts") or {}).get("HIGH") or 0))
+    hf_now = int(((((overview_now.get("summary") or {}).get("health_frustration") or {}).get("high_count")) or 0))
+    hf_prev = int(((((overview_prev.get("summary") or {}).get("health_frustration") or {}).get("high_count")) or 0))
+
+    alert_level = "info"
+    if primary:
+        if str(primary.get("risk_tier") or "").upper() == "HIGH" and str(primary.get("injury_status") or "").upper() in {"OUT", "RETURNING"}:
+            alert_level = "critical"
+        elif str(primary.get("risk_tier") or "").upper() == "HIGH":
+            alert_level = "warn"
+
+    return {
+        "team_id": tid,
+        "as_of_date": as_of.isoformat(),
+        "alert_level": alert_level,
+        "primary_alert_player": ({
+            "player_id": primary.get("player_id"),
+            "name": primary.get("name"),
+            "pos": primary.get("pos"),
+            "injury_status": primary.get("injury_status"),
+            "risk_score": primary.get("risk_score"),
+            "risk_tier": primary.get("risk_tier"),
+            "out_until_date": (primary.get("injury_state") or {}).get("out_until_date"),
+            "returning_until_date": (primary.get("injury_state") or {}).get("returning_until_date"),
+        } if primary else None),
+        "team_load_context": {
+            "next_7d_game_count": len(next_games),
+            "next_7d_back_to_back_count": b2b,
+        },
+        "kpi_delta_7d": {
+            "out_count_delta": out_now - out_prev,
+            "high_risk_count_delta": hr_now - hr_prev,
+            "health_high_count_delta": hf_now - hf_prev,
+        },
+    }
+
+
+@router.get("/api/medical/team/{team_id}/risk-calendar")
+async def api_medical_team_risk_calendar(
+    team_id: str,
+    season_year: Optional[int] = None,
+    date_from: Optional[str] = None,
+    days: int = 14,
+):
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    d0 = _parse_iso_date(date_from, field="date_from") if date_from else state.get_current_date_as_date()
+    days = max(1, min(int(days or 14), 31))
+    d1 = d0 + timedelta(days=days)
+
+    tid = str(normalize_team_id(team_id, strict=True))
+    schedule = await team_schedule(tid)
+
+    from practice.service import list_team_practice_sessions
+
+    with LeagueRepo(state.get_db_path()) as repo:
+        repo.init_db()
+        sessions = list_team_practice_sessions(
+            repo=repo,
+            team_id=tid,
+            season_year=sy,
+            date_from=d0.isoformat(),
+            date_to=(d1 - timedelta(days=1)).isoformat(),
+        )
+
+    overview = _medical_team_overview_payload(
+        team_id=tid,
+        season_year=sy,
+        as_of=d0,
+        history_days=730,
+        top_n=30,
+    )
+    watch = overview.get("watchlists") or {}
+    highest_risk = watch.get("highest_risk") or []
+    unavailable = watch.get("currently_unavailable") or []
+
+    high_pids = {
+        str(r.get("player_id"))
+        for r in highest_risk
+        if str(r.get("risk_tier") or "").upper() == "HIGH" and r.get("player_id")
+    }
+
+    out_pids = {
+        str(r.get("player_id"))
+        for r in unavailable
+        if str(r.get("recovery_status") or "").upper() == "OUT" and r.get("player_id")
+    }
+    returning_pids = {
+        str(r.get("player_id"))
+        for r in unavailable
+        if str(r.get("recovery_status") or "").upper() == "RETURNING" and r.get("player_id")
+    }
+
+    games = []
+    for g in (schedule.get("games") or []):
+        ds = str(g.get("date") or "")[:10]
+        if not ds:
+            continue
+        try:
+            gd = date.fromisoformat(ds)
+        except ValueError:
+            continue
+        if d0 <= gd < d1:
+            games.append(g)
+
+    games_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for g in games:
+        ds = str(g.get("date"))[:10]
+        games_by_date.setdefault(ds, []).append(g)
+
+    game_dates_sorted = sorted(games_by_date.keys())
+    b2b_dates = set()
+    for i in range(1, len(game_dates_sorted)):
+        d_prev = date.fromisoformat(game_dates_sorted[i - 1])
+        d_cur = date.fromisoformat(game_dates_sorted[i])
+        if (d_cur - d_prev).days == 1:
+            b2b_dates.add(game_dates_sorted[i - 1])
+            b2b_dates.add(game_dates_sorted[i])
+
+    recent_events = watch.get("recent_injury_events") or []
+    event_count_by_date: Dict[str, int] = {}
+    for e in recent_events:
+        ds = str(e.get("date") or "")[:10]
+        if not ds:
+            continue
+        event_count_by_date[ds] = event_count_by_date.get(ds, 0) + 1
+
+    day_rows: List[Dict[str, Any]] = []
+    for i in range(days):
+        d = d0 + timedelta(days=i)
+        ds = d.isoformat()
+        games_today = games_by_date.get(ds) or []
+        first_game = games_today[0] if games_today else None
+        session = (sessions.get(ds) or {}).get("session") or {}
+        day_rows.append({
+            "date": ds,
+            "is_game_day": bool(games_today),
+            "opponent_team_id": (first_game or {}).get("opponent_team_id"),
+            "is_back_to_back": ds in b2b_dates,
+            "practice_session_type": session.get("type"),
+            "high_risk_player_count": len(high_pids),
+            "out_player_count": len(out_pids),
+            "returning_player_count": len(returning_pids),
+            "injury_event_count": int(event_count_by_date.get(ds, 0)),
+        })
+
+    return {
+        "team_id": tid,
+        "season_year": sy,
+        "date_from": d0.isoformat(),
+        "date_to": d1.isoformat(),
+        "days": day_rows,
+    }
+
+
+@router.get("/api/medical/team/{team_id}/players/{player_id}/action-recommendations")
+async def api_medical_player_action_recommendations(
+    team_id: str,
+    player_id: str,
+    season_year: Optional[int] = None,
+):
+    league_ctx = state.get_league_context_snapshot() or {}
+    sy = int(season_year or (league_ctx.get("season_year") or 0))
+    tid = str(normalize_team_id(team_id, strict=True))
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    base = await api_medical_player_timeline(team_id=tid, player_id=pid, season_year=sy, history_days=365, include_event_history=True)
+    current = base.get("current") or {}
+    condition = current.get("condition") or {}
+    risk = current.get("risk") or {}
+    psych = current.get("health_psychology") or {}
+
+    st_now = _safe_float(condition.get("short_term_fatigue"), 0.0)
+    lt_now = _safe_float(condition.get("long_term_fatigue"), 0.0)
+    sh_now = _safe_float(condition.get("sharpness"), 50.0)
+
+    def projected(action_type: str) -> Dict[str, Any]:
+        st_after = st_now
+        lt_after = lt_now
+        sh_after = sh_now
+        if action_type == "RECOVERY":
+            st_after = _clamp(st_now - 0.04, 0.0, 1.0)
+            sh_after = _clamp(sh_now - 0.5, 0.0, 100.0)
+        elif action_type == "REST":
+            st_after = _clamp(st_now - 0.025, 0.0, 1.0)
+            lt_after = _clamp(lt_now - 0.02, 0.0, 1.0)
+            sh_after = _clamp(sh_now - 0.25, 0.0, 100.0)
+        elif action_type == "FILM":
+            st_after = _clamp(st_now - 0.01, 0.0, 1.0)
+            sh_after = _clamp(sh_now + 0.5, 0.0, 100.0)
+
+        attrs = (risk.get("risk_inputs") or {})
+        age = _safe_int(attrs.get("age"), 0)
+        injury_freq = attrs.get("injury_freq")
+        durability = attrs.get("durability")
+        reinj_total = sum(_safe_int(v, 0) for v in ((attrs.get("reinjury_count") or {}).values()))
+        new_risk = _risk_tier_from_inputs(
+            st_fatigue=st_after,
+            lt_fatigue=lt_after,
+            age=age,
+            injury_freq=injury_freq,
+            durability=durability,
+            reinjury_total=reinj_total,
+        )
+        risk_now = _safe_int(risk.get("risk_score"), 0)
+        return {
+            "short_term_fatigue": st_after - st_now,
+            "long_term_fatigue": lt_after - lt_now,
+            "sharpness": sh_after - sh_now,
+            "risk_score": int(new_risk.get("risk_score") or 0) - risk_now,
+        }
+
+    recommendations = [
+        {
+            "action_id": "RECOVERY_SESSION_NEXT_DAY",
+            "label": "다음 훈련일 회복 세션 배치",
+            "expected_delta": projected("RECOVERY"),
+            "basis": {
+                "practice_preview_used": False,
+                "risk_formula_version": "core._risk_tier_from_inputs",
+            },
+        },
+        {
+            "action_id": "REST_SESSION_NEXT_DAY",
+            "label": "다음 훈련일 팀 휴식 배치",
+            "expected_delta": projected("REST"),
+            "basis": {
+                "practice_preview_used": False,
+                "risk_formula_version": "core._risk_tier_from_inputs",
+            },
+        },
+        {
+            "action_id": "FILM_SESSION_NEXT_DAY",
+            "label": "다음 훈련일 필름 세션 배치",
+            "expected_delta": projected("FILM"),
+            "basis": {
+                "practice_preview_used": False,
+                "risk_formula_version": "core._risk_tier_from_inputs",
+            },
+        },
+    ]
+
+    return {
+        "team_id": tid,
+        "player_id": pid,
+        "as_of_date": base.get("as_of_date"),
+        "current": {
+            "injury_status": (base.get("status") or {}).get("injury_status"),
+            "risk_score": risk.get("risk_score"),
+            "risk_tier": risk.get("risk_tier"),
+            "short_term_fatigue": st_now,
+            "long_term_fatigue": lt_now,
+            "sharpness": sh_now,
+            "health_frustration": _safe_float(psych.get("health_frustration"), 0.0),
+        },
+        "recommendations": recommendations,
     }
 
 
