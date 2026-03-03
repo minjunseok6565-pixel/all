@@ -75,6 +75,16 @@ def _pick_leader(rows: List[Dict[str, Any]], stat_keys: List[str]) -> Optional[D
     return best
 
 
+def _parse_iso_date(value: Any) -> Optional[date]:
+    raw = str(value or "")[:10]
+    if len(raw) != 10:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _attr_float(attrs: Any, *keys: str) -> Optional[float]:
     if not isinstance(attrs, dict):
         return None
@@ -1471,6 +1481,218 @@ async def team_schedule(team_id: str):
         "season_id": season_id,
         "current_date": current_date,
         "games": formatted_games,
+    }
+
+
+@router.get("/api/team-schedule/monthly-summary/{team_id}")
+async def team_schedule_monthly_summary(team_id: str):
+    """Return monthly schedule summary for a team based on master_schedule finals."""
+    team_id = team_id.upper()
+    if team_id not in ALL_TEAM_IDS:
+        raise HTTPException(status_code=404, detail=f"Team '{team_id}' not found in league")
+
+    league = state.export_full_state_snapshot().get("league", {})
+    master_schedule = league.get("master_schedule", {})
+    games = master_schedule.get("games") or []
+    if not games:
+        raise HTTPException(
+            status_code=500,
+            detail="Master schedule is not initialized. Expected server startup_init_state() to run.",
+        )
+
+    monthly: Dict[str, Dict[str, Any]] = {}
+    for g in games:
+        home_id = str(g.get("home_team_id") or "")
+        away_id = str(g.get("away_team_id") or "")
+        if team_id not in {home_id, away_id}:
+            continue
+
+        game_date = _parse_iso_date(g.get("date"))
+        if game_date is None:
+            continue
+        month_key = game_date.strftime("%Y-%m")
+
+        row = monthly.setdefault(
+            month_key,
+            {
+                "month": month_key,
+                "games": 0,
+                "wins": 0,
+                "losses": 0,
+                "completed_games": 0,
+                "_score_for_sum": 0,
+                "_score_against_sum": 0,
+            },
+        )
+        row["games"] += 1
+
+        home_score = g.get("home_score")
+        away_score = g.get("away_score")
+        if home_score is None or away_score is None:
+            continue
+
+        row["completed_games"] += 1
+        hs = int(home_score)
+        a_s = int(away_score)
+        is_home = team_id == home_id
+        score_for = hs if is_home else a_s
+        score_against = a_s if is_home else hs
+
+        row["_score_for_sum"] += score_for
+        row["_score_against_sum"] += score_against
+        if score_for > score_against:
+            row["wins"] += 1
+        else:
+            row["losses"] += 1
+
+    months: List[Dict[str, Any]] = []
+    for month_key in sorted(monthly.keys()):
+        row = monthly[month_key]
+        completed = int(row["completed_games"] or 0)
+        wins = int(row["wins"] or 0)
+        losses = int(row["losses"] or 0)
+        win_pct = (wins / completed) if completed else 0.0
+        avg_for = (float(row["_score_for_sum"]) / completed) if completed else 0.0
+        avg_against = (float(row["_score_against_sum"]) / completed) if completed else 0.0
+        months.append(
+            {
+                "month": month_key,
+                "games": int(row["games"] or 0),
+                "wins": wins,
+                "losses": losses,
+                "win_pct": round(win_pct, 3),
+                "avg_score_for": round(avg_for, 1),
+                "avg_score_against": round(avg_against, 1),
+                "avg_point_diff": round(avg_for - avg_against, 1),
+                "completed_games": completed,
+            }
+        )
+
+    return {
+        "team_id": team_id,
+        "season_id": str(league.get("active_season_id") or ""),
+        "months": months,
+    }
+
+
+@router.get("/api/team-schedule/segment-strength/{team_id}")
+async def team_schedule_segment_strength(team_id: str, window: int = 10):
+    """Return strength snapshot for the next N upcoming games."""
+    team_id = team_id.upper()
+    if team_id not in ALL_TEAM_IDS:
+        raise HTTPException(status_code=404, detail=f"Team '{team_id}' not found in league")
+
+    league = state.export_full_state_snapshot().get("league", {})
+    master_schedule = league.get("master_schedule", {})
+    games = master_schedule.get("games") or []
+    if not games:
+        raise HTTPException(
+            status_code=500,
+            detail="Master schedule is not initialized. Expected server startup_init_state() to run.",
+        )
+
+    window = max(1, min(int(window or 10), 30))
+    as_of_date = _parse_iso_date(league.get("current_date")) or state.get_current_date_as_date()
+    as_of_iso = as_of_date.isoformat()
+
+    team_games: List[Dict[str, Any]] = [
+        g
+        for g in games
+        if (g.get("home_team_id") == team_id or g.get("away_team_id") == team_id)
+    ]
+    team_games.sort(key=lambda x: (str(x.get("date") or ""), str(x.get("game_id") or "")))
+
+    upcoming: List[Dict[str, Any]] = []
+    for g in team_games:
+        d = _parse_iso_date(g.get("date"))
+        if d is None or d < as_of_date:
+            continue
+        if g.get("home_score") is not None and g.get("away_score") is not None:
+            continue
+        upcoming.append(g)
+        if len(upcoming) >= window:
+            break
+
+    if not upcoming:
+        return {
+            "team_id": team_id,
+            "window": window,
+            "as_of_date": as_of_iso,
+            "segment": None,
+        }
+
+    standings = get_conference_standings_table()
+    win_pct_by_team: Dict[str, float] = {}
+    for conf_rows in standings.values():
+        if not isinstance(conf_rows, list):
+            continue
+        for row in conf_rows:
+            tid = str(row.get("team_id") or "").upper()
+            if tid:
+                win_pct_by_team[tid] = float(row.get("win_pct") or 0.0)
+
+    opp_win_pcts: List[float] = []
+    home_games = 0
+    away_games = 0
+    back_to_back_sets = 0
+    prev_game_date: Optional[date] = None
+    for g in upcoming:
+        home_id = str(g.get("home_team_id") or "")
+        away_id = str(g.get("away_team_id") or "")
+        is_home = home_id == team_id
+        opp_id = away_id if is_home else home_id
+        opp_win_pcts.append(float(win_pct_by_team.get(opp_id, 0.0)))
+        if is_home:
+            home_games += 1
+        else:
+            away_games += 1
+
+        d = _parse_iso_date(g.get("date"))
+        if d is not None and prev_game_date is not None and (d - prev_game_date).days == 1:
+            back_to_back_sets += 1
+        if d is not None:
+            prev_game_date = d
+
+    avg_opponent_win_pct = (sum(opp_win_pcts) / len(opp_win_pcts)) if opp_win_pcts else 0.0
+
+    difficulty_score = 0.0
+    difficulty_score += avg_opponent_win_pct
+    difficulty_score += (away_games / max(1, len(upcoming))) * 0.08
+    difficulty_score += (back_to_back_sets / max(1, len(upcoming) - 1)) * 0.06
+
+    if difficulty_score >= 0.62:
+        strength_tier = "HARD"
+    elif difficulty_score <= 0.48:
+        strength_tier = "EASY"
+    else:
+        strength_tier = "MEDIUM"
+
+    return {
+        "team_id": team_id,
+        "window": window,
+        "as_of_date": as_of_iso,
+        "segment": {
+            "start_game_id": str(upcoming[0].get("game_id") or ""),
+            "end_game_id": str(upcoming[-1].get("game_id") or ""),
+            "avg_opponent_win_pct": round(avg_opponent_win_pct, 3),
+            "home_games": home_games,
+            "away_games": away_games,
+            "back_to_back_sets": back_to_back_sets,
+            "strength_tier": strength_tier,
+            "games": [
+                {
+                    "game_id": g.get("game_id"),
+                    "date": g.get("date"),
+                    "is_home": str(g.get("home_team_id") or "") == team_id,
+                    "opponent_team_id": (
+                        str(g.get("away_team_id") or "")
+                        if str(g.get("home_team_id") or "") == team_id
+                        else str(g.get("home_team_id") or "")
+                    ),
+                }
+                for g in upcoming
+            ],
+        },
     }
 
 
