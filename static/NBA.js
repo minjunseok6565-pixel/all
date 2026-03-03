@@ -1121,17 +1121,62 @@ async function renderTeams() {
   const teams = (result || []).slice(0, 30);
   els.teamGrid.innerHTML = "";
 
+  const conferenceOrder = ["East", "West"];
+  const divisionOrder = {
+    East: ["Atlantic", "Central", "Southeast"],
+    West: ["Northwest", "Pacific", "Southwest"],
+  };
+
+  const grouped = { East: {}, West: {} };
   teams.forEach((team) => {
-    const id = String(team.team_id || "").toUpperCase();
-    const fullName = TEAM_FULL_NAMES[id] || id;
-    const card = document.createElement("button");
-    card.className = "team-card";
-    card.type = "button";
-    card.innerHTML = `<strong>${fullName}</strong><small>${team.conference || ""} · ${team.division || ""}</small>`;
-    card.addEventListener("click", () => {
-      confirmTeamSelection(id, fullName).catch((e) => alert(e.message));
+    const conference = team.conference === "West" ? "West" : "East";
+    const division = String(team.division || "");
+    if (!grouped[conference][division]) grouped[conference][division] = [];
+    grouped[conference][division].push(team);
+  });
+
+  conferenceOrder.forEach((conference) => {
+    const conferenceSection = document.createElement("section");
+    conferenceSection.className = "team-conference";
+
+    const conferenceTitle = document.createElement("h3");
+    conferenceTitle.className = "team-conference-title";
+    conferenceTitle.textContent = conference === "East" ? "동부 컨퍼런스" : "서부 컨퍼런스";
+    conferenceSection.appendChild(conferenceTitle);
+
+    (divisionOrder[conference] || Object.keys(grouped[conference])).forEach((division) => {
+      const divisionTeams = (grouped[conference][division] || []).sort((a, b) => {
+        const aName = TEAM_FULL_NAMES[String(a.team_id || "").toUpperCase()] || String(a.team_id || "");
+        const bName = TEAM_FULL_NAMES[String(b.team_id || "").toUpperCase()] || String(b.team_id || "");
+        return aName.localeCompare(bName);
+      });
+      if (!divisionTeams.length) return;
+
+      const divisionSection = document.createElement("div");
+      divisionSection.className = "team-division";
+      divisionSection.innerHTML = `<h4 class="team-division-title">${division}</h4>`;
+
+      const divisionGrid = document.createElement("div");
+      divisionGrid.className = "team-division-grid";
+
+      divisionTeams.forEach((team) => {
+        const id = String(team.team_id || "").toUpperCase();
+        const fullName = TEAM_FULL_NAMES[id] || id;
+        const card = document.createElement("button");
+        card.className = "team-card";
+        card.type = "button";
+        card.innerHTML = `<strong>${fullName}</strong><small>${conference} · ${division}</small>`;
+        card.addEventListener("click", () => {
+          confirmTeamSelection(id, fullName).catch((e) => alert(e.message));
+        });
+        divisionGrid.appendChild(card);
+      });
+
+      divisionSection.appendChild(divisionGrid);
+      conferenceSection.appendChild(divisionSection);
     });
-    els.teamGrid.appendChild(card);
+
+    els.teamGrid.appendChild(conferenceSection);
   });
 }
 

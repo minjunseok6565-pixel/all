@@ -10,21 +10,47 @@
   <div class="bg-overlay"></div>
   <main class="app-shell">
     <section id="start-screen" class="panel active">
-      <p class="eyebrow">NBA SIMULATION GM</p>
-      <h1>NBA 시뮬레이션 게임</h1>
-      <p class="subtitle">팀을 선택하고 리그를 직접 운영해보세요.</p>
+      <div class="start-hero-shell">
+        <div class="start-hero-main">
+          <p class="eyebrow">NBA SIMULATION GM</p>
+          <h1>NBA 시뮬레이션 게임</h1>
+          <p class="subtitle">30개 팀 중 하나를 선택하고, 트레이드·전술·훈련으로 왕조를 만들어보세요.</p>
 
-      <div class="button-group">
-        <button id="new-game-btn" class="btn btn-primary">새 게임</button>
-        <button id="continue-btn" class="btn btn-secondary" disabled aria-disabled="true">이어하기</button>
+          <div class="start-badges" aria-label="게임 핵심 포인트">
+            <span>82경기 시즌 운영</span>
+            <span>전술/라인업 커스터마이즈</span>
+            <span>프랜차이즈 장기 운영</span>
+          </div>
+
+          <div class="button-group">
+            <button id="new-game-btn" class="btn btn-primary">새 게임</button>
+            <button id="continue-btn" class="btn btn-secondary" disabled aria-disabled="true">이어하기</button>
+          </div>
+
+          <p id="continue-hint" class="hint">저장된 게임을 확인하는 중...</p>
+        </div>
+
+        <aside class="start-hero-side" aria-label="게임 안내 카드">
+          <article class="start-info-card">
+            <h3>GM 체크리스트</h3>
+            <ul>
+              <li>팀 선택 후 로스터 상태 확인</li>
+              <li>전술 탭에서 공/수 스킴 설정</li>
+              <li>스케쥴 기반으로 훈련 강도 조절</li>
+            </ul>
+          </article>
+          <article class="start-info-card">
+            <h3>오늘의 목표</h3>
+            <p>팀 케미스트리와 수비 안정성을 먼저 잡으면 시즌 초반 승률이 크게 개선됩니다.</p>
+          </article>
+        </aside>
       </div>
-
-      <p id="continue-hint" class="hint">저장된 게임을 확인하는 중...</p>
     </section>
 
     <section id="team-screen" class="panel" aria-hidden="true">
+      <p class="eyebrow">FRANCHISE SELECT</p>
       <h2>운영할 팀을 선택하세요</h2>
-      <p class="subtitle">NBA 30개 팀 중 하나를 선택해 GM 커리어를 시작합니다.</p>
+      <p class="subtitle">동부/서부 컨퍼런스와 디비전 구조를 기준으로 팀을 확인하고 GM 커리어를 시작하세요.</p>
       <div id="team-grid" class="team-grid"></div>
     </section>
 
