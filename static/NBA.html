@@ -283,19 +283,42 @@
     </section>
 
     <section id="standings-screen" class="panel" aria-hidden="true">
-      <div class="screen-header-row">
+      <div class="screen-header-row standings-top-row">
         <div>
-          <p class="eyebrow">STANDINGS</p>
-          <h2>컨퍼런스 순위표</h2>
-          <p class="subtitle">정규시즌 확정 경기 기준 팀 순위를 확인합니다.</p>
+          <p class="eyebrow">STANDINGS COMMAND CENTER</p>
+          <h2>컨퍼런스 레이스 보드</h2>
+          <p class="subtitle">플레이오프 컷라인과 경쟁 팀 인사이트를 실시간으로 확인합니다.</p>
         </div>
         <button id="standings-back-btn" class="btn btn-secondary" type="button">메인으로</button>
       </div>
 
-      <div class="standings-grid">
-        <section class="standings-card">
+      <section class="standings-hud" aria-label="순위 HUD">
+        <div class="standings-hud-left">
+          <span class="standings-season-chip">REGULAR SEASON</span>
+          <strong id="standings-last-updated">업데이트: -</strong>
+        </div>
+        <div class="standings-hud-center" role="tablist" aria-label="컨퍼런스 선택">
+          <button id="standings-conf-east" class="standings-toggle-btn is-active" type="button">EASTERN</button>
+          <button id="standings-conf-west" class="standings-toggle-btn" type="button">WESTERN</button>
+        </div>
+        <div class="standings-hud-right">
+          <button id="standings-refresh-btn" class="btn btn-secondary" type="button">새로고침</button>
+        </div>
+      </section>
+
+      <section class="standings-kpi-grid" aria-label="내 팀 핵심 지표">
+        <article class="standings-kpi-card"><p>Conference Rank</p><strong id="standings-kpi-rank">-</strong></article>
+        <article class="standings-kpi-card"><p>Record</p><strong id="standings-kpi-record">0-0</strong></article>
+        <article class="standings-kpi-card"><p>Win %</p><strong id="standings-kpi-pct">.000</strong></article>
+        <article class="standings-kpi-card"><p>GB</p><strong id="standings-kpi-gb">-</strong></article>
+        <article class="standings-kpi-card"><p>Form</p><strong id="standings-kpi-form">L10 0-0 · STRK -</strong></article>
+      </section>
+
+      <div class="standings-layout">
+        <section class="standings-card standings-main-card">
           <div class="standings-card-header">
-            <h3>Eastern Conference</h3>
+            <h3 id="standings-conference-title">Eastern Conference</h3>
+            <p class="standings-header-note">1-6 직행 · 7-10 플레이인 · 11-15 탈락권</p>
           </div>
           <div class="standings-table-wrap">
             <table class="standings-table">
@@ -306,28 +329,41 @@
                   <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
                 </tr>
               </thead>
-              <tbody id="standings-east-body"></tbody>
+              <tbody id="standings-active-body"></tbody>
             </table>
           </div>
         </section>
 
-        <section class="standings-card">
+        <aside class="standings-card standings-insight-card" aria-label="레이스 인사이트">
           <div class="standings-card-header">
-            <h3>Western Conference</h3>
+            <h3>Race Insights</h3>
+            <p class="standings-header-note" id="standings-insight-updated">as of -</p>
           </div>
-          <div class="standings-table-wrap">
-            <table class="standings-table">
-              <thead>
-                <tr>
-                  <th>RK</th><th>TEAM</th><th>W</th><th>L</th><th>PCT</th><th>GB</th>
-                  <th>HOME</th><th>AWAY</th><th>DIV</th><th>CONF</th>
-                  <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
-                </tr>
-              </thead>
-              <tbody id="standings-west-body"></tbody>
-            </table>
+          <div class="standings-insight-content">
+            <article class="standings-insight-block">
+              <h4 id="standings-insight-team">팀 선택 대기중</h4>
+              <p id="standings-insight-rank">컷라인 격차를 확인하려면 팀을 선택하세요.</p>
+            </article>
+
+            <article class="standings-insight-block">
+              <h5>Cutline Gap</h5>
+              <p id="standings-cutline-direct">Direct Cut(6): -</p>
+              <p id="standings-cutline-playin">Play-In Cut(10): -</p>
+            </article>
+
+            <article class="standings-insight-block">
+              <h5>Nearby Rivals</h5>
+              <p id="standings-neighbor-above">위 팀: -</p>
+              <p id="standings-neighbor-below">아래 팀: -</p>
+            </article>
+
+            <article class="standings-insight-block">
+              <h5>Head-to-Head</h5>
+              <p id="standings-h2h-above">vs 위 팀: -</p>
+              <p id="standings-h2h-below">vs 아래 팀: -</p>
+            </article>
           </div>
-        </section>
+        </aside>
       </div>
     </section>
 
