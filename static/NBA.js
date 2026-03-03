@@ -59,6 +59,10 @@ const state = {
   trainingRoster: [],
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
+  trainingDashboardSummary: null,
+  trainingCalendarWindowByDate: {},
+  trainingRiskByDate: {},
+  trainingSelectedType: null,
   standingsData: null,
   tacticsDraft: null,
   tacticsSavedDraft: null,
@@ -174,6 +178,11 @@ const els = {
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
   trainingTypeButtons: document.getElementById("training-type-buttons"),
   trainingDetailPanel: document.getElementById("training-detail-panel"),
+  trainingKpiDate: document.getElementById("training-kpi-date"),
+  trainingKpiNextGame: document.getElementById("training-kpi-next-game"),
+  trainingKpiRecentLoad: document.getElementById("training-kpi-recent-load"),
+  trainingKpiSharpness: document.getElementById("training-kpi-sharpness"),
+  trainingKpiMedical: document.getElementById("training-kpi-medical"),
   standingsEastBody: document.getElementById("standings-east-body"),
   standingsWestBody: document.getElementById("standings-west-body"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
@@ -1138,30 +1147,56 @@ async function loadTrainingData() {
   const allDays = buildCalendar4Weeks(currentDate);
   state.trainingCalendarDays = allDays;
 
-  const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
-  const gameByDate = {};
-  (schedule.games || []).forEach((g) => {
-    const d = String(g.date || "").slice(0, 10);
-    if (!d) return;
-    const opp = g.home_team_id === state.selectedTeamId ? g.away_team_id : g.home_team_id;
-    gameByDate[d] = String(opp || "").toUpperCase();
-  });
-
   const from = allDays[0];
   const to = allDays[allDays.length - 1];
-  const stored = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/sessions?date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}`);
-  const sessions = { ...(stored.sessions || {}) };
 
-  const previewDates = allDays.filter((d) => d >= currentDate && !gameByDate[d]);
-  await Promise.all(previewDates.map(async (d) => {
-    if (sessions[d]) return;
-    try {
-      const res = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/session?date_iso=${encodeURIComponent(d)}`);
-      sessions[d] = { session: res.session, is_user_set: res.is_user_set };
-    } catch (e) {
-      // fail-soft
-    }
-  }));
+  let dashboard = null;
+  let windowPayload = null;
+
+  [dashboard, windowPayload] = await Promise.all([
+    fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/dashboard-summary?as_of_date=${encodeURIComponent(currentDate)}`).catch(() => null),
+    fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/calendar-window?date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}`).catch(() => null),
+  ]);
+
+  state.trainingDashboardSummary = dashboard;
+
+  const gameByDate = {};
+  const sessions = {};
+  const riskByDate = {};
+  const calendarWindowByDate = {};
+
+  if (windowPayload?.days?.length) {
+    (windowPayload.days || []).forEach((d) => {
+      const iso = String(d.date_iso || "").slice(0, 10);
+      if (!iso) return;
+      calendarWindowByDate[iso] = d;
+      if (d.opponent_team_id) gameByDate[iso] = String(d.opponent_team_id || "").toUpperCase();
+      if (d.session) sessions[iso] = { session: { type: d.session.type }, is_user_set: !!d.session.is_user_set };
+      riskByDate[iso] = !!(d?.risk_flags?.high_medical_risk || d?.risk_flags?.low_sharpness_cluster);
+    });
+  } else {
+    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+    (schedule.games || []).forEach((g) => {
+      const d = String(g.date || "").slice(0, 10);
+      if (!d) return;
+      const opp = g.home_team_id === state.selectedTeamId ? g.away_team_id : g.home_team_id;
+      gameByDate[d] = String(opp || "").toUpperCase();
+    });
+
+    const stored = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/sessions?date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}`);
+    Object.assign(sessions, (stored.sessions || {}));
+
+    const previewDates = allDays.filter((d) => d >= currentDate && !gameByDate[d]);
+    await Promise.all(previewDates.map(async (d) => {
+      if (sessions[d]) return;
+      try {
+        const res = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/session?date_iso=${encodeURIComponent(d)}`);
+        sessions[d] = { session: res.session, is_user_set: res.is_user_set };
+      } catch (e) {
+        // fail-soft
+      }
+    }));
+  }
 
   const teamDetail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
   state.trainingRoster = teamDetail.roster || [];
@@ -1174,6 +1209,48 @@ async function loadTrainingData() {
 
   state.trainingSessionsByDate = sessions;
   state.trainingGameByDate = gameByDate;
+  state.trainingRiskByDate = riskByDate;
+  state.trainingCalendarWindowByDate = calendarWindowByDate;
+}
+
+function renderTrainingKpis() {
+  const summary = state.trainingDashboardSummary || {};
+  const nextGame = summary.next_game || null;
+  const recent = summary.recent_load || {};
+  const readiness = summary.readiness || {};
+  const medical = summary.medical || {};
+
+  if (els.trainingKpiDate) els.trainingKpiDate.textContent = summary.as_of_date || state.currentDate || "-";
+  if (els.trainingKpiNextGame) {
+    els.trainingKpiNextGame.textContent = nextGame
+      ? `${nextGame.date} ${nextGame.is_home ? "vs" : "@"} ${nextGame.opponent_team_id} (D-${nextGame.days_until})`
+      : "예정 경기 없음";
+  }
+  if (els.trainingKpiRecentLoad) {
+    els.trainingKpiRecentLoad.textContent = `경기 ${Number(recent.games_last_7_days || 0)} · 훈련 ${Number(recent.practices_last_7_days || 0)}`;
+  }
+  if (els.trainingKpiSharpness) {
+    const avg = Number(readiness.sharpness_avg || 0).toFixed(1);
+    els.trainingKpiSharpness.textContent = `평균 ${avg} · 저샤프 ${Number(readiness.low_sharp_count || 0)}명`;
+  }
+  if (els.trainingKpiMedical) {
+    els.trainingKpiMedical.textContent = `고위험 ${Number(medical.risk_high_count || 0)} · OUT ${Number(medical.out_count || 0)}`;
+  }
+}
+
+function setTrainingTypeActive(type) {
+  state.trainingSelectedType = type;
+  els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.trainingType === type);
+  });
+}
+
+function trainingTagsHtml({ isGameDay, isUserSet, isRisk }) {
+  const tags = [];
+  if (isGameDay) tags.push('<span class="training-tag game">GAME</span>');
+  else tags.push(`<span class="training-tag ${isUserSet ? "user" : "auto"}">${isUserSet ? "SET" : "AUTO"}</span>`);
+  if (isRisk) tags.push('<span class="training-tag risk">RISK</span>');
+  return tags.length ? `<div class="training-day-badges">${tags.join("")}</div>` : "";
 }
 
 function renderTrainingCalendar() {
@@ -1198,14 +1275,19 @@ function renderTrainingCalendar() {
 
     const sessInfo = state.trainingSessionsByDate?.[iso];
     const sessType = sessInfo?.session?.type;
+    const isUserSet = !!sessInfo?.is_user_set;
+    const isRisk = !!state.trainingRiskByDate?.[iso];
+    if (isRisk) btn.classList.add("is-risk");
+
     const sessionLine = sessInfo
-      ? (sessInfo.is_user_set ? `지정 · ${trainingTypeLabel(sessType)}` : `AUTO · ${trainingTypeLabel(sessType)}`)
+      ? `${isUserSet ? "지정" : "AUTO"} · ${trainingTypeLabel(sessType)}`
       : "";
 
     btn.innerHTML = `
       <div class="training-day-date">${label}</div>
-      <div class="training-day-note">${gameOpp ? `vs ${gameOpp}` : ""}</div>
-      <div class="training-day-sub">${!gameOpp ? sessionLine : ""}</div>
+      <div class="training-day-note">${gameOpp ? `${isPast ? '' : 'vs '} ${gameOpp}` : ""}</div>
+      <div class="training-day-sub">${!gameOpp ? sessionLine : "경기일"}</div>
+      ${trainingTagsHtml({ isGameDay, isUserSet, isRisk })}
     `;
 
     if (!selectable) {
@@ -1228,9 +1310,10 @@ function optionsHtml(list, fallback = []) {
 }
 
 async function renderTrainingDetail(type) {
+  setTrainingTypeActive(type);
   const selected = [...state.trainingSelectedDates].sort();
   if (!selected.length) {
-    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">적용할 날짜를 먼저 선택하세요.</p>';
+    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">먼저 날짜를 선택한 뒤 훈련 타입을 확정하세요.</p>';
     return;
   }
 
@@ -1258,11 +1341,10 @@ async function renderTrainingDetail(type) {
 
   state.trainingDraftSession = baseSession;
 
-  const firstDate = selected[0];
-  const preview = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/preview`, {
+  const rangePreview = await fetchJson(`/api/practice/team/${encodeURIComponent(state.selectedTeamId)}/preview-range`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ season_year: null, date_iso: firstDate, ...baseSession })
+    body: JSON.stringify({ season_year: null, dates: selected, ...baseSession })
   }).catch(() => null);
 
   const famRows = (type === "OFF_TACTICS" ? state.trainingFamiliarity.offense : type === "DEF_TACTICS" ? state.trainingFamiliarity.defense : []);
@@ -1294,14 +1376,21 @@ async function renderTrainingDetail(type) {
     `;
   }
 
-  const prevText = preview
-    ? `<ul class="kv-list"><li>공격 익숙도 gain: ${preview.preview?.familiarity_gain?.offense_gain ?? 0}</li><li>수비 익숙도 gain: ${preview.preview?.familiarity_gain?.defense_gain ?? 0}</li><li>평균 샤프니스 delta: ${Object.values(preview.preview?.intensity_mult_by_pid || {}).length ? (Object.values(preview.preview.intensity_mult_by_pid).reduce((a, x) => a + Number(x.sharpness_delta || 0), 0) / Object.values(preview.preview.intensity_mult_by_pid).length).toFixed(2) : "0.00"}</li></ul>`
+  const agg = rangePreview?.aggregate || {};
+  const prevText = rangePreview
+    ? `
+      <div class="training-preview-grid">
+        <div class="training-preview-chip"><span>공격 익숙도 합</span><strong>${Number(agg.offense_gain_sum || 0).toFixed(2)}</strong></div>
+        <div class="training-preview-chip"><span>수비 익숙도 합</span><strong>${Number(agg.defense_gain_sum || 0).toFixed(2)}</strong></div>
+        <div class="training-preview-chip"><span>평균 샤프니스 Δ</span><strong>${Number(agg.avg_sharpness_delta_mean || 0).toFixed(2)}</strong></div>
+      </div>
+    `
     : '<p class="empty-copy">효과 프리뷰를 불러오지 못했습니다.</p>';
 
   els.trainingDetailPanel.innerHTML = `
     <div class="training-detail-grid">
       <h3>${trainingTypeLabel(type)} 훈련 설정</h3>
-      <p>선택 날짜: ${selected.join(", ")}</p>
+      <p>선택 날짜 (${selected.length}일): ${selected.join(", ")}</p>
       ${extra}
       <div><strong>연습 효과 프리뷰</strong>${prevText}</div>
       <div class="training-inline-row"><button id="training-apply-btn" class="btn btn-primary" type="button">선택 날짜에 적용</button></div>
@@ -1330,6 +1419,7 @@ async function renderTrainingDetail(type) {
       })
     })));
     await loadTrainingData();
+    renderTrainingKpis();
     renderTrainingCalendar();
     alert(`${dates.length}일에 훈련을 적용했습니다.`);
   });
@@ -1343,9 +1433,12 @@ async function showTrainingScreen() {
   setLoading(true, "훈련 화면 데이터를 불러오는 중...");
   try {
     state.trainingSelectedDates = new Set();
+    state.trainingSelectedType = null;
     await loadTrainingData();
+    renderTrainingKpis();
     renderTrainingCalendar();
-    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">캘린더에서 날짜를 선택하고 훈련 버튼을 눌러 세부 설정을 확인하세요.</p>';
+    els.trainingDetailPanel.innerHTML = '<p class="empty-copy">캘린더에서 날짜를 선택하고 하단 훈련 타입을 선택하세요.</p>';
+    setTrainingTypeActive(null);
     activateScreen(els.trainingScreen);
   } finally {
     setLoading(false);
