@@ -75,6 +75,7 @@
           <div>
             <p class="eyebrow">MY FRANCHISE</p>
             <h2 id="main-team-title">팀 이름</h2>
+            <p id="main-subtitle" class="subtitle">다음 경기와 핵심 팀 상태를 확인하세요.</p>
           </div>
           <div class="franchise-header-actions">
             <span id="main-current-date" class="franchise-date">YYYY-MM-DD</span>
@@ -84,7 +85,13 @@
         </div>
 
         <section class="next-game-panel" aria-label="다음 경기">
-          <h3 class="next-game-title">다음 경기</h3>
+          <div class="next-game-head">
+            <h3 class="next-game-title">NEXT MATCHUP</h3>
+            <div class="next-game-head-meta">
+              <span id="hero-game-label" class="hero-badge">REG</span>
+              <span id="hero-countdown" class="hero-countdown">D-0</span>
+            </div>
+          </div>
 
           <div class="next-game-team-row">
             <div class="next-game-team-name" id="team-a-name">Team A</div>
@@ -103,13 +110,83 @@
             <span class="home-away-label">Away</span>
           </div>
 
+          <div class="form-row" aria-label="최근 5경기 폼">
+            <div class="form-box">
+              <p class="form-label">상대 최근 5경기</p>
+              <div id="form-away" class="form-chips"></div>
+            </div>
+            <div class="form-box">
+              <p class="form-label">우리팀 최근 5경기</p>
+              <div id="form-home" class="form-chips"></div>
+            </div>
+          </div>
+
           <p id="next-game-datetime" class="next-game-datetime">YYYY-MM-DD --:-- PM</p>
 
           <div class="next-game-actions">
-            <button type="button" class="menu-card next-game-action-btn">경기 진행</button>
+            <button type="button" class="menu-card next-game-action-btn next-game-action-primary">경기 시작</button>
             <button type="button" id="next-game-tactics-btn" class="menu-card next-game-action-btn">전술</button>
             <button type="button" class="menu-card next-game-action-btn">빠른 진행</button>
           </div>
+        </section>
+
+        <section class="home-insight-grid" aria-label="팀 인사이트">
+          <article class="home-insight-card">
+            <p class="insight-label">컨디션</p>
+            <h4>Team Readiness</h4>
+            <div class="insight-metrics">
+              <div><span>단기 체력</span><strong id="metric-stamina-short">-</strong></div>
+              <div><span>장기 체력</span><strong id="metric-stamina-long">-</strong></div>
+              <div><span>샤프니스</span><strong id="metric-sharpness">-</strong></div>
+            </div>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">메디컬</p>
+            <h4>Injury Watch</h4>
+            <div class="insight-metrics">
+              <div><span>OUT</span><strong id="metric-medical-out">0</strong></div>
+              <div><span>복귀 관리</span><strong id="metric-medical-returning">0</strong></div>
+              <div><span>HIGH RISK</span><strong id="metric-medical-high">0</strong></div>
+            </div>
+            <p id="metric-top-risk" class="insight-footnote">Top risk: -</p>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">순위</p>
+            <h4>Conference Snapshot</h4>
+            <div class="insight-metrics">
+              <div><span>순위</span><strong id="metric-standing-rank">-</strong></div>
+              <div><span>시즌 성적</span><strong id="metric-standing-record">-</strong></div>
+              <div><span>최근 10경기</span><strong id="metric-standing-last10">-</strong></div>
+            </div>
+            <p id="metric-standing-streak" class="insight-footnote">연속 기록: -</p>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">로스터</p>
+            <h4>Front Office</h4>
+            <p id="metric-top-players" class="insight-list">-</p>
+            <p id="metric-two-way" class="insight-footnote">투웨이 슬롯: -</p>
+          </article>
+        </section>
+
+        <section class="home-lower-grid" aria-label="알림 및 일정">
+          <article class="home-feed-card">
+            <div class="home-feed-head">
+              <h4>Front Office Alerts</h4>
+              <span class="feed-head-caption">최대 5개</span>
+            </div>
+            <ul id="home-alert-list" class="feed-list"></ul>
+          </article>
+
+          <article class="home-feed-card">
+            <div class="home-feed-head">
+              <h4>Upcoming 5 Games</h4>
+              <span class="feed-head-caption">난이도 기반</span>
+            </div>
+            <ul id="home-schedule-preview" class="feed-list"></ul>
+          </article>
         </section>
       </section>
     </section>
@@ -473,24 +550,49 @@
         <button id="medical-back-btn" class="btn btn-secondary" type="button">메인으로</button>
       </div>
 
-      <section class="medical-summary-grid" id="medical-summary-grid">
-        <article class="medical-card"><h3>로스터 인원</h3><p id="medical-roster-count" class="medical-big">-</p></article>
-        <article class="medical-card"><h3>현재 결장</h3><p id="medical-out-count" class="medical-big">-</p><p id="medical-returning-count" class="medical-sub">복귀 관리: -</p></article>
-        <article class="medical-card"><h3>고위험 선수</h3><p id="medical-high-risk-count" class="medical-big">-</p><p class="medical-sub">HIGH tier</p></article>
-        <article class="medical-card"><h3>건강 불만</h3><p id="medical-health-frustration-count" class="medical-big">-</p><p class="medical-sub">health_frustration ≥ 0.5</p></article>
+      <section id="medical-alert-bar" class="medical-alert-bar">
+        <div class="medical-alert-main">
+          <p class="medical-alert-label">PRIMARY ALERT</p>
+          <h3 id="medical-alert-text">현재 주요 경고가 없습니다.</h3>
+          <p id="medical-alert-meta" class="medical-sub">리스크 변동이 감지되면 여기에 표시됩니다.</p>
+        </div>
+        <div class="medical-alert-actions">
+          <span id="medical-alert-level" class="medical-alert-badge">INFO</span>
+          <button id="medical-alert-open-player" class="btn btn-secondary" type="button">선수 상세</button>
+          <button id="medical-alert-open-action" class="btn btn-secondary" type="button">권고안 보기</button>
+        </div>
       </section>
 
-      <section class="medical-layout">
+      <section class="medical-summary-grid" id="medical-summary-grid">
+        <article class="medical-card medical-kpi-card"><h3>로스터 인원</h3><p id="medical-roster-count" class="medical-big">-</p><p id="medical-roster-delta" class="medical-delta">-</p></article>
+        <article class="medical-card medical-kpi-card"><h3>현재 결장</h3><p id="medical-out-count" class="medical-big">-</p><p id="medical-returning-count" class="medical-sub">복귀 관리: -</p><p id="medical-out-delta" class="medical-delta">-</p></article>
+        <article class="medical-card medical-kpi-card"><h3>고위험 선수</h3><p id="medical-high-risk-count" class="medical-big">-</p><p class="medical-sub">HIGH tier</p><p id="medical-high-risk-delta" class="medical-delta">-</p></article>
+        <article class="medical-card medical-kpi-card"><h3>건강 불만</h3><p id="medical-health-frustration-count" class="medical-big">-</p><p class="medical-sub">health_frustration ≥ 0.5</p><p id="medical-health-delta" class="medical-delta">-</p></article>
+      </section>
+
+      <section class="medical-layout medical-layout-primary">
         <article class="medical-card">
           <div class="medical-head-row"><h3>리스크 워치리스트</h3><span id="medical-as-of" class="medical-chip">-</span></div>
           <div class="medical-table-wrap">
             <table class="medical-table">
-              <thead><tr><th>선수</th><th>상태</th><th>위험</th><th>ST/LT</th><th>Sharp</th></tr></thead>
+              <thead><tr><th>선수</th><th>상태</th><th>위험</th><th>컨디션</th><th>Sharp</th><th>재부상</th></tr></thead>
               <tbody id="medical-risk-body"></tbody>
             </table>
           </div>
         </article>
 
+        <article class="medical-card medical-context-panel">
+          <h3>선수 컨텍스트</h3>
+          <p id="medical-timeline-title" class="medical-sub">워치리스트에서 선수를 선택하세요.</p>
+          <div id="medical-timeline-list" class="medical-timeline-list"></div>
+          <div class="medical-action-block">
+            <h4>권고 액션</h4>
+            <div id="medical-action-list" class="medical-action-list"><p class="empty-copy">권고안이 없습니다.</p></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="medical-layout">
         <article class="medical-card">
           <h3>결장/복귀 현황</h3>
           <div class="medical-table-wrap">
@@ -500,9 +602,7 @@
             </table>
           </div>
         </article>
-      </section>
 
-      <section class="medical-layout">
         <article class="medical-card">
           <h3>건강 불만 Top</h3>
           <div class="medical-table-wrap">
@@ -512,12 +612,14 @@
             </table>
           </div>
         </article>
+      </section>
 
-        <article class="medical-card">
-          <h3>선수 타임라인</h3>
-          <p id="medical-timeline-title" class="medical-sub">워치리스트에서 선수를 선택하세요.</p>
-          <div id="medical-timeline-list" class="medical-timeline-list"></div>
-        </article>
+      <section class="medical-card medical-calendar-panel">
+        <div class="medical-head-row">
+          <h3>Risk Calendar (14일)</h3>
+          <span class="medical-chip">경기/훈련/리스크 통합</span>
+        </div>
+        <div id="medical-risk-calendar-list" class="medical-risk-calendar-list"></div>
       </section>
     </section>
 
