@@ -60,6 +60,7 @@ const state = {
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
   standingsData: null,
+  standingsView: { conference: "east", sortKey: "pct", sortDir: "desc", showAdvanced: false },
   tacticsDraft: null,
   medicalOverview: null,
   medicalSelectedPlayerId: null,
@@ -139,8 +140,21 @@ const els = {
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
   trainingTypeButtons: document.getElementById("training-type-buttons"),
   trainingDetailPanel: document.getElementById("training-detail-panel"),
-  standingsEastBody: document.getElementById("standings-east-body"),
-  standingsWestBody: document.getElementById("standings-west-body"),
+  standingsBody: document.getElementById("standings-body"),
+  standingsCardTitle: document.getElementById("standings-card-title"),
+  standingsTable: document.getElementById("standings-table"),
+  standingsConferenceToggle: document.getElementById("standings-conference-toggle"),
+  standingsSortKey: document.getElementById("standings-sort-key"),
+  standingsSortDirBtn: document.getElementById("standings-sort-dir-btn"),
+  standingsAdvancedToggle: document.getElementById("standings-advanced-toggle"),
+  standingsSummaryOffenseTeam: document.getElementById("standings-summary-offense-team"),
+  standingsSummaryOffenseValue: document.getElementById("standings-summary-offense-value"),
+  standingsSummaryDefenseTeam: document.getElementById("standings-summary-defense-team"),
+  standingsSummaryDefenseValue: document.getElementById("standings-summary-defense-value"),
+  standingsSummaryDiffTeam: document.getElementById("standings-summary-diff-team"),
+  standingsSummaryDiffValue: document.getElementById("standings-summary-diff-value"),
+  standingsSummaryRaceTeam: document.getElementById("standings-summary-race-team"),
+  standingsSummaryRaceValue: document.getElementById("standings-summary-race-value"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
@@ -1200,32 +1214,168 @@ function formatSignedDiff(value) {
   return `${n > 0 ? "+" : ""}${n.toFixed(1)}`;
 }
 
-function renderStandingsRows(tbody, rows) {
-  tbody.innerHTML = "";
-  (rows || []).forEach((row) => {
+function parseStreakScore(streak) {
+  const value = String(streak || "-").trim().toUpperCase();
+  const match = value.match(/^([WL])(\d+)$/);
+  if (!match) return 0;
+  const score = Number(match[2] || 0);
+  return match[1] === "W" ? score : -score;
+}
+
+function parseL10Score(l10) {
+  const value = String(l10 || "0-0").trim();
+  const match = value.match(/^(\d+)-(\d+)$/);
+  if (!match) return 0;
+  return Number(match[1] || 0) - Number(match[2] || 0);
+}
+
+function standingsTier(rank) {
+  const r = Number(rank || 999);
+  if (r <= 6) return "playoff";
+  if (r <= 10) return "playin";
+  return "out";
+}
+
+function sortStandingsRows(rows, sortKey, sortDir) {
+  const dir = sortDir === "asc" ? 1 : -1;
+  const safe = [...(rows || [])];
+  safe.sort((a, b) => {
+    const rankA = Number(a?.rank || 999);
+    const rankB = Number(b?.rank || 999);
+    let va = 0;
+    let vb = 0;
+
+    switch (sortKey) {
+      case "wins":
+        va = Number(a?.wins || 0);
+        vb = Number(b?.wins || 0);
+        break;
+      case "diff":
+        va = Number(a?.diff || 0);
+        vb = Number(b?.diff || 0);
+        break;
+      case "strk":
+        va = parseStreakScore(a?.strk);
+        vb = parseStreakScore(b?.strk);
+        break;
+      case "l10":
+        va = parseL10Score(a?.l10);
+        vb = parseL10Score(b?.l10);
+        break;
+      case "ppg":
+        va = Number(a?.ppg || 0);
+        vb = Number(b?.ppg || 0);
+        break;
+      case "opp_ppg":
+        va = Number(a?.opp_ppg || 0);
+        vb = Number(b?.opp_ppg || 0);
+        break;
+      case "pct":
+      default:
+        va = Number(a?.pct || 0);
+        vb = Number(b?.pct || 0);
+        break;
+    }
+
+    if (va === vb) return rankA - rankB;
+    return (va - vb) * dir;
+  });
+  return safe;
+}
+
+function buildStandingsSummary(rows) {
+  const source = [...(rows || [])];
+  if (!source.length) {
+    return {
+      offense: { team: "-", value: "PPG -" },
+      defense: { team: "-", value: "OPP PPG -" },
+      diff: { team: "-", value: "DIFF -" },
+      race: { team: "-", value: "GB -" }
+    };
+  }
+  const by = (getter, mode) => source.reduce((best, row) => {
+    if (!best) return row;
+    const bv = getter(best);
+    const rv = getter(row);
+    if (mode === "max") return rv > bv ? row : best;
+    return rv < bv ? row : best;
+  }, null);
+
+  const offense = by((r) => Number(r?.ppg || 0), "max");
+  const defense = by((r) => Number(r?.opp_ppg || 0), "min");
+  const diff = by((r) => Number(r?.diff || 0), "max");
+  const racePool = source.filter((r) => Number(r?.rank || 99) >= 7 && Number(r?.rank || 99) <= 10);
+  const race = racePool.sort((a, b) => Number(a?.rank || 99) - Number(b?.rank || 99))[0] || source[0];
+  const name = (r) => TEAM_FULL_NAMES[String(r?.team_id || "").toUpperCase()] || String(r?.team_id || "-");
+
+  return {
+    offense: { team: name(offense), value: `PPG ${Number(offense?.ppg || 0).toFixed(1)}` },
+    defense: { team: name(defense), value: `OPP PPG ${Number(defense?.opp_ppg || 0).toFixed(1)}` },
+    diff: { team: name(diff), value: `DIFF ${formatSignedDiff(diff?.diff)}` },
+    race: { team: name(race), value: `GB ${race?.gb_display ?? "-"}` }
+  };
+}
+
+function renderStandingsSummary(summary) {
+  els.standingsSummaryOffenseTeam.textContent = summary.offense.team;
+  els.standingsSummaryOffenseValue.textContent = summary.offense.value;
+  els.standingsSummaryDefenseTeam.textContent = summary.defense.team;
+  els.standingsSummaryDefenseValue.textContent = summary.defense.value;
+  els.standingsSummaryDiffTeam.textContent = summary.diff.team;
+  els.standingsSummaryDiffValue.textContent = summary.diff.value;
+  els.standingsSummaryRaceTeam.textContent = summary.race.team;
+  els.standingsSummaryRaceValue.textContent = summary.race.value;
+}
+
+function renderStandingsTable() {
+  const conf = state.standingsView.conference;
+  const rows = conf === "west" ? (state.standingsData?.west || []) : (state.standingsData?.east || []);
+  const sorted = sortStandingsRows(rows, state.standingsView.sortKey, state.standingsView.sortDir);
+  els.standingsBody.innerHTML = "";
+  els.standingsCardTitle.textContent = conf === "west" ? "Western Conference" : "Eastern Conference";
+
+  sorted.forEach((row) => {
     const tr = document.createElement("tr");
     const teamId = String(row?.team_id || "").toUpperCase();
     const diff = Number(row?.diff || 0);
     const diffClass = diff > 0 ? "standings-diff-positive" : diff < 0 ? "standings-diff-negative" : "";
+    const strk = String(row?.strk || "-").toUpperCase();
+    const strkClass = strk.startsWith("W") ? "is-positive" : strk.startsWith("L") ? "is-negative" : "";
+    tr.className = `standings-row-tier-${standingsTier(row?.rank)}`;
     tr.innerHTML = `
       <td>${row?.rank ?? "-"}</td>
-      <td class="standings-team-cell">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</td>
-      <td>${row?.wins ?? 0}</td>
-      <td>${row?.losses ?? 0}</td>
+      <td class="standings-team-cell"><span class="standings-team-pill">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</span></td>
+      <td>${row?.wins ?? 0}-${row?.losses ?? 0}</td>
       <td>${row?.pct || ".000"}</td>
       <td>${row?.gb_display ?? "-"}</td>
-      <td>${row?.home || "0-0"}</td>
-      <td>${row?.away || "0-0"}</td>
-      <td>${row?.div || "0-0"}</td>
-      <td>${row?.conf || "0-0"}</td>
-      <td>${Number(row?.ppg || 0).toFixed(1)}</td>
-      <td>${Number(row?.opp_ppg || 0).toFixed(1)}</td>
-      <td class="${diffClass}">${formatSignedDiff(row?.diff)}</td>
-      <td>${row?.strk || "-"}</td>
+      <td><span class="standings-strk-badge ${strkClass}">${row?.strk || "-"}</span></td>
       <td>${row?.l10 || "0-0"}</td>
+      <td class="${diffClass}">${formatSignedDiff(row?.diff)}</td>
+      <td class="standings-advanced-col">${row?.home || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.away || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.div || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.conf || "0-0"}</td>
+      <td class="standings-advanced-col">${Number(row?.ppg || 0).toFixed(1)}</td>
+      <td class="standings-advanced-col">${Number(row?.opp_ppg || 0).toFixed(1)}</td>
     `;
-    tbody.appendChild(tr);
+    els.standingsBody.appendChild(tr);
   });
+
+  const summary = buildStandingsSummary(rows);
+  renderStandingsSummary(summary);
+
+  if (els.standingsConferenceToggle) {
+    Array.from(els.standingsConferenceToggle.querySelectorAll("button")).forEach((btn) => {
+      const active = btn.dataset.conference === conf;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  }
+
+  els.standingsSortDirBtn.textContent = state.standingsView.sortDir === "asc" ? "↑" : "↓";
+  els.standingsSortKey.value = state.standingsView.sortKey;
+  els.standingsTable.dataset.showAdvanced = state.standingsView.showAdvanced ? "true" : "false";
+  els.standingsAdvancedToggle.textContent = state.standingsView.showAdvanced ? "고급 지표 숨기기" : "고급 지표 보기";
 }
 
 async function showStandingsScreen() {
@@ -1233,8 +1383,7 @@ async function showStandingsScreen() {
   try {
     const payload = await fetchJson("/api/standings/table");
     state.standingsData = payload;
-    renderStandingsRows(els.standingsEastBody, payload?.east || []);
-    renderStandingsRows(els.standingsWestBody, payload?.west || []);
+    renderStandingsTable();
     activateScreen(els.standingsScreen);
   } finally {
     setLoading(false);
@@ -1686,6 +1835,32 @@ els.tacticsBackBtn.addEventListener("click", () => showMainScreen());
 els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offense"));
 els.tacticsDefenseBtn.addEventListener("click", () => toggleTacticsOptions("defense"));
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
+if (els.standingsConferenceToggle) {
+  els.standingsConferenceToggle.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-conference]");
+    if (!btn) return;
+    state.standingsView.conference = btn.dataset.conference === "west" ? "west" : "east";
+    renderStandingsTable();
+  });
+}
+if (els.standingsSortKey) {
+  els.standingsSortKey.addEventListener("change", () => {
+    state.standingsView.sortKey = els.standingsSortKey.value || "pct";
+    renderStandingsTable();
+  });
+}
+if (els.standingsSortDirBtn) {
+  els.standingsSortDirBtn.addEventListener("click", () => {
+    state.standingsView.sortDir = state.standingsView.sortDir === "desc" ? "asc" : "desc";
+    renderStandingsTable();
+  });
+}
+if (els.standingsAdvancedToggle) {
+  els.standingsAdvancedToggle.addEventListener("click", () => {
+    state.standingsView.showAdvanced = !state.standingsView.showAdvanced;
+    renderStandingsTable();
+  });
+}
 els.collegeMenuBtn.addEventListener("click", () => showCollegeScreen().catch((e) => alert(e.message)));
 els.medicalMenuBtn.addEventListener("click", () => showMedicalScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
