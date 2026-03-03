@@ -42,8 +42,16 @@ body {
   padding: 44px 0;
 }
 
+body:has(#main-screen.active) .app-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
 .panel { display: none; }
 .panel.active { display: block; }
+.hidden { display: none !important; }
 
 #start-screen,
 #team-screen,
@@ -115,12 +123,98 @@ h1, h2, h3 { margin: 0 0 12px; }
   gap: 14px;
 }
 
-.franchise-header {
+#main-screen {
+  position: relative;
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 78% -22%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, #f3f4f7 0%, #eceef2 45%, #e5e8ed 100%);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: #111827;
+  padding: 0 0 54px;
+}
+
+#main-screen .top-league-nav,
+#main-screen .main-overview {
+  width: min(1680px, 96vw);
+  margin-inline: auto;
+}
+
+.top-league-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  border-bottom: 1px solid rgba(17, 24, 39, 0.12);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.top-league-brand {
+  font-weight: 900;
+  font-size: 1.7rem;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+  padding-right: 16px;
+  border-right: 1px solid rgba(17, 24, 39, 0.16);
+}
+
+.top-league-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.top-league-tab {
+  background: transparent;
+  border: none;
+  color: #4b5563;
+  font-size: 1.02rem;
+  font-weight: 500;
+  padding: 16px 12px 13px;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background-color .16s ease;
+}
+
+.top-league-tab:hover {
+  color: #111827;
+  background: rgba(17, 24, 39, 0.04);
+}
+
+.top-league-tab.is-active {
+  color: #111827;
+  border-bottom-color: #e11d48;
+  font-weight: 700;
+}
+
+.main-overview {
+  margin-top: 20px;
+}
+
+.main-overview-header {
   display: flex;
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 18px;
+}
+
+.main-overview .eyebrow {
+  color: #6b7280;
+}
+
+.main-overview h2 {
+  color: #111827;
+  font-size: clamp(1.5rem, 2vw, 2rem);
+  margin-bottom: 8px;
 }
 
 .franchise-header-actions {
@@ -134,39 +228,44 @@ h1, h2, h3 { margin: 0 0 12px; }
   letter-spacing: 0.04em;
   min-width: 120px;
   text-align: center;
+  color: #1f2937;
 }
 
-.franchise-layout {
-  display: grid;
-  grid-template-columns: 170px 1fr;
-  gap: 20px;
+#main-screen .btn-secondary {
+  background: linear-gradient(180deg, #ffffff, #eef2f7);
+  border: 1px solid rgba(31, 41, 55, 0.2);
+  color: #1f2937;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
-.franchise-menu-panel {
-  background: var(--card-bg-soft);
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  padding: 12px;
-  display: grid;
-  gap: 10px;
-}
-
-.franchise-menu-panel .menu-card {
-  min-height: 66px;
-  text-align: center;
+#main-screen .btn-secondary:hover {
+  border-color: rgba(31, 41, 55, 0.36);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.14);
 }
 
 .next-game-panel {
-  background: var(--card-bg-soft);
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  padding: 24px 24px 28px;
+  position: relative;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 0;
+  padding: 34px 40px 40px;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1);
+}
+
+.next-game-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #1d4ed8, #e11d48);
 }
 
 .next-game-title {
   text-align: center;
-  font-size: 2rem;
-  margin-bottom: 24px;
+  font-size: clamp(1.6rem, 2.4vw, 2.25rem);
+  margin-bottom: 28px;
+  color: #0f172a;
+  letter-spacing: 0.01em;
 }
 
 .next-game-team-row,
@@ -179,63 +278,97 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 .next-game-team-name {
   text-align: center;
-  font-size: 2rem;
-  font-weight: 700;
+  font-size: clamp(1.9rem, 3vw, 2.75rem);
+  font-weight: 800;
+  color: #0f172a;
 }
 
 .next-game-vs {
   text-align: center;
-  color: #d9e5fa;
-  font-size: 1.8rem;
+  color: #64748b;
+  font-size: 1.45rem;
   font-weight: 700;
 }
 
 .next-game-logo-row {
-  margin-top: 24px;
+  margin-top: 20px;
 }
 
+
+#team-a-logo {
+  grid-column: 1;
+}
+
+#team-b-logo {
+  grid-column: 3;
+}
 .team-logo-placeholder {
-  width: 130px;
-  height: 130px;
+  width: 138px;
+  height: 138px;
   margin: 0 auto;
   border-radius: 50%;
-  border: 2px dashed rgba(255, 255, 255, 0.4);
-  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04));
+  border: 2px solid rgba(148, 163, 184, 0.58);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.95), rgba(203, 213, 225, 0.75)),
+    linear-gradient(140deg, rgba(29, 78, 216, 0.2), rgba(225, 29, 72, 0.2));
+  box-shadow: inset 0 0 0 8px rgba(255, 255, 255, 0.6);
 }
 
 .next-game-meta-row {
   margin-top: 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.33);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.33);
+  padding: 12px 0;
 }
 
 .home-away-label {
   text-align: center;
-  font-size: 1.2rem;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
 }
 
 .arena-name {
   text-align: center;
-  color: #d8e3f8;
-  font-size: 1.1rem;
+  color: #334155;
+  font-size: 1.08rem;
   min-height: 1.3em;
+  font-weight: 600;
 }
 
 .next-game-datetime {
-  margin: 16px 0 28px;
+  margin: 18px 0 30px;
   text-align: center;
   font-size: 1.15rem;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+  font-weight: 600;
 }
 
 .next-game-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 200px));
-  justify-content: center;
-  gap: 18px;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 16px;
 }
 
 .next-game-action-btn {
-  min-height: 64px;
+  min-height: 58px;
   text-align: center;
+}
+
+#main-screen .next-game-action-btn {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  border: 1px solid rgba(59, 130, 246, 0.42);
+  color: #1d4ed8;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+#main-screen .next-game-action-btn:hover {
+  border-color: #1d4ed8;
+  color: #1e3a8a;
+  background: linear-gradient(180deg, #eff6ff, #dbeafe);
 }
 
 .team-card,
@@ -750,16 +883,28 @@ h1, h2, h3 { margin: 0 0 12px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
-  .franchise-layout {
-    grid-template-columns: 1fr;
+  #main-screen .top-league-nav,
+  #main-screen .main-overview {
+    width: min(1680px, 98vw);
   }
 
-  .franchise-menu-panel {
-    grid-template-columns: repeat(4, minmax(110px, 1fr));
+  .top-league-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 8px 0 12px;
+  }
+
+  .top-league-brand {
+    border-right: none;
+    padding-right: 0;
+  }
+
+  .next-game-panel {
+    padding: 26px 22px 28px;
   }
 
   .next-game-team-name {
-    font-size: 1.6rem;
+    font-size: 1.9rem;
   }
 
   .player-layout {
@@ -789,9 +934,14 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 
 @media (max-width: 720px) {
-  .franchise-header {
+  #main-screen {
+    padding-bottom: 36px;
+  }
+
+  .main-overview-header {
     flex-direction: column;
     align-items: stretch;
+    margin-bottom: 14px;
   }
 
   .franchise-header-actions {
@@ -799,8 +949,9 @@ h1, h2, h3 { margin: 0 0 12px; }
     flex-wrap: wrap;
   }
 
-  .franchise-menu-panel {
-    grid-template-columns: repeat(2, minmax(110px, 1fr));
+  .top-league-tab {
+    font-size: .95rem;
+    padding: 10px 8px;
   }
 
   .next-game-team-row,
@@ -808,6 +959,11 @@ h1, h2, h3 { margin: 0 0 12px; }
   .next-game-meta-row {
     grid-template-columns: 1fr;
     gap: 8px;
+  }
+
+  #team-a-logo,
+  #team-b-logo {
+    grid-column: auto;
   }
 
   .next-game-vs {
@@ -1155,4 +1311,201 @@ h1, h2, h3 { margin: 0 0 12px; }
 @media (max-width: 1100px) {
   .medical-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .medical-layout { grid-template-columns: 1fr; }
+}
+
+
+/* Unified light mood for main-tab destination screens */
+body:has(#schedule-screen.active) .app-shell,
+body:has(#my-team-screen.active) .app-shell,
+body:has(#tactics-screen.active) .app-shell,
+body:has(#training-screen.active) .app-shell,
+body:has(#standings-screen.active) .app-shell,
+body:has(#college-screen.active) .app-shell,
+body:has(#medical-screen.active) .app-shell,
+body:has(#player-detail-screen.active) .app-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+#schedule-screen,
+#my-team-screen,
+#tactics-screen,
+#training-screen,
+#standings-screen,
+#college-screen,
+#medical-screen,
+#player-detail-screen {
+  position: relative;
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 80% -22%, rgba(255, 255, 255, 0.88), rgba(255,255,255,0) 40%),
+    linear-gradient(180deg, #f4f6fa 0%, #ebeff5 55%, #e5e9f1 100%);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: #111827;
+  padding: 18px 0 42px;
+}
+
+#schedule-screen > *,
+#my-team-screen > *,
+#tactics-screen > *,
+#training-screen > *,
+#standings-screen > *,
+#college-screen > *,
+#medical-screen > *,
+#player-detail-screen > * {
+  width: min(1680px, 96vw);
+  margin-inline: auto;
+}
+
+#schedule-screen .eyebrow,
+#my-team-screen .eyebrow,
+#tactics-screen .eyebrow,
+#training-screen .eyebrow,
+#standings-screen .eyebrow,
+#college-screen .eyebrow,
+#medical-screen .eyebrow,
+#player-detail-screen .eyebrow {
+  color: #6b7280;
+}
+
+#schedule-screen h2,
+#my-team-screen h2,
+#tactics-screen h2,
+#training-screen h2,
+#standings-screen h2,
+#college-screen h2,
+#medical-screen h2,
+#player-detail-screen h2,
+#schedule-screen h3,
+#my-team-screen h3,
+#tactics-screen h3,
+#training-screen h3,
+#standings-screen h3,
+#college-screen h3,
+#medical-screen h3,
+#player-detail-screen h3 {
+  color: #0f172a;
+}
+
+#schedule-screen .subtitle,
+#my-team-screen .subtitle,
+#tactics-screen .subtitle,
+#training-screen .subtitle,
+#standings-screen .subtitle,
+#college-screen .subtitle,
+#medical-screen .subtitle,
+#player-detail-screen .subtitle {
+  color: #475569;
+}
+
+#schedule-screen .btn-secondary,
+#my-team-screen .btn-secondary,
+#tactics-screen .btn-secondary,
+#training-screen .btn-secondary,
+#standings-screen .btn-secondary,
+#college-screen .btn-secondary,
+#medical-screen .btn-secondary,
+#player-detail-screen .btn-secondary {
+  background: linear-gradient(180deg, #ffffff, #eef2f7);
+  border: 1px solid rgba(31, 41, 55, 0.2);
+  color: #1f2937;
+}
+
+#schedule-screen .btn-secondary:hover,
+#my-team-screen .btn-secondary:hover,
+#tactics-screen .btn-secondary:hover,
+#training-screen .btn-secondary:hover,
+#standings-screen .btn-secondary:hover,
+#college-screen .btn-secondary:hover,
+#medical-screen .btn-secondary:hover,
+#player-detail-screen .btn-secondary:hover {
+  border-color: rgba(31, 41, 55, 0.36);
+}
+
+#schedule-screen .schedule-card,
+#my-team-screen .roster-table-wrap,
+#tactics-screen .tactics-shell,
+#standings-screen .standings-card,
+#college-screen .college-card,
+#medical-screen .medical-card,
+#player-detail-screen .player-detail-panel,
+#training-screen .training-calendar-panel,
+#training-screen .training-detail-panel {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  border: 1px solid rgba(148, 163, 184, 0.36);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
+}
+
+#schedule-screen .schedule-card-head,
+#standings-screen .standings-card-header {
+  background: linear-gradient(90deg, rgba(29, 78, 216, 0.1), rgba(225, 29, 72, 0.08));
+  border-bottom: 1px solid rgba(148, 163, 184, 0.34);
+}
+
+#schedule-screen .schedule-meta,
+#schedule-screen .schedule-table th,
+#my-team-screen .roster-table th,
+#standings-screen .standings-table th,
+#college-screen .college-table th,
+#medical-screen .medical-table th {
+  color: #64748b;
+}
+
+#schedule-screen .schedule-table td,
+#my-team-screen .roster-table td,
+#standings-screen .standings-table td,
+#college-screen .college-table td,
+#medical-screen .medical-table td {
+  color: #1f2937;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+#tactics-screen .tactics-options,
+#tactics-screen .tactics-lineup-row,
+#tactics-screen .tactics-roster-item,
+#training-screen .training-day,
+#medical-screen .medical-chip,
+#medical-screen .status-line {
+  border-color: rgba(148, 163, 184, 0.42);
+}
+
+#tactics-screen .tactics-current-copy,
+#training-screen .empty-copy,
+#medical-screen .medical-sub,
+#college-screen label,
+#player-detail-screen .detail-subline,
+#player-detail-screen .compact-kv-list span {
+  color: #64748b;
+}
+
+@media (max-width: 720px) {
+  #schedule-screen,
+  #my-team-screen,
+  #tactics-screen,
+  #training-screen,
+  #standings-screen,
+  #college-screen,
+  #medical-screen,
+  #player-detail-screen {
+    padding: 12px 0 24px;
+  }
+
+  #schedule-screen > *,
+  #my-team-screen > *,
+  #tactics-screen > *,
+  #training-screen > *,
+  #standings-screen > *,
+  #college-screen > *,
+  #medical-screen > *,
+  #player-detail-screen > * {
+    width: min(1680px, 98vw);
+  }
 }
