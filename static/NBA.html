@@ -393,51 +393,81 @@
     </section>
 
     <section id="standings-screen" class="panel" aria-hidden="true">
-      <div class="screen-header-row">
+      <div class="standings-hero">
         <div>
           <p class="eyebrow">STANDINGS</p>
           <h2>컨퍼런스 순위표</h2>
           <p class="subtitle">정규시즌 확정 경기 기준 팀 순위를 확인합니다.</p>
         </div>
-        <button id="standings-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+
+        <div class="standings-hero-controls" aria-label="순위표 컨트롤">
+          <div id="standings-conference-toggle" class="standings-segmented" role="tablist" aria-label="컨퍼런스 선택">
+            <button type="button" class="is-active" data-conference="east" role="tab" aria-selected="true">Eastern</button>
+            <button type="button" data-conference="west" role="tab" aria-selected="false">Western</button>
+          </div>
+
+          <label class="standings-sort-label" for="standings-sort-key">정렬</label>
+          <select id="standings-sort-key" class="standings-sort-select">
+            <option value="pct">PCT</option>
+            <option value="diff">DIFF</option>
+            <option value="strk">STRK</option>
+            <option value="l10">L10</option>
+            <option value="ppg">PPG</option>
+            <option value="opp_ppg">OPP PPG</option>
+            <option value="wins">W</option>
+          </select>
+          <button type="button" id="standings-sort-dir-btn" class="btn btn-secondary standings-sort-dir" aria-label="정렬 방향 변경">↓</button>
+          <button type="button" id="standings-advanced-toggle" class="btn btn-secondary standings-advanced-toggle">고급 지표 보기</button>
+          <button id="standings-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+        </div>
       </div>
 
-      <div class="standings-grid">
-        <section class="standings-card">
-          <div class="standings-card-header">
-            <h3>Eastern Conference</h3>
-          </div>
-          <div class="standings-table-wrap">
-            <table class="standings-table">
-              <thead>
-                <tr>
-                  <th>RK</th><th>TEAM</th><th>W</th><th>L</th><th>PCT</th><th>GB</th>
-                  <th>HOME</th><th>AWAY</th><th>DIV</th><th>CONF</th>
-                  <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
-                </tr>
-              </thead>
-              <tbody id="standings-east-body"></tbody>
-            </table>
-          </div>
-        </section>
+      <section class="standings-summary-grid" aria-label="컨퍼런스 요약">
+        <article class="standings-summary-card">
+          <p>Top Offense</p>
+          <strong id="standings-summary-offense-team">-</strong>
+          <span id="standings-summary-offense-value">PPG -</span>
+        </article>
+        <article class="standings-summary-card">
+          <p>Top Defense</p>
+          <strong id="standings-summary-defense-team">-</strong>
+          <span id="standings-summary-defense-value">OPP PPG -</span>
+        </article>
+        <article class="standings-summary-card">
+          <p>Best Diff</p>
+          <strong id="standings-summary-diff-team">-</strong>
+          <span id="standings-summary-diff-value">DIFF -</span>
+        </article>
+        <article class="standings-summary-card">
+          <p>Play-In Race</p>
+          <strong id="standings-summary-race-team">-</strong>
+          <span id="standings-summary-race-value">GB -</span>
+        </article>
+      </section>
 
-        <section class="standings-card">
-          <div class="standings-card-header">
-            <h3>Western Conference</h3>
-          </div>
-          <div class="standings-table-wrap">
-            <table class="standings-table">
-              <thead>
-                <tr>
-                  <th>RK</th><th>TEAM</th><th>W</th><th>L</th><th>PCT</th><th>GB</th>
-                  <th>HOME</th><th>AWAY</th><th>DIV</th><th>CONF</th>
-                  <th>PPG</th><th>OPP PPG</th><th>DIFF</th><th>STRK</th><th>L10</th>
-                </tr>
-              </thead>
-              <tbody id="standings-west-body"></tbody>
-            </table>
-          </div>
-        </section>
+      <section class="standings-card" id="standings-table-card">
+        <div class="standings-card-header">
+          <h3 id="standings-card-title">Eastern Conference</h3>
+          <p class="standings-card-meta">Playoff 1~6 · Play-In 7~10 · Out 11~15</p>
+        </div>
+        <div class="standings-table-wrap">
+          <table class="standings-table" id="standings-table" data-show-advanced="false">
+            <thead>
+              <tr>
+                <th>RK</th><th>TEAM</th><th>W-L</th><th>PCT</th><th>GB</th><th>STRK</th><th>L10</th><th>DIFF</th>
+                <th class="standings-advanced-col">HOME</th><th class="standings-advanced-col">AWAY</th><th class="standings-advanced-col">DIV</th><th class="standings-advanced-col">CONF</th>
+                <th class="standings-advanced-col">PPG</th><th class="standings-advanced-col">OPP PPG</th>
+              </tr>
+            </thead>
+            <tbody id="standings-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="standings-legend" aria-label="순위 티어 범례">
+        <span><i class="tier-playoff"></i> Playoff Direct (1-6)</span>
+        <span><i class="tier-playin"></i> Play-In (7-10)</span>
+        <span><i class="tier-out"></i> Out (11-15)</span>
       </div>
     </section>
 
