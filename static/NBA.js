@@ -86,6 +86,25 @@ const els = {
   teamAName: document.getElementById("team-a-name"),
   teamBName: document.getElementById("team-b-name"),
   nextGameDatetime: document.getElementById("next-game-datetime"),
+  heroGameLabel: document.getElementById("hero-game-label"),
+  heroCountdown: document.getElementById("hero-countdown"),
+  formAway: document.getElementById("form-away"),
+  formHome: document.getElementById("form-home"),
+  metricStaminaShort: document.getElementById("metric-stamina-short"),
+  metricStaminaLong: document.getElementById("metric-stamina-long"),
+  metricSharpness: document.getElementById("metric-sharpness"),
+  metricMedicalOut: document.getElementById("metric-medical-out"),
+  metricMedicalReturning: document.getElementById("metric-medical-returning"),
+  metricMedicalHigh: document.getElementById("metric-medical-high"),
+  metricTopRisk: document.getElementById("metric-top-risk"),
+  metricStandingRank: document.getElementById("metric-standing-rank"),
+  metricStandingRecord: document.getElementById("metric-standing-record"),
+  metricStandingLast10: document.getElementById("metric-standing-last10"),
+  metricStandingStreak: document.getElementById("metric-standing-streak"),
+  metricTopPlayers: document.getElementById("metric-top-players"),
+  metricTwoWay: document.getElementById("metric-two-way"),
+  homeAlertList: document.getElementById("home-alert-list"),
+  homeSchedulePreview: document.getElementById("home-schedule-preview"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
   tacticsMenuBtn: document.getElementById("tactics-menu-btn"),
@@ -160,6 +179,8 @@ const els = {
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
+  rosterKpiGrid: document.getElementById("roster-kpi-grid"),
+  rosterFocusPanel: document.getElementById("roster-focus-panel"),
   playerDetailTitle: document.getElementById("player-detail-title"),
   playerDetailPanel: document.getElementById("player-detail-panel"),
   playerDetailContent: document.getElementById("player-detail-content"),
@@ -175,6 +196,18 @@ const els = {
   medicalHealthBody: document.getElementById("medical-health-body"),
   medicalTimelineTitle: document.getElementById("medical-timeline-title"),
   medicalTimelineList: document.getElementById("medical-timeline-list"),
+  medicalAlertBar: document.getElementById("medical-alert-bar"),
+  medicalAlertText: document.getElementById("medical-alert-text"),
+  medicalAlertMeta: document.getElementById("medical-alert-meta"),
+  medicalAlertLevel: document.getElementById("medical-alert-level"),
+  medicalAlertOpenPlayer: document.getElementById("medical-alert-open-player"),
+  medicalAlertOpenAction: document.getElementById("medical-alert-open-action"),
+  medicalRosterDelta: document.getElementById("medical-roster-delta"),
+  medicalOutDelta: document.getElementById("medical-out-delta"),
+  medicalHighRiskDelta: document.getElementById("medical-high-risk-delta"),
+  medicalHealthDelta: document.getElementById("medical-health-delta"),
+  medicalRiskCalendarList: document.getElementById("medical-risk-calendar-list"),
+  medicalActionList: document.getElementById("medical-action-list"),
   loadingOverlay: document.getElementById("loading-overlay"),
   loadingText: document.getElementById("loading-text")
 };
@@ -429,6 +462,10 @@ function resetNextGameCard() {
   els.teamAName.textContent = "Team A";
   els.teamBName.textContent = "Team B";
   els.nextGameDatetime.textContent = "YYYY-MM-DD --:-- PM";
+  if (els.heroGameLabel) els.heroGameLabel.textContent = "REG";
+  if (els.heroCountdown) els.heroCountdown.textContent = "D-0";
+  if (els.formAway) els.formAway.innerHTML = '<span class="form-chip">-</span>';
+  if (els.formHome) els.formHome.innerHTML = '<span class="form-chip">-</span>';
 }
 
 function formatLeader(leader) {
@@ -496,40 +533,117 @@ async function showScheduleScreen() {
   }
 }
 
+function formatRatio(v) {
+  return `${Math.round(clamp(num(v, 0), 0, 1) * 100)}%`;
+}
+
+function formatFormChips(values) {
+  const arr = Array.isArray(values) ? values : [];
+  if (!arr.length) return '<span class="form-chip">-</span>';
+  return arr.slice(-5).map((x) => {
+    const val = String(x || "-").toUpperCase();
+    const cls = val === "W" ? "win" : (val === "L" ? "loss" : "");
+    return `<span class="form-chip ${cls}">${val}</span>`;
+  }).join("");
+}
+
+function renderFeedList(el, items, renderItem) {
+  if (!el) return;
+  if (!Array.isArray(items) || !items.length) {
+    el.innerHTML = '<li class="feed-item"><span>표시할 항목이 없습니다.</span></li>';
+    return;
+  }
+  el.innerHTML = items.map(renderItem).join("");
+}
+
 async function refreshMainDashboard() {
   if (!state.selectedTeamId) return;
 
   try {
-    const currentDate = await fetchInGameDate();
+    const dashboard = await fetchJson(`/api/home/dashboard/${encodeURIComponent(state.selectedTeamId)}?top_n=5`);
+
+    const meta = dashboard?.meta || {};
+    const hero = dashboard?.hero || {};
+    const nextGame = hero?.next_game || {};
+    const snapshots = dashboard?.snapshots || {};
+    const condition = snapshots?.condition || {};
+    const medical = snapshots?.medical || {};
+    const standing = snapshots?.standing || {};
+    const roster = snapshots?.roster || {};
+
+    const currentDate = formatIsoDate(meta?.as_of_date);
     state.currentDate = currentDate;
     els.mainCurrentDate.textContent = currentDate;
 
-    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
-    const games = schedule?.games || [];
-    const nextGame = games.find((g) => {
-      const date = String(g?.date || "").slice(0, 10);
-      return date >= currentDate && !isCompletedGame(g);
-    });
+    const oppName = hero?.opponent_team?.name || nextGame?.opponent_team_name || "상대팀";
+    const userName = hero?.user_team?.name || state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    els.teamAName.textContent = oppName;
+    els.teamBName.textContent = userName;
 
-    if (!nextGame) {
-      resetNextGameCard();
-      els.nextGameDatetime.textContent = "예정된 다음 경기가 없습니다.";
-      return;
+    const isHome = Boolean(nextGame?.is_home);
+    els.heroGameLabel.textContent = isHome ? "REG · HOME" : "REG · AWAY";
+
+    const gameDate = formatIsoDate(nextGame?.date);
+    const tipoff = nextGame?.tipoff_time || randomTipoffTime();
+    els.nextGameDatetime.textContent = `${gameDate} ${tipoff}`;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(currentDate) && /^\d{4}-\d{2}-\d{2}$/.test(gameDate)) {
+      const d0 = new Date(`${currentDate}T00:00:00`);
+      const d1 = new Date(`${gameDate}T00:00:00`);
+      const diffDays = Math.max(0, Math.round((d1 - d0) / (24 * 60 * 60 * 1000)));
+      els.heroCountdown.textContent = `D-${diffDays}`;
+    } else {
+      els.heroCountdown.textContent = "D-0";
     }
 
-    const homeId = String(nextGame.home_team_id || "").toUpperCase();
-    const awayId = String(nextGame.away_team_id || "").toUpperCase();
-    const gameDate = formatIsoDate(nextGame.date);
-    els.teamAName.textContent = TEAM_FULL_NAMES[homeId] || homeId || "Team A";
-    els.teamBName.textContent = TEAM_FULL_NAMES[awayId] || awayId || "Team B";
-    const tipoffTime = nextGame.tipoff_time || randomTipoffTime();
-    els.nextGameDatetime.textContent = `${gameDate} ${tipoffTime}`;
+    els.formAway.innerHTML = formatFormChips(hero?.form?.opp_last5);
+    els.formHome.innerHTML = formatFormChips(hero?.form?.user_last5);
+
+    els.metricStaminaShort.textContent = formatRatio(condition?.stamina_short_avg);
+    els.metricStaminaLong.textContent = formatRatio(condition?.stamina_long_avg);
+    els.metricSharpness.textContent = formatRatio(condition?.sharpness_avg);
+
+    els.metricMedicalOut.textContent = String(num(medical?.out_count, 0));
+    els.metricMedicalReturning.textContent = String(num(medical?.returning_count, 0));
+    els.metricMedicalHigh.textContent = String(num(medical?.high_risk_count, 0));
+    els.metricTopRisk.textContent = medical?.top_risk_player?.name
+      ? `Top risk: ${medical.top_risk_player.name} (${num(medical.top_risk_player.risk_score, 0)})`
+      : "Top risk: -";
+
+    els.metricStandingRank.textContent = standing?.rank ? `${standing.rank}위 (${standing?.conference || "-"})` : "-";
+    els.metricStandingRecord.textContent = `${num(standing?.wins, 0)}-${num(standing?.losses, 0)}`;
+    els.metricStandingLast10.textContent = standing?.last10 || "-";
+    els.metricStandingStreak.textContent = `연속 기록: ${standing?.streak || "-"}`;
+
+    const topPlayers = Array.isArray(roster?.top_players) ? roster.top_players : [];
+    els.metricTopPlayers.textContent = topPlayers.length
+      ? topPlayers.map((p) => `${p.name} (${Math.round(num(p.overall, 0))})`).join(" · ")
+      : "-";
+    const twoWay = roster?.two_way || {};
+    els.metricTwoWay.textContent = `투웨이 슬롯: ${num(twoWay.used, 0)}/${num(twoWay.max, 3)} 사용 (여유 ${num(twoWay.open, 0)})`;
+
+    renderFeedList(els.homeAlertList, dashboard?.alerts || [], (a) => `
+      <li class="feed-item">
+        <span>${a?.title || "-"} <em>${a?.cta || ""}</em></span>
+        <span class="severity ${String(a?.severity || "info").toLowerCase()}">${a?.severity || "info"}</span>
+      </li>
+    `);
+
+    renderFeedList(els.homeSchedulePreview, dashboard?.schedule_preview || [], (g) => `
+      <li class="feed-item">
+        <span>${g?.date_mmdd || "--/--"} · ${g?.is_home ? "vs" : "@"} ${(g?.opponent_team_name || g?.opponent_team_id || "-")}</span>
+        <em>${String(g?.difficulty || "unknown").toUpperCase()}</em>
+      </li>
+    `);
   } catch (e) {
     resetNextGameCard();
     els.mainCurrentDate.textContent = "YYYY-MM-DD";
     els.nextGameDatetime.textContent = `다음 경기 정보를 불러오지 못했습니다: ${e.message}`;
+    renderFeedList(els.homeAlertList, [], () => "");
+    renderFeedList(els.homeSchedulePreview, [], () => "");
   }
 }
+
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -605,10 +719,15 @@ function renderRosterRows(rows) {
       <td>${formatMoney(row.salary)}</td>
       <td class="condition-cell">${renderConditionRing(longStamina, shortStamina)}</td>
       <td><span class="sharpness-badge" style="background:${ratioToColor(sharpness / 100)}">${Math.round(sharpness)}%</span></td>
+      <td>${num(row.pts, 0).toFixed(1)}</td>
+      <td>${num(row.ast, 0).toFixed(1)}</td>
+      <td>${num(row.reb, 0).toFixed(1)}</td>
     `;
 
     tr.addEventListener("click", () => {
       state.selectedPlayerId = row.player_id;
+      document.querySelectorAll("#my-team-roster-body .roster-row").forEach((el) => el.classList.remove("is-selected"));
+      tr.classList.add("is-selected");
       loadPlayerDetail(row.player_id).catch((e) => alert(e.message));
     });
 
@@ -636,19 +755,59 @@ function getDissatisfactionSummary(d) {
   };
 }
 
-function renderAttrGrid(attrs) {
-  const entries = Object.entries(attrs || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+function attrDisplayValue(v) {
+  if (typeof v === "number") {
+    return Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`;
+  }
+  return String(v);
+}
+
+function renderAttrGrid(attrs, attrMeta = null) {
+  const entries = Object.entries(attrs || {});
   if (!entries.length) return '<p class="empty-copy">능력치 데이터가 없습니다.</p>';
-  return entries
-    .map(([k, v]) => {
-      const value = typeof v === "number" ? (Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`) : String(v);
-      return `
+
+  const groupMap = new Map();
+  (attrMeta?.groups || []).forEach((g) => {
+    (g.attr_keys || []).forEach((key) => groupMap.set(String(key).toUpperCase(), g));
+  });
+
+  if (!groupMap.size) {
+    return entries
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .map(([k, v]) => `
         <div class="attr-card">
           <span class="attr-name">${k}</span>
-          <strong class="attr-value">${value}</strong>
+          <strong class="attr-value">${attrDisplayValue(v)}</strong>
         </div>
-      `;
-    })
+      `)
+      .join("");
+  }
+
+  const grouped = new Map();
+  entries.forEach(([k, v]) => {
+    const g = groupMap.get(String(k).toUpperCase());
+    const name = g?.label || "기타";
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name).push([k, v]);
+  });
+
+  return Array.from(grouped.entries())
+    .map(([groupName, rows]) => `
+      <section class="attr-group">
+        <h5>${groupName}</h5>
+        <div class="attr-group-grid">
+          ${rows
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+            .map(([k, v]) => `
+              <div class="attr-card">
+                <span class="attr-name">${k}</span>
+                <strong class="attr-value">${attrDisplayValue(v)}</strong>
+              </div>
+            `)
+            .join("")}
+        </div>
+      </section>
+    `)
     .join("");
 }
 
@@ -696,7 +855,60 @@ function buildContractRows(contractActive, fallbackSalary) {
   return rows.concat(outstandingOptionRows);
 }
 
-function renderPlayerDetail(detail) {
+function renderRosterInsightsKpi(teamDetail, insights) {
+  const summary = teamDetail?.summary || {};
+  const hi = insights?.health_risk_index || {};
+  const se = insights?.salary_efficiency || {};
+  const rb = insights?.rotation_balance || {};
+  els.rosterKpiGrid.innerHTML = `
+    <article class="roster-kpi-card">
+      <p class="kpi-label">TEAM RECORD</p>
+      <h3>${num(summary.wins, 0)}-${num(summary.losses, 0)}</h3>
+      <p class="kpi-sub">컨퍼런스 순위 ${summary.rank ?? "-"}위 · GB ${summary.gb ?? "-"}</p>
+    </article>
+    <article class="roster-kpi-card">
+      <p class="kpi-label">HEALTH RISK</p>
+      <h3>${num(hi.score, 0)} <span>${hi.tier || "LOW"}</span></h3>
+      <p class="kpi-sub">고위험 ${num(hi.high_risk_count, 0)}명 · 이탈 ${num(hi.unavailable_count, 0)}명</p>
+    </article>
+    <article class="roster-kpi-card">
+      <p class="kpi-label">SALARY EFFICIENCY</p>
+      <h3>${num(se.team_value_score, 0)}</h3>
+      <p class="kpi-sub">G/F/C ${num(rb.guards, 0)}/${num(rb.forwards, 0)}/${num(rb.centers, 0)}</p>
+    </article>
+  `;
+}
+
+function renderRosterFocusPanel(player, detail = null) {
+  if (!player) {
+    els.rosterFocusPanel.innerHTML = '<p class="empty-copy">선수를 선택하면 핵심 정보가 표시됩니다.</p>';
+    return;
+  }
+  const p = detail?.player || {};
+  const condition = detail?.condition || {};
+  const injury = detail?.injury || {};
+  const diss = detail?.dissatisfaction || {};
+  const name = p.name || player.name || "선수";
+  els.rosterFocusPanel.innerHTML = `
+    <div class="focus-hero">
+      <p class="kpi-label">SELECTED PLAYER</p>
+      <h3>${name}</h3>
+      <p>${p.pos || player.pos || "-"} · ${num(p.age ?? player.age, 0)}세 · OVR ${num(p.ovr ?? player.ovr, 0)}</p>
+    </div>
+    <div class="focus-grid">
+      <div><span>장기 체력</span><strong>${formatPercent(condition.long_term_stamina ?? player.long_term_stamina)}</strong></div>
+      <div><span>단기 체력</span><strong>${formatPercent(condition.short_term_stamina ?? player.short_term_stamina)}</strong></div>
+      <div><span>경기력</span><strong>${Math.round(num(condition.sharpness ?? player.sharpness, 50))}%</strong></div>
+      <div><span>연봉</span><strong>${formatMoney(detail?.roster?.salary_amount ?? player.salary)}</strong></div>
+    </div>
+    <div class="focus-tags">
+      <span class="status-line ${injury.is_injured ? "status-danger" : "status-ok"}">${injury.is_injured ? "부상 관리 필요" : "정상"}</span>
+      <span class="status-line ${diss.is_dissatisfied ? "status-danger" : "status-ok"}">${diss.is_dissatisfied ? "불만 있음" : "불만 없음"}</span>
+    </div>
+  `;
+}
+
+function renderPlayerDetail(detail, extras = {}) {
   const p = detail.player || {};
   const contract = detail.contract || {};
   const diss = getDissatisfactionSummary(detail.dissatisfaction);
@@ -763,7 +975,7 @@ function renderPlayerDetail(detail) {
 
       <section class="detail-card detail-card-attr">
         <h4>능력치 (ATTR)</h4>
-        <div class="attr-grid">${renderAttrGrid(p.attrs || {})}</div>
+        <div class="attr-grid">${renderAttrGrid(p.attrs || {}, extras.attrMeta)}</div>
       </section>
 
       <section class="detail-card detail-card-health">
@@ -782,6 +994,24 @@ function renderPlayerDetail(detail) {
         <p class="section-copy">출전 경기 수: ${num(seasonStats.games, 0)}경기</p>
         ${statsSummary}
       </section>
+
+      <section class="detail-card detail-card-gamelog">
+        <h4>최근 경기 로그</h4>
+        ${(() => {
+          const logs = extras.gameLog?.items || [];
+          if (!logs.length) return '<p class="empty-copy">최근 경기 데이터가 없습니다.</p>';
+          return `
+            <div class="game-log-table-wrap">
+              <table class="game-log-table">
+                <thead><tr><th>DATE</th><th>OPP</th><th>PTS</th><th>REB</th><th>AST</th><th>FG%</th><th>3P%</th><th>GmSc</th></tr></thead>
+                <tbody>
+                  ${logs.slice(0, 10).map((g) => `<tr><td>${String(g.date || '').slice(5)}</td><td>${g.is_home ? 'vs' : '@'} ${g.opponent_team_id || '-'}</td><td>${num(g.pts, 0)}</td><td>${num(g.reb, 0)}</td><td>${num(g.ast, 0)}</td><td>${Math.round(num(g.fg_pct, 0) * 100)}%</td><td>${Math.round(num(g.tp_pct, 0) * 100)}%</td><td>${num(g.game_score, 0)}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        })()}
+      </section>
     </div>
   `;
 }
@@ -789,8 +1019,14 @@ function renderPlayerDetail(detail) {
 async function loadPlayerDetail(playerId) {
   setLoading(true, "선수 상세 정보를 불러오는 중...");
   try {
-    const detail = await fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`);
-    renderPlayerDetail(detail);
+    const [detail, gameLog, attrMeta] = await Promise.all([
+      fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`),
+      fetchJson(`/api/players/${encodeURIComponent(playerId)}/game-log?limit=10`).catch(() => ({ items: [] })),
+      fetchJson('/api/meta/attribute-groups').catch(() => ({ groups: [] })),
+    ]);
+    const selectedRow = state.rosterRows.find((r) => String(r.player_id) === String(playerId));
+    renderRosterFocusPanel(selectedRow, detail);
+    renderPlayerDetail(detail, { gameLog, attrMeta });
     activateScreen(els.playerDetailScreen);
   } finally {
     setLoading(false);
@@ -805,14 +1041,19 @@ async function showMyTeamScreen() {
 
   setLoading(true, "내 팀 로스터를 불러오는 중...");
   try {
-    const detail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+    const [detail, insights] = await Promise.all([
+      fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`),
+      fetchJson(`/api/team/${encodeURIComponent(state.selectedTeamId)}/roster-insights`).catch(() => ({})),
+    ]);
     state.rosterRows = detail.roster || [];
     state.selectedPlayerId = null;
 
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.myTeamTitle.textContent = `${teamName} 선수단`;
 
+    renderRosterInsightsKpi(detail, insights);
     renderRosterRows(state.rosterRows);
+    renderRosterFocusPanel(state.rosterRows[0] || null, null);
     els.playerDetailContent.innerHTML = "";
     els.playerDetailTitle.textContent = "선수 상세 정보";
     activateScreen(els.myTeamScreen);
@@ -1583,6 +1824,33 @@ function riskTierClass(tier) {
   return 'status-ok';
 }
 
+function formatSignedDelta(v) {
+  const n = num(v, 0);
+  if (!n) return { text: '지난 7일 대비 변동 없음', cls: '' };
+  return {
+    text: `지난 7일 대비 ${n > 0 ? '+' : ''}${n}`,
+    cls: n > 0 ? 'pos' : 'neg',
+  };
+}
+
+function renderMedicalHero(alerts = {}) {
+  const p = alerts?.primary_alert_player;
+  const load = alerts?.team_load_context || {};
+  const level = String(alerts?.alert_level || 'info').toUpperCase();
+
+  els.medicalAlertLevel.textContent = level;
+  els.medicalAlertLevel.className = `medical-alert-badge ${level === 'CRITICAL' ? 'level-critical' : level === 'WARN' ? 'level-warn' : ''}`;
+
+  if (!p) {
+    els.medicalAlertText.textContent = '현재 주요 경고가 없습니다.';
+    els.medicalAlertMeta.textContent = `다음 7일 경기 ${num(load?.next_7d_game_count, 0)}회 · B2B ${num(load?.next_7d_back_to_back_count, 0)}회`;
+    return;
+  }
+
+  els.medicalAlertText.textContent = `${p.name || '-'} 리스크 ${p.risk_tier || '-'} (${num(p.risk_score, 0)})`;
+  els.medicalAlertMeta.textContent = `${p.injury_status || '-'} · OUT ${p.out_until_date || '-'} / RETURNING ${p.returning_until_date || '-'} · 다음 7일 ${num(load?.next_7d_game_count, 0)}경기 (B2B ${num(load?.next_7d_back_to_back_count, 0)}회)`;
+}
+
 function renderMedicalTimeline(playerName, events) {
   els.medicalTimelineTitle.textContent = playerName ? `${playerName} 최근 부상 타임라인` : '워치리스트에서 선수를 선택하세요.';
   if (!events || !events.length) {
@@ -1598,26 +1866,72 @@ function renderMedicalTimeline(playerName, events) {
   `).join('');
 }
 
-async function loadMedicalTimeline(playerId, playerName) {
+function renderMedicalActionRecommendations(payload, playerName) {
+  const items = payload?.recommendations || [];
+  if (!items.length) {
+    els.medicalActionList.innerHTML = '<p class="empty-copy">권고안이 없습니다.</p>';
+    return;
+  }
+  els.medicalActionList.innerHTML = items.map((it) => {
+    const d = it.expected_delta || {};
+    const riskDelta = num(d.risk_score, 0);
+    const stDelta = num(d.short_term_fatigue, 0);
+    const ltDelta = num(d.long_term_fatigue, 0);
+    const sharpDelta = num(d.sharpness, 0);
+    return `
+      <article class="medical-action-item">
+        <strong>${it.label || it.action_id || '-'}</strong>
+        <p>${playerName || '-'} 예상 변화 · Risk ${riskDelta > 0 ? '+' : ''}${riskDelta} · ST ${stDelta > 0 ? '+' : ''}${stDelta.toFixed(3)} · LT ${ltDelta > 0 ? '+' : ''}${ltDelta.toFixed(3)} · Sharp ${sharpDelta > 0 ? '+' : ''}${sharpDelta.toFixed(2)}</p>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderMedicalRiskCalendar(payload) {
+  const days = payload?.days || [];
+  if (!days.length) {
+    els.medicalRiskCalendarList.innerHTML = '<p class="empty-copy">캘린더 데이터가 없습니다.</p>';
+    return;
+  }
+  els.medicalRiskCalendarList.innerHTML = days.map((d) => `
+    <article class="medical-day-card ${d.is_game_day ? 'is-game' : ''} ${d.is_back_to_back ? 'is-b2b' : ''}">
+      <div class="date">${d.date || '-'}</div>
+      <div class="meta">${d.is_game_day ? `vs/@ ${d.opponent_team_id || '-'}` : 'No Game'} · ${d.practice_session_type || '훈련 미정'}</div>
+      <div class="badges">
+        <span class="badge">HIGH ${num(d.high_risk_player_count, 0)}</span>
+        <span class="badge">OUT ${num(d.out_player_count, 0)}</span>
+        <span class="badge">RET ${num(d.returning_player_count, 0)}</span>
+        <span class="badge">EVT ${num(d.injury_event_count, 0)}</span>
+      </div>
+    </article>
+  `).join('');
+}
+
+async function loadMedicalPlayerContext(playerId, playerName) {
   if (!playerId || !state.selectedTeamId) return;
-  setLoading(true, '선수 메디컬 타임라인을 불러오는 중...');
+  setLoading(true, '선수 메디컬 컨텍스트를 불러오는 중...');
   try {
-    const payload = await fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/players/${encodeURIComponent(playerId)}/timeline`);
-    const events = payload?.timeline?.events || [];
-    renderMedicalTimeline(playerName || payload?.player?.name || '-', events);
+    const [timelinePayload, actionPayload] = await Promise.all([
+      fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/players/${encodeURIComponent(playerId)}/timeline`),
+      fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/players/${encodeURIComponent(playerId)}/action-recommendations`),
+    ]);
+    const resolvedName = playerName || timelinePayload?.player?.name || '-';
+    renderMedicalTimeline(resolvedName, timelinePayload?.timeline?.events || []);
+    renderMedicalActionRecommendations(actionPayload, resolvedName);
   } catch (e) {
     renderMedicalTimeline(playerName || '-', []);
-    alert(`타임라인 로딩 실패: ${e.message}`);
+    els.medicalActionList.innerHTML = `<p class="empty-copy">권고안 로딩 실패: ${e.message}</p>`;
   } finally {
     setLoading(false);
   }
 }
 
-function renderMedicalOverview(overview) {
+function renderMedicalOverview(overview, alerts) {
   const summary = overview?.summary || {};
   const statusCounts = summary?.injury_status_counts || {};
   const riskCounts = summary?.risk_tier_counts || {};
   const watch = overview?.watchlists || {};
+  const delta = alerts?.kpi_delta_7d || {};
 
   els.medicalAsOf.textContent = `기준일 ${overview?.as_of_date || '-'}`;
   els.medicalRosterCount.textContent = num(summary?.roster_count, 0);
@@ -1626,24 +1940,42 @@ function renderMedicalOverview(overview) {
   els.medicalHighRiskCount.textContent = num(riskCounts?.HIGH, 0);
   els.medicalHealthFrustrationCount.textContent = num(summary?.health_frustration?.high_count, 0);
 
+  const rosterDelta = formatSignedDelta(0);
+  const outDelta = formatSignedDelta(delta?.out_count_delta);
+  const hrDelta = formatSignedDelta(delta?.high_risk_count_delta);
+  const healthDelta = formatSignedDelta(delta?.health_high_count_delta);
+  els.medicalRosterDelta.textContent = rosterDelta.text;
+  els.medicalOutDelta.textContent = outDelta.text;
+  els.medicalOutDelta.className = `medical-delta ${outDelta.cls}`;
+  els.medicalHighRiskDelta.textContent = hrDelta.text;
+  els.medicalHighRiskDelta.className = `medical-delta ${hrDelta.cls}`;
+  els.medicalHealthDelta.textContent = healthDelta.text;
+  els.medicalHealthDelta.className = `medical-delta ${healthDelta.cls}`;
+
   const riskRows = watch?.highest_risk || [];
   if (!riskRows.length) {
-    renderMedicalEmpty(els.medicalRiskBody, 5, '위험 데이터가 없습니다.');
+    renderMedicalEmpty(els.medicalRiskBody, 6, '위험 데이터가 없습니다.');
   } else {
     els.medicalRiskBody.innerHTML = '';
     riskRows.forEach((r) => {
       const tr = document.createElement('tr');
       tr.className = 'roster-row';
+      const riskScore = num(r.risk_score, 0);
+      const reinjuryTotal = Object.values(r?.risk_inputs?.reinjury_count || {}).reduce((acc, v) => acc + num(v, 0), 0);
       tr.innerHTML = `
-        <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
+        <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'} · ${num(r.age, 0)}세</span></td>
         <td><span class="status-line ${riskTierClass(r.injury_status)}">${r.injury_status || '-'}</span></td>
-        <td><strong class="${riskTierClass(r.risk_tier)}">${r.risk_tier || '-'} (${num(r.risk_score, 0)})</strong></td>
+        <td>
+          <strong class="${riskTierClass(r.risk_tier)}">${r.risk_tier || '-'} (${riskScore})</strong>
+          <div class="medical-risk-meter"><span style="width:${clamp(riskScore, 0, 100)}%"></span></div>
+        </td>
         <td>${formatPercent(1 - num(r.condition?.short_term_fatigue, 0))} / ${formatPercent(1 - num(r.condition?.long_term_fatigue, 0))}</td>
-        <td>${num(r.condition?.sharpness, 0)}</td>
+        <td>${Math.round(num(r.condition?.sharpness, 0))}</td>
+        <td>${reinjuryTotal}</td>
       `;
       tr.addEventListener('click', () => {
         state.medicalSelectedPlayerId = r.player_id;
-        loadMedicalTimeline(r.player_id, r.name).catch((e) => alert(e.message));
+        loadMedicalPlayerContext(r.player_id, r.name).catch((e) => alert(e.message));
       });
       els.medicalRiskBody.appendChild(tr);
     });
@@ -1677,23 +2009,43 @@ async function showMedicalScreen() {
   }
   setLoading(true, '메디컬 센터 데이터를 불러오는 중...');
   try {
-    const overview = await fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/overview`);
+    const [overview, alerts, calendar] = await Promise.all([
+      fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/overview`),
+      fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/alerts`).catch(() => ({})),
+      fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/risk-calendar?days=14`).catch(() => ({ days: [] })),
+    ]);
     state.medicalOverview = overview;
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.medicalTitle.textContent = `${teamName} 메디컬 센터`;
-    renderMedicalOverview(overview);
-    const first = (overview?.watchlists?.highest_risk || [])[0];
+
+    renderMedicalHero(alerts);
+    renderMedicalOverview(overview, alerts);
+    renderMedicalRiskCalendar(calendar);
+
+    const primaryPlayerId = alerts?.primary_alert_player?.player_id;
+    const primaryPlayerName = alerts?.primary_alert_player?.name;
+    els.medicalAlertOpenPlayer.onclick = () => {
+      if (!primaryPlayerId) return;
+      state.medicalSelectedPlayerId = primaryPlayerId;
+      loadMedicalPlayerContext(primaryPlayerId, primaryPlayerName).catch(() => {});
+    };
+    els.medicalAlertOpenAction.onclick = els.medicalAlertOpenPlayer.onclick;
+
+    const first = primaryPlayerId ? { player_id: primaryPlayerId, name: primaryPlayerName } : (overview?.watchlists?.highest_risk || [])[0];
     if (first?.player_id) {
       state.medicalSelectedPlayerId = first.player_id;
-      await loadMedicalTimeline(first.player_id, first.name);
+      await loadMedicalPlayerContext(first.player_id, first.name);
     } else {
       renderMedicalTimeline(null, []);
+      els.medicalActionList.innerHTML = '<p class="empty-copy">권고안이 없습니다.</p>';
     }
+
     activateScreen(els.medicalScreen);
   } finally {
     setLoading(false);
   }
 }
+
 
 async function showTacticsScreen() {
   if (!state.selectedTeamId) {
