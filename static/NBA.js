@@ -88,6 +88,18 @@ const els = {
   scheduleBtn: document.getElementById("schedule-btn"),
   scheduleBackBtn: document.getElementById("schedule-back-btn"),
   scheduleTitle: document.getElementById("schedule-title"),
+  scheduleNextOpponent: document.getElementById("schedule-next-opponent"),
+  scheduleNextDatetime: document.getElementById("schedule-next-datetime"),
+  scheduleNextHomeaway: document.getElementById("schedule-next-homeaway"),
+  scheduleNextContext: document.getElementById("schedule-next-context"),
+  scheduleOverallRecord: document.getElementById("schedule-overall-record"),
+  scheduleRankLine: document.getElementById("schedule-rank-line"),
+  scheduleFormLine: document.getElementById("schedule-form-line"),
+  scheduleStreakLine: document.getElementById("schedule-streak-line"),
+  scheduleSegmentTier: document.getElementById("schedule-segment-tier"),
+  scheduleSegmentMeta: document.getElementById("schedule-segment-meta"),
+  scheduleMonthRecord: document.getElementById("schedule-month-record"),
+  scheduleMonthDiff: document.getElementById("schedule-month-diff"),
   scheduleCompletedBody: document.getElementById("schedule-completed-body"),
   scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
@@ -424,7 +436,58 @@ function renderEmptyScheduleRow(colSpan, text) {
   return `<tr><td colspan="${colSpan}" class="schedule-empty">${text}</td></tr>`;
 }
 
-function renderScheduleTables(games) {
+function formatRankLine(standing) {
+  if (!standing) return "컨퍼런스 순위 -";
+  const rank = num(standing.rank, 0) || "-";
+  const gb = standing.gb_display || "-";
+  return `컨퍼런스 ${rank}위 · GB ${gb}`;
+}
+
+function setScheduleOverviewData({ games = [], standingsRow = null, monthlySummary = null, segment = null } = {}) {
+  const completed = games.filter((g) => g?.is_completed);
+  const wins = completed.filter((g) => g?.result?.wl === "W").length;
+  const losses = completed.filter((g) => g?.result?.wl === "L").length;
+  const nextGame = games.find((g) => !g?.is_completed);
+
+  els.scheduleOverallRecord.textContent = `${wins}-${losses}`;
+  els.scheduleRankLine.textContent = formatRankLine(standingsRow);
+  els.scheduleFormLine.textContent = `L10 ${standingsRow?.l10 || "0-0"}`;
+  els.scheduleStreakLine.textContent = `연속 기록 ${standingsRow?.strk || "-"}`;
+
+  if (nextGame) {
+    els.scheduleNextOpponent.textContent = `${TEAM_FULL_NAMES[String(nextGame.opponent_team_id || "").toUpperCase()] || nextGame.opponent_team_name || nextGame.opponent_team_id || "상대 미정"}`;
+    els.scheduleNextDatetime.textContent = `${formatIsoDate(nextGame.date)} ${nextGame.tipoff_time || "--:-- --"}`;
+    els.scheduleNextHomeaway.textContent = nextGame.is_home ? "HOME" : "AWAY";
+    els.scheduleNextContext.textContent = `${nextGame.opponent_label || "vs ---"}`;
+  } else {
+    els.scheduleNextOpponent.textContent = "예정된 경기가 없습니다";
+    els.scheduleNextDatetime.textContent = "-";
+    els.scheduleNextHomeaway.textContent = "-";
+    els.scheduleNextContext.textContent = "시즌 종료";
+  }
+
+  if (segment?.segment) {
+    const s = segment.segment;
+    els.scheduleSegmentTier.textContent = `난이도 ${s.strength_tier || "-"}`;
+    els.scheduleSegmentMeta.textContent = `원정 ${num(s.away_games, 0)} · B2B ${num(s.back_to_back_sets, 0)} · 상대승률 ${num(s.avg_opponent_win_pct, 0).toFixed(3)}`;
+  } else {
+    els.scheduleSegmentTier.textContent = "난이도 -";
+    els.scheduleSegmentMeta.textContent = "원정 0 · B2B 0";
+  }
+
+  const months = monthlySummary?.months || [];
+  const latest = months.length ? months[months.length - 1] : null;
+  if (latest) {
+    els.scheduleMonthRecord.textContent = `${latest.month} · ${latest.wins}-${latest.losses}`;
+    const sign = num(latest.avg_point_diff, 0) >= 0 ? "+" : "";
+    els.scheduleMonthDiff.textContent = `평균 득실차 ${sign}${num(latest.avg_point_diff, 0).toFixed(1)}`;
+  } else {
+    els.scheduleMonthRecord.textContent = "-";
+    els.scheduleMonthDiff.textContent = "득실차 -";
+  }
+}
+
+function renderScheduleTables(games, currentDate) {
   const completed = (games || []).filter((g) => g?.is_completed);
   const upcoming = (games || []).filter((g) => !g?.is_completed);
 
@@ -448,14 +511,25 @@ function renderScheduleTables(games) {
     : renderEmptyScheduleRow(7, "완료된 경기가 없습니다.");
 
   els.scheduleUpcomingBody.innerHTML = upcoming.length
-    ? upcoming.map((g) => `
-      <tr>
-        <td>${g.date_mmdd || "--/--"}</td>
-        <td class="schedule-opponent-cell">${g.opponent_label || "-"} <span class="schedule-opponent-name">${g.opponent_team_name || g.opponent_team_id || ""}</span></td>
-        <td><span class="schedule-time-chip">${g.tipoff_time || "--:-- --"}</span></td>
-      </tr>
-    `).join("")
+    ? upcoming.map((g) => {
+      const isToday = String(g.date || "").slice(0, 10) === currentDate;
+      return `
+        <tr class="${isToday ? "schedule-row-today" : ""}">
+          <td>${g.date_mmdd || "--/--"}</td>
+          <td class="schedule-opponent-cell">${g.opponent_label || "-"} <span class="schedule-opponent-name">${g.opponent_team_name || g.opponent_team_id || ""}</span></td>
+          <td><span class="schedule-time-chip">${g.tipoff_time || "--:-- --"}</span>${isToday ? '<span class="schedule-today-pill">TODAY</span>' : ""}</td>
+        </tr>
+      `;
+    }).join("")
     : renderEmptyScheduleRow(3, "예정된 경기가 없습니다.");
+}
+
+function pickStandingRow(standingsTable, teamId) {
+  const allRows = [
+    ...((standingsTable || {}).east || []),
+    ...((standingsTable || {}).west || []),
+  ];
+  return allRows.find((r) => String(r?.team_id || "").toUpperCase() === String(teamId || "").toUpperCase()) || null;
 }
 
 async function showScheduleScreen() {
@@ -466,10 +540,25 @@ async function showScheduleScreen() {
 
   setLoading(true, "스케줄 정보를 불러오는 중...");
   try {
-    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
+    const [schedule, standingsTable, monthlySummary, segmentStrength] = await Promise.all([
+      fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`),
+      fetchJson("/api/standings/table").catch(() => ({ east: [], west: [] })),
+      fetchJson(`/api/team-schedule/monthly-summary/${encodeURIComponent(state.selectedTeamId)}`).catch(() => ({ months: [] })),
+      fetchJson(`/api/team-schedule/segment-strength/${encodeURIComponent(state.selectedTeamId)}?window=10`).catch(() => ({ segment: null })),
+    ]);
+
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    const currentDate = formatIsoDate(schedule?.current_date || state.currentDate);
     els.scheduleTitle.textContent = `${teamName} 정규 시즌 일정`;
-    renderScheduleTables(schedule?.games || []);
+    const games = schedule?.games || [];
+
+    renderScheduleTables(games, currentDate);
+    setScheduleOverviewData({
+      games,
+      standingsRow: pickStandingRow(standingsTable, state.selectedTeamId),
+      monthlySummary,
+      segment: segmentStrength,
+    });
     activateScreen(els.scheduleScreen);
   } catch (e) {
     els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, `스케줄 로딩 실패: ${e.message}`);
