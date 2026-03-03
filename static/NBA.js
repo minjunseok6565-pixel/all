@@ -60,6 +60,8 @@ const state = {
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
   standingsData: null,
+  standingsConference: "east",
+  standingsBranding: {},
   tacticsDraft: null,
   tacticsSavedDraft: null,
   tacticsMeta: null,
@@ -174,8 +176,26 @@ const els = {
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
   trainingTypeButtons: document.getElementById("training-type-buttons"),
   trainingDetailPanel: document.getElementById("training-detail-panel"),
-  standingsEastBody: document.getElementById("standings-east-body"),
-  standingsWestBody: document.getElementById("standings-west-body"),
+  standingsActiveBody: document.getElementById("standings-active-body"),
+  standingsConferenceTitle: document.getElementById("standings-conference-title"),
+  standingsConfEastBtn: document.getElementById("standings-conf-east"),
+  standingsConfWestBtn: document.getElementById("standings-conf-west"),
+  standingsRefreshBtn: document.getElementById("standings-refresh-btn"),
+  standingsLastUpdated: document.getElementById("standings-last-updated"),
+  standingsKpiRank: document.getElementById("standings-kpi-rank"),
+  standingsKpiRecord: document.getElementById("standings-kpi-record"),
+  standingsKpiPct: document.getElementById("standings-kpi-pct"),
+  standingsKpiGb: document.getElementById("standings-kpi-gb"),
+  standingsKpiForm: document.getElementById("standings-kpi-form"),
+  standingsInsightUpdated: document.getElementById("standings-insight-updated"),
+  standingsInsightTeam: document.getElementById("standings-insight-team"),
+  standingsInsightRank: document.getElementById("standings-insight-rank"),
+  standingsCutlineDirect: document.getElementById("standings-cutline-direct"),
+  standingsCutlinePlayin: document.getElementById("standings-cutline-playin"),
+  standingsNeighborAbove: document.getElementById("standings-neighbor-above"),
+  standingsNeighborBelow: document.getElementById("standings-neighbor-below"),
+  standingsH2hAbove: document.getElementById("standings-h2h-above"),
+  standingsH2hBelow: document.getElementById("standings-h2h-below"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
@@ -1445,16 +1465,85 @@ function formatSignedDiff(value) {
   return `${n > 0 ? "+" : ""}${n.toFixed(1)}`;
 }
 
-function renderStandingsRows(tbody, rows) {
+function getTierClass(rank) {
+  const n = Number(rank || 0);
+  if (n >= 1 && n <= 6) return "tier-top";
+  if (n >= 7 && n <= 10) return "tier-playin";
+  return "tier-out";
+}
+
+function getTeamChipStyle(teamId) {
+  const colors = state.standingsBranding?.[teamId]?.colors || {};
+  const primary = colors.primary || "#1d3557";
+  const text = colors.text_on_primary || "#ffffff";
+  return `background:${primary};color:${text};`;
+}
+
+function setStandingsInsightPlaceholder() {
+  els.standingsInsightUpdated.textContent = "as of -";
+  els.standingsInsightTeam.textContent = "팀 선택 대기중";
+  els.standingsInsightRank.textContent = "팀을 클릭하면 레이스 인사이트가 표시됩니다.";
+  els.standingsCutlineDirect.textContent = "Direct Cut(6): -";
+  els.standingsCutlinePlayin.textContent = "Play-In Cut(10): -";
+  els.standingsNeighborAbove.textContent = "위 팀: -";
+  els.standingsNeighborBelow.textContent = "아래 팀: -";
+  els.standingsH2hAbove.textContent = "vs 위 팀: -";
+  els.standingsH2hBelow.textContent = "vs 아래 팀: -";
+}
+
+function updateStandingsKpi(row) {
+  if (!row) {
+    els.standingsKpiRank.textContent = "-";
+    els.standingsKpiRecord.textContent = "0-0";
+    els.standingsKpiPct.textContent = ".000";
+    els.standingsKpiGb.textContent = "-";
+    els.standingsKpiForm.textContent = "L10 0-0 · STRK -";
+    return;
+  }
+
+  els.standingsKpiRank.textContent = `#${row?.rank ?? "-"}`;
+  els.standingsKpiRecord.textContent = `${row?.wins ?? 0}-${row?.losses ?? 0}`;
+  els.standingsKpiPct.textContent = row?.pct || ".000";
+  els.standingsKpiGb.textContent = row?.gb_display ?? "-";
+  els.standingsKpiForm.textContent = `L10 ${row?.l10 || "0-0"} · STRK ${row?.strk || "-"}`;
+}
+
+async function loadRaceInsights(teamId) {
+  const conference = state.standingsConference === "west" ? "West" : "East";
+  const payload = await fetchJson(`/api/standings/race-insights?conference=${encodeURIComponent(conference)}&team_id=${encodeURIComponent(teamId)}`);
+
+  const teamName = TEAM_FULL_NAMES[String(payload?.team_id || "").toUpperCase()] || payload?.team_id || "-";
+  els.standingsInsightUpdated.textContent = `as of ${payload?.as_of_date || "-"}`;
+  els.standingsInsightTeam.textContent = teamName;
+  els.standingsInsightRank.textContent = `${payload?.conference || conference} #${payload?.current_rank ?? "-"}`;
+  els.standingsCutlineDirect.textContent = `Direct Cut(6): ${Number(payload?.cutlines?.gb_to_direct_cut ?? 0).toFixed(1)} GB`;
+  els.standingsCutlinePlayin.textContent = `Play-In Cut(10): ${Number(payload?.cutlines?.gb_to_playin_cut ?? 0).toFixed(1)} GB`;
+
+  const above = payload?.neighbors?.above || {};
+  const below = payload?.neighbors?.below || {};
+  const aboveName = TEAM_FULL_NAMES[String(above?.team_id || "").toUpperCase()] || above?.team_id || "-";
+  const belowName = TEAM_FULL_NAMES[String(below?.team_id || "").toUpperCase()] || below?.team_id || "-";
+  els.standingsNeighborAbove.textContent = `위 팀: ${aboveName} (${above?.rank ?? "-"}위, ${above?.gb_gap ?? "-"} GB)`;
+  els.standingsNeighborBelow.textContent = `아래 팀: ${belowName} (${below?.rank ?? "-"}위, ${below?.gb_gap ?? "-"} GB)`;
+  els.standingsH2hAbove.textContent = `vs 위 팀: ${payload?.tiebreaker_context?.vs_above_head_to_head || "-"}`;
+  els.standingsH2hBelow.textContent = `vs 아래 팀: ${payload?.tiebreaker_context?.vs_below_head_to_head || "-"}`;
+}
+
+function renderStandingsRows(rows) {
+  const tbody = els.standingsActiveBody;
   tbody.innerHTML = "";
+
   (rows || []).forEach((row) => {
     const tr = document.createElement("tr");
     const teamId = String(row?.team_id || "").toUpperCase();
     const diff = Number(row?.diff || 0);
     const diffClass = diff > 0 ? "standings-diff-positive" : diff < 0 ? "standings-diff-negative" : "";
+    tr.className = getTierClass(row?.rank);
+    tr.dataset.teamId = teamId;
+
     tr.innerHTML = `
       <td>${row?.rank ?? "-"}</td>
-      <td class="standings-team-cell">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</td>
+      <td class="standings-team-cell"><span class="standings-team-chip" style="${getTeamChipStyle(teamId)}">${teamId || "--"}</span>${TEAM_FULL_NAMES[teamId] || teamId || "-"}</td>
       <td>${row?.wins ?? 0}</td>
       <td>${row?.losses ?? 0}</td>
       <td>${row?.pct || ".000"}</td>
@@ -1469,17 +1558,68 @@ function renderStandingsRows(tbody, rows) {
       <td>${row?.strk || "-"}</td>
       <td>${row?.l10 || "0-0"}</td>
     `;
+
+    tr.addEventListener("click", async () => {
+      tbody.querySelectorAll("tr").forEach((node) => node.classList.remove("is-selected"));
+      tr.classList.add("is-selected");
+      updateStandingsKpi(row);
+      try {
+        await loadRaceInsights(teamId);
+      } catch (e) {
+        els.standingsInsightRank.textContent = `인사이트 로드 실패: ${e.message}`;
+      }
+    });
+
     tbody.appendChild(tr);
   });
+}
+
+function setStandingsConference(conf) {
+  state.standingsConference = conf === "west" ? "west" : "east";
+  const isEast = state.standingsConference === "east";
+  els.standingsConfEastBtn.classList.toggle("is-active", isEast);
+  els.standingsConfWestBtn.classList.toggle("is-active", !isEast);
+  els.standingsConferenceTitle.textContent = isEast ? "Eastern Conference" : "Western Conference";
+
+  const rows = isEast ? (state.standingsData?.east || []) : (state.standingsData?.west || []);
+  renderStandingsRows(rows);
+
+  const initialTeam = rows.find((r) => String(r?.team_id || "").toUpperCase() === String(state.selectedTeamId || "").toUpperCase()) || rows[0];
+  updateStandingsKpi(initialTeam || null);
+  setStandingsInsightPlaceholder();
+
+  if (initialTeam?.team_id) {
+    const firstRow = els.standingsActiveBody.querySelector(`tr[data-team-id="${String(initialTeam.team_id).toUpperCase()}"]`);
+    if (firstRow) firstRow.classList.add("is-selected");
+    loadRaceInsights(String(initialTeam.team_id).toUpperCase()).catch((e) => {
+      els.standingsInsightRank.textContent = `인사이트 로드 실패: ${e.message}`;
+    });
+  }
+}
+
+async function loadStandingsDependencies() {
+  try {
+    const branding = await fetchJson("/api/teams/branding");
+    const map = {};
+    (branding?.teams || []).forEach((t) => {
+      const id = String(t?.team_id || "").toUpperCase();
+      if (id) map[id] = t;
+    });
+    state.standingsBranding = map;
+    els.standingsLastUpdated.textContent = `업데이트: ${branding?.updated_at || "-"}`;
+  } catch (_) {
+    state.standingsBranding = {};
+    els.standingsLastUpdated.textContent = "업데이트: -";
+  }
 }
 
 async function showStandingsScreen() {
   setLoading(true, "순위 데이터를 불러오는 중입니다...");
   try {
+    await loadStandingsDependencies();
     const payload = await fetchJson("/api/standings/table");
     state.standingsData = payload;
-    renderStandingsRows(els.standingsEastBody, payload?.east || []);
-    renderStandingsRows(els.standingsWestBody, payload?.west || []);
+    setStandingsConference(state.standingsConference || "east");
     activateScreen(els.standingsScreen);
   } finally {
     setLoading(false);
@@ -2091,6 +2231,9 @@ els.medicalMenuBtn.addEventListener("click", () => showMedicalScreen().catch((e)
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
 els.medicalBackBtn.addEventListener("click", () => showMainScreen());
 els.standingsBackBtn.addEventListener("click", () => showMainScreen());
+els.standingsConfEastBtn?.addEventListener("click", () => setStandingsConference("east"));
+els.standingsConfWestBtn?.addEventListener("click", () => setStandingsConference("west"));
+els.standingsRefreshBtn?.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
 els.collegeBackBtn.addEventListener("click", () => showMainScreen());
 els.collegeTabTeams.addEventListener("click", () => switchCollegeTab("teams"));
 els.collegeTabLeaders.addEventListener("click", () => switchCollegeTab("leaders"));

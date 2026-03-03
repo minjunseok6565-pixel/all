@@ -32,6 +32,39 @@ TEAM_FULL_NAMES: Dict[str, str] = {
     "UTA": "Utah Jazz", "WAS": "Washington Wizards",
 }
 
+TEAM_BRAND_COLORS: Dict[str, Dict[str, str]] = {
+    "ATL": {"primary": "#E03A3E", "secondary": "#C1D32F", "text_on_primary": "#FFFFFF"},
+    "BOS": {"primary": "#007A33", "secondary": "#BA9653", "text_on_primary": "#FFFFFF"},
+    "BKN": {"primary": "#111111", "secondary": "#FFFFFF", "text_on_primary": "#FFFFFF"},
+    "CHA": {"primary": "#1D1160", "secondary": "#00788C", "text_on_primary": "#FFFFFF"},
+    "CHI": {"primary": "#CE1141", "secondary": "#000000", "text_on_primary": "#FFFFFF"},
+    "CLE": {"primary": "#6F263D", "secondary": "#FFB81C", "text_on_primary": "#FFFFFF"},
+    "DAL": {"primary": "#00538C", "secondary": "#002B5E", "text_on_primary": "#FFFFFF"},
+    "DEN": {"primary": "#0E2240", "secondary": "#FEC524", "text_on_primary": "#FFFFFF"},
+    "DET": {"primary": "#C8102E", "secondary": "#1D42BA", "text_on_primary": "#FFFFFF"},
+    "GSW": {"primary": "#1D428A", "secondary": "#FFC72C", "text_on_primary": "#FFFFFF"},
+    "HOU": {"primary": "#CE1141", "secondary": "#000000", "text_on_primary": "#FFFFFF"},
+    "IND": {"primary": "#002D62", "secondary": "#FDBB30", "text_on_primary": "#FFFFFF"},
+    "LAC": {"primary": "#C8102E", "secondary": "#1D428A", "text_on_primary": "#FFFFFF"},
+    "LAL": {"primary": "#552583", "secondary": "#FDB927", "text_on_primary": "#FFFFFF"},
+    "MEM": {"primary": "#5D76A9", "secondary": "#12173F", "text_on_primary": "#FFFFFF"},
+    "MIA": {"primary": "#98002E", "secondary": "#F9A01B", "text_on_primary": "#FFFFFF"},
+    "MIL": {"primary": "#00471B", "secondary": "#EEE1C6", "text_on_primary": "#FFFFFF"},
+    "MIN": {"primary": "#0C2340", "secondary": "#236192", "text_on_primary": "#FFFFFF"},
+    "NOP": {"primary": "#0C2340", "secondary": "#C8102E", "text_on_primary": "#FFFFFF"},
+    "NYK": {"primary": "#006BB6", "secondary": "#F58426", "text_on_primary": "#FFFFFF"},
+    "OKC": {"primary": "#007AC1", "secondary": "#EF3B24", "text_on_primary": "#FFFFFF"},
+    "ORL": {"primary": "#0077C0", "secondary": "#C4CED4", "text_on_primary": "#FFFFFF"},
+    "PHI": {"primary": "#006BB6", "secondary": "#ED174C", "text_on_primary": "#FFFFFF"},
+    "PHX": {"primary": "#1D1160", "secondary": "#E56020", "text_on_primary": "#FFFFFF"},
+    "POR": {"primary": "#E03A3E", "secondary": "#000000", "text_on_primary": "#FFFFFF"},
+    "SAC": {"primary": "#5A2D81", "secondary": "#63727A", "text_on_primary": "#FFFFFF"},
+    "SAS": {"primary": "#C4CED4", "secondary": "#000000", "text_on_primary": "#111111"},
+    "TOR": {"primary": "#CE1141", "secondary": "#000000", "text_on_primary": "#FFFFFF"},
+    "UTA": {"primary": "#002B5C", "secondary": "#F9A01B", "text_on_primary": "#FFFFFF"},
+    "WAS": {"primary": "#002B5C", "secondary": "#E31837", "text_on_primary": "#FFFFFF"},
+}
+
 
 def _format_mmdd(date_value: Any) -> str:
     raw = str(date_value or "")[:10]
@@ -73,6 +106,100 @@ def _pick_leader(rows: List[Dict[str, Any]], stat_keys: List[str]) -> Optional[D
                 "value": int(value),
             }
     return best
+
+
+def _format_head_to_head(team_id: str, opponent_id: Optional[str], games: List[Dict[str, Any]]) -> Optional[str]:
+    if not opponent_id:
+        return None
+
+    wins = 0
+    losses = 0
+    for g in games:
+        if str(g.get("status") or "") != "final":
+            continue
+        if str(g.get("phase") or "regular") != "regular":
+            continue
+
+        home_team = str(g.get("home_team_id") or "")
+        away_team = str(g.get("away_team_id") or "")
+        if {home_team, away_team} != {team_id, opponent_id}:
+            continue
+
+        home_score = g.get("home_score")
+        away_score = g.get("away_score")
+        if home_score is None or away_score is None:
+            continue
+
+        if team_id == home_team:
+            if int(home_score) > int(away_score):
+                wins += 1
+            elif int(home_score) < int(away_score):
+                losses += 1
+        else:
+            if int(away_score) > int(home_score):
+                wins += 1
+            elif int(away_score) < int(home_score):
+                losses += 1
+
+    return f"{wins}-{losses}"
+
+
+def _build_race_insights(conference: str, team_id: str) -> Dict[str, Any]:
+    standings_table = get_conference_standings_table()
+    rows = standings_table.get(conference.lower(), [])
+    target_idx = next((i for i, row in enumerate(rows) if str(row.get("team_id") or "").upper() == team_id), None)
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail=f"Team '{team_id}' not found in {conference} standings")
+
+    target = rows[target_idx]
+
+    direct_cut_rank = 6
+    playin_cut_rank = 10
+    direct_cut = rows[direct_cut_rank - 1] if len(rows) >= direct_cut_rank else None
+    playin_cut = rows[playin_cut_rank - 1] if len(rows) >= playin_cut_rank else None
+
+    target_gb = float(target.get("gb") or 0.0)
+    direct_cut_gb = float(direct_cut.get("gb") or 0.0) if direct_cut else target_gb
+    playin_cut_gb = float(playin_cut.get("gb") or 0.0) if playin_cut else target_gb
+
+    above = rows[target_idx - 1] if target_idx > 0 else None
+    below = rows[target_idx + 1] if (target_idx + 1) < len(rows) else None
+
+    league = state.export_full_state_snapshot().get("league", {})
+    current_date = str(league.get("current_date") or date.today().isoformat())[:10]
+    games = ((league.get("master_schedule") or {}).get("games") or [])
+
+    above_tid = str(above.get("team_id") or "").upper() if above else None
+    below_tid = str(below.get("team_id") or "").upper() if below else None
+
+    return {
+        "conference": conference,
+        "team_id": team_id,
+        "as_of_date": current_date,
+        "current_rank": int(target.get("rank") or 0),
+        "cutlines": {
+            "playoff_direct_rank": direct_cut_rank,
+            "playin_rank": playin_cut_rank,
+            "gb_to_direct_cut": round(target_gb - direct_cut_gb, 1),
+            "gb_to_playin_cut": round(target_gb - playin_cut_gb, 1),
+        },
+        "neighbors": {
+            "above": {
+                "team_id": above_tid,
+                "rank": int(above.get("rank") or 0) if above else None,
+                "gb_gap": round(target_gb - float(above.get("gb") or 0.0), 1) if above else None,
+            },
+            "below": {
+                "team_id": below_tid,
+                "rank": int(below.get("rank") or 0) if below else None,
+                "gb_gap": round(float(below.get("gb") or 0.0) - target_gb, 1) if below else None,
+            },
+        },
+        "tiebreaker_context": {
+            "vs_above_head_to_head": _format_head_to_head(team_id, above_tid, games),
+            "vs_below_head_to_head": _format_head_to_head(team_id, below_tid, games),
+        },
+    }
 
 
 def _attr_float(attrs: Any, *keys: str) -> Optional[float]:
@@ -409,6 +536,50 @@ async def api_standings():
 @router.get("/api/standings/table")
 async def api_standings_table():
     return get_conference_standings_table()
+
+
+@router.get("/api/teams/branding")
+async def api_teams_branding():
+    teams: List[Dict[str, Any]] = []
+    for team_id in sorted(ALL_TEAM_IDS):
+        tid = str(team_id).upper()
+        colors = TEAM_BRAND_COLORS.get(tid, {"primary": "#1D3557", "secondary": "#A8DADC", "text_on_primary": "#FFFFFF"})
+        teams.append(
+            {
+                "team_id": tid,
+                "display_name": TEAM_FULL_NAMES.get(tid, tid),
+                "short_name": tid,
+                "logo_url": None,
+                "colors": {
+                    "primary": str(colors.get("primary") or "#1D3557"),
+                    "secondary": str(colors.get("secondary") or "#A8DADC"),
+                    "text_on_primary": str(colors.get("text_on_primary") or "#FFFFFF"),
+                },
+            }
+        )
+
+    as_of = str(state.get_current_date() or date.today().isoformat())[:10]
+    return {"teams": teams, "updated_at": as_of}
+
+
+@router.get("/api/standings/race-insights")
+async def api_standings_race_insights(conference: str, team_id: str):
+    conf_raw = str(conference or "").strip().lower()
+    if conf_raw not in {"east", "west"}:
+        raise HTTPException(status_code=400, detail="conference must be 'East' or 'West'")
+
+    normalized_conference = "East" if conf_raw == "east" else "West"
+    tid = str(team_id or "").upper().strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="team_id is required")
+
+    standings = get_conference_standings_table()
+    rows = standings.get(conf_raw, [])
+    team_row = next((r for r in rows if str(r.get("team_id") or "").upper() == tid), None)
+    if team_row is None:
+        raise HTTPException(status_code=404, detail=f"Team '{tid}' not found in {normalized_conference} standings")
+
+    return _build_race_insights(normalized_conference, tid)
 
 
 @router.get("/api/teams")
