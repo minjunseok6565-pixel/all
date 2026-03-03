@@ -10,24 +10,24 @@ const TEAM_FULL_NAMES = {
 };
 
 const TACTICS_OFFENSE_SCHEMES = [
-  { key: "Spread_HeavyPnR", label: "heavy_pnr" },
-  { key: "Drive_Kick", label: "drive_kick" },
-  { key: "FiveOut", label: "five_out" },
-  { key: "Motion_SplitCut", label: "motion_split" },
-  { key: "DHO_Chicago", label: "dho_chicago" },
-  { key: "Post_InsideOut", label: "post_inside_out" },
-  { key: "Horns_Elbow", label: "horns_elbow" },
-  { key: "Transition_Early", label: "transition_early" }
+  { key: "Spread_HeavyPnR", label: "헤비 PnR", description: "주볼핸들러 중심 2:2 빈도를 높입니다." },
+  { key: "Drive_Kick", label: "드라이브 앤 킥", description: "돌파 후 외곽 킥아웃으로 찬스를 만듭니다." },
+  { key: "FiveOut", label: "파이브 아웃", description: "5-Out 간격으로 페인트 존을 넓게 사용합니다." },
+  { key: "Motion_SplitCut", label: "모션 스플릿", description: "오프볼 움직임과 컷 위주로 전개합니다." },
+  { key: "DHO_Chicago", label: "DHO 시카고", description: "핸드오프 + 스크린 조합으로 슈터를 살립니다." },
+  { key: "Post_InsideOut", label: "포스트 인사이드-아웃", description: "포스트 터치 이후 외곽으로 전개합니다." },
+  { key: "Horns_Elbow", label: "혼즈 엘보우", description: "하이포스트 2빅 셋에서 의사결정합니다." },
+  { key: "Transition_Early", label: "얼리 트랜지션", description: "세트 오펜스 전 빠른 찬스 창출을 노립니다." }
 ];
 
 const TACTICS_DEFENSE_SCHEMES = [
-  { key: "Drop", label: "drop" },
-  { key: "Switch_Everything", label: "switch_everything" },
-  { key: "Switch_1_4", label: "switch_1_4" },
-  { key: "Hedge_ShowRecover", label: "hedge_show_recover" },
-  { key: "Blitz_TrapPnR", label: "blitz_trap" },
-  { key: "AtTheLevel", label: "at_the_level" },
-  { key: "Zone", label: "zone" }
+  { key: "Drop", label: "드롭", description: "빅맨을 림 근처에 두고 드라이브를 억제합니다." },
+  { key: "Switch_Everything", label: "올 스위치", description: "스크린 상황에서 전원 스위칭합니다." },
+  { key: "Switch_1_4", label: "1-4 스위치", description: "가드-윙 구간 중심으로 스위칭합니다." },
+  { key: "Hedge_ShowRecover", label: "헤지 & 리커버", description: "빅맨 쇼업 후 원위치 복귀를 우선합니다." },
+  { key: "Blitz_TrapPnR", label: "블리츠 트랩", description: "PnR 볼핸들러에 강한 더블팀을 가합니다." },
+  { key: "AtTheLevel", label: "앳 더 레벨", description: "빅맨이 스크린 레벨까지 올라와 저지합니다." },
+  { key: "Zone", label: "존", description: "지역 방어로 드라이브 각도와 패싱 레인을 관리합니다." }
 ];
 
 const TACTICS_OFFENSE_ROLES = [
@@ -46,6 +46,46 @@ const TACTICS_DEFENSE_ROLE_BY_SCHEME = {
   Zone: ["Zone_Top_Left", "Zone_Top_Right", "Zone_Bottom_Left", "Zone_Bottom_Right", "Zone_Bottom_Center"]
 };
 
+const TACTICS_ROLE_LABELS = {
+  Engine_Primary: "1차 볼핸들러",
+  Engine_Secondary: "2차 볼핸들러",
+  Transition_Engine: "트랜지션 전개",
+  Shot_Creator: "크리에이터",
+  Rim_Pressure: "림 압박",
+  SpotUp_Spacer: "스팟업 스페이서",
+  Movement_Shooter: "무브먼트 슈터",
+  Cutter_Finisher: "커터/피니셔",
+  Connector: "커넥터",
+  Roll_Man: "롤맨",
+  ShortRoll_Hub: "쇼트롤 허브",
+  Pop_Threat: "팝 위협",
+  Post_Anchor: "포스트 앵커",
+  PnR_POA_Defender: "POA 디펜더",
+  PnR_Cover_Big_Drop: "드롭 커버 빅",
+  Lowman_Helper: "로우맨 헬퍼",
+  Nail_Helper: "네일 헬퍼",
+  Weakside_Rotator: "약측 로테이터",
+  PnR_POA_Switch: "POA 스위치",
+  PnR_Cover_Big_Switch: "빅 스위치",
+  Switch_Wing_Strong: "윙 스위치(강)",
+  Switch_Wing_Weak: "윙 스위치(약)",
+  Backline_Anchor: "백라인 앵커",
+  PnR_POA_Switch_1_4: "POA 스위치 1-4",
+  PnR_Cover_Big_Switch_1_4: "빅 스위치 1-4",
+  Switch_Wing_Strong_1_4: "윙 스위치 강 1-4",
+  Switch_Wing_Weak_1_4: "윙 스위치 약 1-4",
+  PnR_Cover_Big_HedgeRecover: "헤지 리커버 빅",
+  PnR_POA_Blitz: "POA 블리츠",
+  PnR_Cover_Big_Blitz: "빅 블리츠",
+  PnR_POA_AtTheLevel: "POA 앳더레벨",
+  PnR_Cover_Big_AtTheLevel: "빅 앳더레벨",
+  Zone_Top_Left: "존 탑 좌",
+  Zone_Top_Right: "존 탑 우",
+  Zone_Bottom_Left: "존 바텀 좌",
+  Zone_Bottom_Right: "존 바텀 우",
+  Zone_Bottom_Center: "존 바텀 중앙",
+};
+
 const state = {
   lastSaveSlotId: null,
   selectedTeamId: null,
@@ -60,7 +100,10 @@ const state = {
   trainingFamiliarity: { offense: [], defense: [] },
   trainingDraftSession: null,
   standingsData: null,
+  standingsView: { conference: "east", sortKey: "pct", sortDir: "desc", showAdvanced: false },
   tacticsDraft: null,
+  tacticsSavedSnapshot: "",
+  tacticsDirty: false,
   medicalOverview: null,
   medicalSelectedPlayerId: null,
   rosterView: {
@@ -68,6 +111,8 @@ const state = {
     pos: "ALL",
     sort: "salary_desc",
   },
+  scheduleFilter: { segment: "all", venue: "all" },
+  scheduleGames: [],
 };
 
 const els = {
@@ -95,6 +140,15 @@ const els = {
   scheduleTitle: document.getElementById("schedule-title"),
   scheduleCompletedBody: document.getElementById("schedule-completed-body"),
   scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
+  scheduleHeroMatchup: document.getElementById("schedule-hero-matchup"),
+  scheduleHeroDatetime: document.getElementById("schedule-hero-datetime"),
+  scheduleHeroStatus: document.getElementById("schedule-hero-status"),
+  scheduleHeroVenue: document.getElementById("schedule-hero-venue"),
+  scheduleHeroTacticsBtn: document.getElementById("schedule-hero-tactics-btn"),
+  scheduleInsightCompleted: document.getElementById("schedule-insight-completed"),
+  scheduleInsightUpcoming: document.getElementById("schedule-insight-upcoming"),
+  scheduleInsightHomeAway: document.getElementById("schedule-insight-home-away"),
+  scheduleInsightB2b: document.getElementById("schedule-insight-b2b"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
   tacticsScreen: document.getElementById("tactics-screen"),
   tacticsBackBtn: document.getElementById("tactics-back-btn"),
@@ -104,6 +158,19 @@ const els = {
   tacticsDefenseOptions: document.getElementById("tactics-defense-options"),
   tacticsOffenseCurrent: document.getElementById("tactics-offense-current"),
   tacticsDefenseCurrent: document.getElementById("tactics-defense-current"),
+  tacticsTeamTitle: document.getElementById("tactics-team-title"),
+  tacticsCurrentDate: document.getElementById("tactics-current-date"),
+  tacticsStatusPill: document.getElementById("tactics-status-pill"),
+  tacticsSaveBtn: document.getElementById("tactics-save-btn"),
+  tacticsAutobalanceBtn: document.getElementById("tactics-autobalance-btn"),
+  tacticsMinutesTotal: document.getElementById("tactics-minutes-total"),
+  tacticsMinutesDelta: document.getElementById("tactics-minutes-delta"),
+  tacticsMinutesSplit: document.getElementById("tactics-minutes-split"),
+  tacticsStarterMinutes: document.getElementById("tactics-starter-minutes"),
+  tacticsOffRoleCounts: document.getElementById("tactics-off-role-counts"),
+  tacticsDefRoleCounts: document.getElementById("tactics-def-role-counts"),
+  tacticsRiskList: document.getElementById("tactics-risk-list"),
+  tacticsInsightCopy: document.getElementById("tactics-insight-copy"),
   tacticsStarters: document.getElementById("tactics-starters"),
   tacticsRotation: document.getElementById("tactics-rotation"),
   tacticsRosterList: document.getElementById("tactics-roster-list"),
@@ -119,6 +186,12 @@ const els = {
   medicalBackBtn: document.getElementById("medical-back-btn"),
   collegeBackBtn: document.getElementById("college-back-btn"),
   collegeMetaLine: document.getElementById("college-meta-line"),
+  collegeKpiTopTeam: document.getElementById("college-kpi-top-team"),
+  collegeKpiTopTeamMeta: document.getElementById("college-kpi-top-team-meta"),
+  collegeKpiAvgSrs: document.getElementById("college-kpi-avg-srs"),
+  collegeKpiTopConf: document.getElementById("college-kpi-top-conf"),
+  collegeKpiTopConfMeta: document.getElementById("college-kpi-top-conf-meta"),
+  collegeKpiCutline: document.getElementById("college-kpi-cutline"),
   collegeTabTeams: document.getElementById("college-tab-teams"),
   collegeTabLeaders: document.getElementById("college-tab-leaders"),
   collegeTabBigboard: document.getElementById("college-tab-bigboard"),
@@ -131,9 +204,12 @@ const els = {
   collegeRosterTitle: document.getElementById("college-roster-title"),
   collegeRosterBody: document.getElementById("college-roster-body"),
   collegeLeaderSort: document.getElementById("college-leader-sort"),
+  collegeLeaderQuickSort: document.getElementById("college-leader-quick-sort"),
   collegeLeadersBody: document.getElementById("college-leaders-body"),
+  collegeLeaderDetail: document.getElementById("college-leader-detail"),
   collegeExpertSelect: document.getElementById("college-expert-select"),
   collegeBigboardBody: document.getElementById("college-bigboard-body"),
+  collegeBigboardDetail: document.getElementById("college-bigboard-detail"),
   collegeScoutSelect: document.getElementById("college-scout-select"),
   collegeScoutPlayerSelect: document.getElementById("college-scout-player-select"),
   collegeAssignBtn: document.getElementById("college-assign-btn"),
@@ -144,8 +220,21 @@ const els = {
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
   trainingTypeButtons: document.getElementById("training-type-buttons"),
   trainingDetailPanel: document.getElementById("training-detail-panel"),
-  standingsEastBody: document.getElementById("standings-east-body"),
-  standingsWestBody: document.getElementById("standings-west-body"),
+  standingsBody: document.getElementById("standings-body"),
+  standingsCardTitle: document.getElementById("standings-card-title"),
+  standingsTable: document.getElementById("standings-table"),
+  standingsConferenceToggle: document.getElementById("standings-conference-toggle"),
+  standingsSortKey: document.getElementById("standings-sort-key"),
+  standingsSortDirBtn: document.getElementById("standings-sort-dir-btn"),
+  standingsAdvancedToggle: document.getElementById("standings-advanced-toggle"),
+  standingsSummaryOffenseTeam: document.getElementById("standings-summary-offense-team"),
+  standingsSummaryOffenseValue: document.getElementById("standings-summary-offense-value"),
+  standingsSummaryDefenseTeam: document.getElementById("standings-summary-defense-team"),
+  standingsSummaryDefenseValue: document.getElementById("standings-summary-defense-value"),
+  standingsSummaryDiffTeam: document.getElementById("standings-summary-diff-team"),
+  standingsSummaryDiffValue: document.getElementById("standings-summary-diff-value"),
+  standingsSummaryRaceTeam: document.getElementById("standings-summary-race-team"),
+  standingsSummaryRaceValue: document.getElementById("standings-summary-race-value"),
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
@@ -227,6 +316,60 @@ function collegeStat(player, key) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function escHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;"
+  }[ch]));
+}
+
+function collegeStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized.includes("complete") || normalized.includes("done") || normalized.includes("완료")) return "college-status-done";
+  if (normalized.includes("progress") || normalized.includes("running") || normalized.includes("진행")) return "college-status-progress";
+  return "college-status-pending";
+}
+
+function renderCollegeKpis(teams) {
+  if (!teams.length) {
+    els.collegeKpiTopTeam.textContent = "-";
+    els.collegeKpiTopTeamMeta.textContent = "SRS -";
+    els.collegeKpiAvgSrs.textContent = "-";
+    els.collegeKpiTopConf.textContent = "-";
+    els.collegeKpiTopConfMeta.textContent = "상위팀 기준";
+    els.collegeKpiCutline.textContent = "-";
+    return;
+  }
+  const sorted = [...teams].sort((a, b) => Number(b?.srs ?? -9999) - Number(a?.srs ?? -9999));
+  const top = sorted[0] || {};
+  const srsValues = sorted.map((t) => Number(t?.srs)).filter((n) => Number.isFinite(n));
+  const avgSrs = srsValues.length ? (srsValues.reduce((acc, n) => acc + n, 0) / srsValues.length) : 0;
+  const confMap = new Map();
+  sorted.forEach((t) => {
+    const conf = t?.conference || "-";
+    if (!confMap.has(conf)) confMap.set(conf, Number(t?.srs ?? 0));
+  });
+  const topConf = [...confMap.entries()].sort((a, b) => b[1] - a[1])[0];
+  const cutline = sorted[19] || sorted[sorted.length - 1] || {};
+
+  els.collegeKpiTopTeam.textContent = top?.name || top?.college_team_id || "-";
+  els.collegeKpiTopTeamMeta.textContent = `SRS ${Number(top?.srs ?? 0).toFixed(2)}`;
+  els.collegeKpiAvgSrs.textContent = avgSrs.toFixed(2);
+  els.collegeKpiTopConf.textContent = topConf?.[0] || "-";
+  els.collegeKpiTopConfMeta.textContent = `대표 SRS ${(topConf?.[1] ?? 0).toFixed(2)}`;
+  els.collegeKpiCutline.textContent = Number(cutline?.srs ?? 0).toFixed(2);
+}
+
+function setCollegeQuickSortActive(sort) {
+  if (!els.collegeLeaderQuickSort) return;
+  els.collegeLeaderQuickSort.querySelectorAll(".college-pill").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.sort === sort);
+  });
+}
+
 function switchCollegeTab(tab) {
   const mapping = {
     teams: [els.collegeTabTeams, els.collegePanelTeams],
@@ -260,10 +403,13 @@ function renderCollegeTeams(teams) {
   sorted.forEach((team, idx) => {
     const tr = document.createElement("tr");
     tr.className = "roster-row";
+    tr.dataset.teamId = team?.college_team_id || "";
+    const rankClass = idx === 0 ? "top1" : idx === 1 ? "top2" : idx === 2 ? "top3" : "";
+    const conference = escHtml(team?.conference || "-");
     tr.innerHTML = `
-      <td>${idx + 1}</td>
-      <td class="standings-team-cell">${team?.name || team?.college_team_id || "-"}</td>
-      <td>${team?.conference || "-"}</td>
+      <td><span class="college-rank-badge ${rankClass}">${idx + 1}</span></td>
+      <td class="standings-team-cell">${escHtml(team?.name || team?.college_team_id || "-")}</td>
+      <td><span class="college-chip">${conference}</span></td>
       <td>${team?.wins ?? "-"}</td>
       <td>${team?.losses ?? "-"}</td>
       <td>${Number(team?.srs ?? 0).toFixed(2)}</td>
@@ -282,10 +428,13 @@ async function loadCollegeTeamDetail(teamId) {
   const teamName = payload?.team?.name || teamId;
   const roster = payload?.roster || [];
   state.selectedCollegeTeamId = teamId;
+  [...els.collegeTeamsBody.querySelectorAll("tr")].forEach((row) => {
+    row.classList.toggle("is-selected", row.dataset.teamId === teamId);
+  });
   els.collegeRosterTitle.textContent = `${teamName} 로스터`;
   els.collegeRosterBody.innerHTML = roster.length ? roster.map((p) => `
     <tr>
-      <td>${p?.name || "-"}</td>
+      <td>${escHtml(p?.name || "-")}</td>
       <td>${p?.pos || "-"}</td>
       <td>${p?.class_year || "-"}</td>
       <td>${collegeStat(p, "pts").toFixed(1)}</td>
@@ -299,11 +448,14 @@ async function loadCollegeLeaders() {
   const sort = state.collegeLeadersSort || "pts";
   const payload = await fetchJson(`/api/college/players?sort=${encodeURIComponent(sort)}&order=desc&limit=100`);
   const players = payload?.players || [];
-  els.collegeLeadersBody.innerHTML = players.length ? players.map((p, idx) => `
-    <tr>
-      <td>${idx + 1}</td>
-      <td>${p?.name || "-"}</td>
-      <td>${p?.college_team_name || p?.college_team_id || "-"}</td>
+  setCollegeQuickSortActive(sort);
+  els.collegeLeadersBody.innerHTML = players.length ? players.map((p, idx) => {
+    const rankClass = idx === 0 ? "top1" : idx === 1 ? "top2" : idx === 2 ? "top3" : "";
+    return `
+    <tr class="college-leader-row" data-player-id="${escHtml(p?.player_id || "")}">
+      <td><span class="college-rank-badge ${rankClass}">${idx + 1}</span></td>
+      <td>${escHtml(p?.name || "-")}</td>
+      <td>${escHtml(p?.college_team_name || p?.college_team_id || "-")}</td>
       <td>${p?.pos || "-"}</td>
       <td>${collegeStat(p, "pts").toFixed(1)}</td>
       <td>${collegeStat(p, "reb").toFixed(1)}</td>
@@ -311,7 +463,37 @@ async function loadCollegeLeaders() {
       <td>${collegeStat(p, "stl").toFixed(1)}</td>
       <td>${collegeStat(p, "blk").toFixed(1)}</td>
     </tr>
-  `).join("") : `<tr><td class="schedule-empty" colspan="9">리더보드 데이터가 없습니다.</td></tr>`;
+  `;
+  }).join("") : `<tr><td class="schedule-empty" colspan="9">리더보드 데이터가 없습니다.</td></tr>`;
+
+  if (!players.length) {
+    els.collegeLeaderDetail.innerHTML = `<p class="college-empty-copy">선수를 선택하세요.</p>`;
+    return;
+  }
+
+  const renderLeaderDetail = (player) => {
+    els.collegeLeaderDetail.innerHTML = `
+      <p class="college-name">${escHtml(player?.name || "-")}</p>
+      <div class="college-kv-row"><span>팀</span><span>${escHtml(player?.college_team_name || player?.college_team_id || "-")}</span></div>
+      <div class="college-kv-row"><span>포지션</span><span>${escHtml(player?.pos || "-")}</span></div>
+      <div class="college-kv-row"><span>PTS</span><span>${collegeStat(player, "pts").toFixed(1)}</span></div>
+      <div class="college-kv-row"><span>REB</span><span>${collegeStat(player, "reb").toFixed(1)}</span></div>
+      <div class="college-kv-row"><span>AST</span><span>${collegeStat(player, "ast").toFixed(1)}</span></div>
+      <div class="college-kv-row"><span>STL</span><span>${collegeStat(player, "stl").toFixed(1)}</span></div>
+      <div class="college-kv-row"><span>BLK</span><span>${collegeStat(player, "blk").toFixed(1)}</span></div>
+    `;
+  };
+
+  const rows = [...els.collegeLeadersBody.querySelectorAll("tr.college-leader-row")];
+  rows.forEach((row, idx) => {
+    row.addEventListener("click", () => {
+      rows.forEach((r) => r.classList.remove("is-selected"));
+      row.classList.add("is-selected");
+      renderLeaderDetail(players[idx]);
+    });
+  });
+  rows[0]?.classList.add("is-selected");
+  renderLeaderDetail(players[0]);
 }
 
 async function loadCollegeBigboard() {
@@ -322,15 +504,42 @@ async function loadCollegeBigboard() {
   }
   const payload = await fetchJson(`/api/offseason/draft/bigboard/expert?expert_id=${encodeURIComponent(expertId)}&pool_mode=auto`);
   const board = payload?.board || [];
-  els.collegeBigboardBody.innerHTML = board.length ? board.map((r) => `
-    <tr>
+  els.collegeBigboardBody.innerHTML = board.length ? board.map((r, idx) => `
+    <tr class="college-bigboard-row" data-index="${idx}">
       <td>${r?.rank ?? "-"}</td>
-      <td>${r?.name || "-"}</td>
+      <td>${escHtml(r?.name || "-")}</td>
       <td>${r?.pos || "-"}</td>
-      <td>${r?.tier || "-"}</td>
-      <td>${r?.summary || "-"}</td>
+      <td><span class="college-chip">${escHtml(r?.tier || "-")}</span></td>
+      <td>${escHtml(r?.summary || "-")}</td>
     </tr>
   `).join("") : `<tr><td class="schedule-empty" colspan="5">빅보드 데이터가 없습니다.</td></tr>`;
+
+  if (!board.length) {
+    els.collegeBigboardDetail.innerHTML = `<p class="college-empty-copy">빅보드에서 선수를 선택하세요.</p>`;
+    return;
+  }
+
+  const renderBigboardDetail = (row) => {
+    const summary = String(row?.summary || "-");
+    els.collegeBigboardDetail.innerHTML = `
+      <p class="college-name">${escHtml(row?.name || "-")}</p>
+      <div class="college-kv-row"><span>랭크</span><span>${escHtml(row?.rank ?? "-")}</span></div>
+      <div class="college-kv-row"><span>포지션</span><span>${escHtml(row?.pos || "-")}</span></div>
+      <div class="college-kv-row"><span>티어</span><span>${escHtml(row?.tier || "-")}</span></div>
+      <p class="college-summary-text">${escHtml(summary)}</p>
+    `;
+  };
+
+  const rows = [...els.collegeBigboardBody.querySelectorAll("tr.college-bigboard-row")];
+  rows.forEach((el, idx) => {
+    el.addEventListener("click", () => {
+      rows.forEach((r) => r.classList.remove("is-selected"));
+      el.classList.add("is-selected");
+      renderBigboardDetail(board[idx]);
+    });
+  });
+  rows[0]?.classList.add("is-selected");
+  renderBigboardDetail(board[0]);
 }
 
 async function loadCollegeScouting() {
@@ -344,16 +553,20 @@ async function loadCollegeScouting() {
   state.scoutingReports = reportsPayload?.reports || [];
   const players = playersPayload?.players || [];
 
-  els.collegeScoutSelect.innerHTML = state.scoutingScouts.map((s) => `<option value="${s.scout_id}">${s.display_name} (${s.specialty_key})</option>`).join("");
-  els.collegeScoutPlayerSelect.innerHTML = players.map((p) => `<option value="${p.player_id}">${p.name} · ${p.college_team_name || p.college_team_id}</option>`).join("");
+  els.collegeScoutSelect.innerHTML = state.scoutingScouts.length
+    ? state.scoutingScouts.map((s) => `<option value="${escHtml(s.scout_id)}">${escHtml(s.display_name)} (${escHtml(s.specialty_key)})</option>`).join("")
+    : `<option value="">사용 가능한 스카우터 없음</option>`;
+  els.collegeScoutPlayerSelect.innerHTML = players.length
+    ? players.map((p) => `<option value="${escHtml(p.player_id)}">${escHtml(p.name)} · ${escHtml(p.college_team_name || p.college_team_id || "-")}</option>`).join("")
+    : `<option value="">선수 데이터 없음</option>`;
 
   els.collegeReportsBody.innerHTML = state.scoutingReports.length ? state.scoutingReports.map((r) => `
     <tr>
       <td>${String(r?.as_of_date || "-").slice(0, 10)}</td>
-      <td>${r?.scout?.display_name || r?.scout?.scout_id || "-"}</td>
-      <td>${r?.player_snapshot?.name || r?.target_player_id || "-"}</td>
-      <td>${r?.status || "-"}</td>
-      <td>${(r?.report_text || "").slice(0, 80) || "(텍스트 리포트 없음)"}</td>
+      <td>${escHtml(r?.scout?.display_name || r?.scout?.scout_id || "-")}</td>
+      <td>${escHtml(r?.player_snapshot?.name || r?.target_player_id || "-")}</td>
+      <td><span class="college-status-badge ${collegeStatusClass(r?.status)}">${escHtml(r?.status || "-")}</span></td>
+      <td>${escHtml((r?.report_text || "").slice(0, 80) || "(텍스트 리포트 없음)")}</td>
     </tr>
   `).join("") : `<tr><td class="schedule-empty" colspan="5">리포트가 없습니다. 배정 후 월말 진행 시 생성됩니다.</td></tr>`;
 }
@@ -376,11 +589,13 @@ async function showCollegeScreen() {
 
     els.collegeMetaLine.textContent = `시즌 ${meta?.season_year || "-"} · 대학팀 ${meta?.college?.teams || 0}개 · 예정 드래프트 ${meta?.upcoming_draft_year || "-"}`;
     renderCollegeTeams(state.collegeTeams);
+    renderCollegeKpis(state.collegeTeams);
     if (state.selectedCollegeTeamId) {
       await loadCollegeTeamDetail(state.selectedCollegeTeamId);
     }
 
     const sortOptions = ["pts", "reb", "ast", "stl", "blk", "mpg", "games", "ts_pct", "usg", "fg_pct"];
+    if (!state.collegeLeadersSort) state.collegeLeadersSort = "pts";
     els.collegeLeaderSort.innerHTML = sortOptions.map((k) => `<option value="${k}">${k.toUpperCase()}</option>`).join("");
     els.collegeLeaderSort.value = state.collegeLeadersSort;
     await loadCollegeLeaders();
@@ -446,6 +661,123 @@ function renderEmptyScheduleRow(colSpan, text) {
   return `<tr><td colspan="${colSpan}" class="schedule-empty">${text}</td></tr>`;
 }
 
+
+function scheduleVenueType(game) {
+  const label = String(game?.opponent_label || "").trim().toLowerCase();
+  if (label.startsWith("vs")) return "home";
+  if (label.startsWith("@")) return "away";
+  return "all";
+}
+
+function scheduleGameDate(game) {
+  const iso = String(game?.date || "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return new Date(`${iso}T00:00:00`);
+  const mmdd = String(game?.date_mmdd || "");
+  const m = mmdd.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const seasonYear = month >= 10 ? 2025 : 2026;
+  return new Date(seasonYear, month - 1, day);
+}
+
+function dateDiffDays(gameA, gameB) {
+  const a = scheduleGameDate(gameA);
+  const b = scheduleGameDate(gameB);
+  if (!a || !b) return null;
+  return Math.round((b - a) / (1000 * 60 * 60 * 24));
+}
+
+function applyScheduleFilter(games) {
+  const segment = state.scheduleFilter?.segment || "all";
+  const venue = state.scheduleFilter?.venue || "all";
+  return (games || []).filter((g) => {
+    const completed = !!g?.is_completed;
+    const passSegment = segment === "all" || (segment === "completed" && completed) || (segment === "upcoming" && !completed);
+    const gameVenue = scheduleVenueType(g);
+    const passVenue = venue === "all" || gameVenue === venue;
+    return passSegment && passVenue;
+  });
+}
+
+function renderScheduleHero(games) {
+  const upcoming = (games || []).filter((g) => !g?.is_completed);
+  const nextGame = upcoming[0];
+  if (!nextGame) {
+    els.scheduleHeroMatchup.textContent = "예정된 다음 경기가 없습니다.";
+    els.scheduleHeroDatetime.textContent = "-";
+    els.scheduleHeroStatus.textContent = "IDLE";
+    els.scheduleHeroVenue.textContent = "-";
+    return;
+  }
+  const short = nextGame.opponent_label || "-";
+  const team = nextGame.opponent_team_name || nextGame.opponent_team_id || "상대팀";
+  els.scheduleHeroMatchup.textContent = `${short} ${team}`;
+  els.scheduleHeroDatetime.textContent = `${nextGame.date_mmdd || "--/--"} · ${nextGame.tipoff_time || "--:-- --"}`;
+  els.scheduleHeroStatus.textContent = "UPCOMING";
+  els.scheduleHeroVenue.textContent = scheduleVenueType(nextGame) === "home" ? "HOME" : "AWAY";
+}
+
+function renderScheduleInsights(games) {
+  const list = games || [];
+  const completed = list.filter((g) => g?.is_completed);
+  const upcoming = list.filter((g) => !g?.is_completed);
+  const home = list.filter((g) => scheduleVenueType(g) === "home").length;
+  const away = list.filter((g) => scheduleVenueType(g) === "away").length;
+  const sorted = [...list].sort((a, b) => {
+    const ad = scheduleGameDate(a)?.getTime() || 0;
+    const bd = scheduleGameDate(b)?.getTime() || 0;
+    return ad - bd;
+  });
+  let b2b = 0;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const d = dateDiffDays(sorted[i - 1], sorted[i]);
+    if (d === 1) b2b += 1;
+  }
+  els.scheduleInsightCompleted.textContent = String(completed.length);
+  els.scheduleInsightUpcoming.textContent = String(upcoming.length);
+  els.scheduleInsightHomeAway.textContent = `${home} / ${away}`;
+  els.scheduleInsightB2b.textContent = `${b2b}회`;
+}
+
+function refreshScheduleFilterButtons() {
+  document.querySelectorAll('#schedule-screen .schedule-filter-btn').forEach((btn) => {
+    const group = btn.dataset.filterGroup;
+    const value = btn.dataset.filterValue;
+    const active = state.scheduleFilter?.[group] === value;
+    btn.classList.toggle('is-active', active);
+  });
+}
+
+function renderScheduleScreenData() {
+  const source = state.scheduleGames || [];
+  renderScheduleHero(source);
+  renderScheduleInsights(source);
+  const filtered = applyScheduleFilter(source);
+  const completed = filtered.filter((g) => g?.is_completed);
+  const upcoming = filtered.filter((g) => !g?.is_completed);
+  renderScheduleTables(filtered);
+  if ((state.scheduleFilter?.segment === 'all' || state.scheduleFilter?.segment === 'completed') && completed.length === 0) {
+    els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, '조건에 맞는 완료 경기가 없습니다.');
+  }
+  if ((state.scheduleFilter?.segment === 'all' || state.scheduleFilter?.segment === 'upcoming') && upcoming.length === 0) {
+    els.scheduleUpcomingBody.innerHTML = renderEmptyScheduleRow(3, '조건에 맞는 예정 경기가 없습니다.');
+  }
+  refreshScheduleFilterButtons();
+}
+
+function bindScheduleFilters() {
+  document.querySelectorAll('#schedule-screen .schedule-filter-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const group = btn.dataset.filterGroup;
+      const value = btn.dataset.filterValue;
+      if (!group || !value) return;
+      state.scheduleFilter[group] = value;
+      renderScheduleScreenData();
+    });
+  });
+}
+
 function renderScheduleTables(games) {
   const completed = (games || []).filter((g) => g?.is_completed);
   const upcoming = (games || []).filter((g) => !g?.is_completed);
@@ -491,7 +823,8 @@ async function showScheduleScreen() {
     const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.scheduleTitle.textContent = `${teamName} 정규 시즌 일정`;
-    renderScheduleTables(schedule?.games || []);
+    state.scheduleGames = schedule?.games || [];
+    renderScheduleScreenData();
     activateScreen(els.scheduleScreen);
   } catch (e) {
     els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, `스케줄 로딩 실패: ${e.message}`);
@@ -1413,32 +1746,168 @@ function formatSignedDiff(value) {
   return `${n > 0 ? "+" : ""}${n.toFixed(1)}`;
 }
 
-function renderStandingsRows(tbody, rows) {
-  tbody.innerHTML = "";
-  (rows || []).forEach((row) => {
+function parseStreakScore(streak) {
+  const value = String(streak || "-").trim().toUpperCase();
+  const match = value.match(/^([WL])(\d+)$/);
+  if (!match) return 0;
+  const score = Number(match[2] || 0);
+  return match[1] === "W" ? score : -score;
+}
+
+function parseL10Score(l10) {
+  const value = String(l10 || "0-0").trim();
+  const match = value.match(/^(\d+)-(\d+)$/);
+  if (!match) return 0;
+  return Number(match[1] || 0) - Number(match[2] || 0);
+}
+
+function standingsTier(rank) {
+  const r = Number(rank || 999);
+  if (r <= 6) return "playoff";
+  if (r <= 10) return "playin";
+  return "out";
+}
+
+function sortStandingsRows(rows, sortKey, sortDir) {
+  const dir = sortDir === "asc" ? 1 : -1;
+  const safe = [...(rows || [])];
+  safe.sort((a, b) => {
+    const rankA = Number(a?.rank || 999);
+    const rankB = Number(b?.rank || 999);
+    let va = 0;
+    let vb = 0;
+
+    switch (sortKey) {
+      case "wins":
+        va = Number(a?.wins || 0);
+        vb = Number(b?.wins || 0);
+        break;
+      case "diff":
+        va = Number(a?.diff || 0);
+        vb = Number(b?.diff || 0);
+        break;
+      case "strk":
+        va = parseStreakScore(a?.strk);
+        vb = parseStreakScore(b?.strk);
+        break;
+      case "l10":
+        va = parseL10Score(a?.l10);
+        vb = parseL10Score(b?.l10);
+        break;
+      case "ppg":
+        va = Number(a?.ppg || 0);
+        vb = Number(b?.ppg || 0);
+        break;
+      case "opp_ppg":
+        va = Number(a?.opp_ppg || 0);
+        vb = Number(b?.opp_ppg || 0);
+        break;
+      case "pct":
+      default:
+        va = Number(a?.pct || 0);
+        vb = Number(b?.pct || 0);
+        break;
+    }
+
+    if (va === vb) return rankA - rankB;
+    return (va - vb) * dir;
+  });
+  return safe;
+}
+
+function buildStandingsSummary(rows) {
+  const source = [...(rows || [])];
+  if (!source.length) {
+    return {
+      offense: { team: "-", value: "PPG -" },
+      defense: { team: "-", value: "OPP PPG -" },
+      diff: { team: "-", value: "DIFF -" },
+      race: { team: "-", value: "GB -" }
+    };
+  }
+  const by = (getter, mode) => source.reduce((best, row) => {
+    if (!best) return row;
+    const bv = getter(best);
+    const rv = getter(row);
+    if (mode === "max") return rv > bv ? row : best;
+    return rv < bv ? row : best;
+  }, null);
+
+  const offense = by((r) => Number(r?.ppg || 0), "max");
+  const defense = by((r) => Number(r?.opp_ppg || 0), "min");
+  const diff = by((r) => Number(r?.diff || 0), "max");
+  const racePool = source.filter((r) => Number(r?.rank || 99) >= 7 && Number(r?.rank || 99) <= 10);
+  const race = racePool.sort((a, b) => Number(a?.rank || 99) - Number(b?.rank || 99))[0] || source[0];
+  const name = (r) => TEAM_FULL_NAMES[String(r?.team_id || "").toUpperCase()] || String(r?.team_id || "-");
+
+  return {
+    offense: { team: name(offense), value: `PPG ${Number(offense?.ppg || 0).toFixed(1)}` },
+    defense: { team: name(defense), value: `OPP PPG ${Number(defense?.opp_ppg || 0).toFixed(1)}` },
+    diff: { team: name(diff), value: `DIFF ${formatSignedDiff(diff?.diff)}` },
+    race: { team: name(race), value: `GB ${race?.gb_display ?? "-"}` }
+  };
+}
+
+function renderStandingsSummary(summary) {
+  els.standingsSummaryOffenseTeam.textContent = summary.offense.team;
+  els.standingsSummaryOffenseValue.textContent = summary.offense.value;
+  els.standingsSummaryDefenseTeam.textContent = summary.defense.team;
+  els.standingsSummaryDefenseValue.textContent = summary.defense.value;
+  els.standingsSummaryDiffTeam.textContent = summary.diff.team;
+  els.standingsSummaryDiffValue.textContent = summary.diff.value;
+  els.standingsSummaryRaceTeam.textContent = summary.race.team;
+  els.standingsSummaryRaceValue.textContent = summary.race.value;
+}
+
+function renderStandingsTable() {
+  const conf = state.standingsView.conference;
+  const rows = conf === "west" ? (state.standingsData?.west || []) : (state.standingsData?.east || []);
+  const sorted = sortStandingsRows(rows, state.standingsView.sortKey, state.standingsView.sortDir);
+  els.standingsBody.innerHTML = "";
+  els.standingsCardTitle.textContent = conf === "west" ? "Western Conference" : "Eastern Conference";
+
+  sorted.forEach((row) => {
     const tr = document.createElement("tr");
     const teamId = String(row?.team_id || "").toUpperCase();
     const diff = Number(row?.diff || 0);
     const diffClass = diff > 0 ? "standings-diff-positive" : diff < 0 ? "standings-diff-negative" : "";
+    const strk = String(row?.strk || "-").toUpperCase();
+    const strkClass = strk.startsWith("W") ? "is-positive" : strk.startsWith("L") ? "is-negative" : "";
+    tr.className = `standings-row-tier-${standingsTier(row?.rank)}`;
     tr.innerHTML = `
       <td>${row?.rank ?? "-"}</td>
-      <td class="standings-team-cell">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</td>
-      <td>${row?.wins ?? 0}</td>
-      <td>${row?.losses ?? 0}</td>
+      <td class="standings-team-cell"><span class="standings-team-pill">${TEAM_FULL_NAMES[teamId] || teamId || "-"}</span></td>
+      <td>${row?.wins ?? 0}-${row?.losses ?? 0}</td>
       <td>${row?.pct || ".000"}</td>
       <td>${row?.gb_display ?? "-"}</td>
-      <td>${row?.home || "0-0"}</td>
-      <td>${row?.away || "0-0"}</td>
-      <td>${row?.div || "0-0"}</td>
-      <td>${row?.conf || "0-0"}</td>
-      <td>${Number(row?.ppg || 0).toFixed(1)}</td>
-      <td>${Number(row?.opp_ppg || 0).toFixed(1)}</td>
-      <td class="${diffClass}">${formatSignedDiff(row?.diff)}</td>
-      <td>${row?.strk || "-"}</td>
+      <td><span class="standings-strk-badge ${strkClass}">${row?.strk || "-"}</span></td>
       <td>${row?.l10 || "0-0"}</td>
+      <td class="${diffClass}">${formatSignedDiff(row?.diff)}</td>
+      <td class="standings-advanced-col">${row?.home || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.away || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.div || "0-0"}</td>
+      <td class="standings-advanced-col">${row?.conf || "0-0"}</td>
+      <td class="standings-advanced-col">${Number(row?.ppg || 0).toFixed(1)}</td>
+      <td class="standings-advanced-col">${Number(row?.opp_ppg || 0).toFixed(1)}</td>
     `;
-    tbody.appendChild(tr);
+    els.standingsBody.appendChild(tr);
   });
+
+  const summary = buildStandingsSummary(rows);
+  renderStandingsSummary(summary);
+
+  if (els.standingsConferenceToggle) {
+    Array.from(els.standingsConferenceToggle.querySelectorAll("button")).forEach((btn) => {
+      const active = btn.dataset.conference === conf;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  }
+
+  els.standingsSortDirBtn.textContent = state.standingsView.sortDir === "asc" ? "↑" : "↓";
+  els.standingsSortKey.value = state.standingsView.sortKey;
+  els.standingsTable.dataset.showAdvanced = state.standingsView.showAdvanced ? "true" : "false";
+  els.standingsAdvancedToggle.textContent = state.standingsView.showAdvanced ? "고급 지표 숨기기" : "고급 지표 보기";
 }
 
 async function showStandingsScreen() {
@@ -1446,8 +1915,7 @@ async function showStandingsScreen() {
   try {
     const payload = await fetchJson("/api/standings/table");
     state.standingsData = payload;
-    renderStandingsRows(els.standingsEastBody, payload?.east || []);
-    renderStandingsRows(els.standingsWestBody, payload?.west || []);
+    renderStandingsTable();
     activateScreen(els.standingsScreen);
   } finally {
     setLoading(false);
@@ -1507,6 +1975,10 @@ function tacticsSchemeLabel(schemes, key) {
   return found ? found.label : key;
 }
 
+function tacticsRoleLabel(key) {
+  return TACTICS_ROLE_LABELS[key] || key;
+}
+
 function getDefenseRolesForScheme(key) {
   return TACTICS_DEFENSE_ROLE_BY_SCHEME[key] || TACTICS_DEFENSE_ROLE_BY_SCHEME.Drop;
 }
@@ -1536,12 +2008,36 @@ function buildTacticsDraft(roster) {
   return { offenseScheme: "Spread_HeavyPnR", defenseScheme: "Drop", starters, rotation };
 }
 
+function tacticsSnapshot() {
+  return JSON.stringify(state.tacticsDraft || {});
+}
+
+function setTacticsDirty(nextDirty) {
+  state.tacticsDirty = !!nextDirty;
+  if (!els.tacticsStatusPill) return;
+  els.tacticsStatusPill.textContent = state.tacticsDirty ? "수정됨" : "저장됨";
+  els.tacticsStatusPill.className = `tactics-status-pill ${state.tacticsDirty ? "dirty" : "saved"}`;
+}
+
+function markTacticsDirty() {
+  if (!state.tacticsSavedSnapshot) {
+    setTacticsDirty(true);
+    return;
+  }
+  setTacticsDirty(tacticsSnapshot() !== state.tacticsSavedSnapshot);
+}
+
 function renderSchemeOptions(kind) {
   const isOff = kind === "offense";
   const optionsEl = isOff ? els.tacticsOffenseOptions : els.tacticsDefenseOptions;
   const list = isOff ? TACTICS_OFFENSE_SCHEMES : TACTICS_DEFENSE_SCHEMES;
   const selected = isOff ? state.tacticsDraft.offenseScheme : state.tacticsDraft.defenseScheme;
-  optionsEl.innerHTML = list.map((s) => `<button type="button" data-key="${s.key}">${s.label}${s.key === selected ? " ✓" : ""}</button>`).join("");
+  optionsEl.innerHTML = list.map((s) => `
+    <button type="button" data-key="${s.key}" class="${s.key === selected ? "is-selected" : ""}">
+      <strong>${s.label}</strong>
+      <span>${s.description || s.key}</span>
+    </button>
+  `).join("");
   optionsEl.querySelectorAll("button[data-key]").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (isOff) state.tacticsDraft.offenseScheme = btn.dataset.key;
@@ -1553,21 +2049,17 @@ function renderSchemeOptions(kind) {
         });
       }
       optionsEl.classList.add("hidden");
+      markTacticsDirty();
       renderTacticsScreen();
     });
   });
 }
 
-function rosterNameByPid(pid) {
-  const row = (state.rosterRows || []).find((x) => String(x.player_id) === String(pid));
-  return row ? String(row.name || row.player_id) : "-";
-}
-
 function buildLineupRowHtml(group, idx, row, defenseRoles) {
   const players = state.rosterRows || [];
   const playerOptions = ['<option value="">- 선택 -</option>', ...players.map((r) => `<option value="${r.player_id}" ${String(r.player_id) === String(row.pid) ? "selected" : ""}>${r.name || r.player_id}</option>`)].join("");
-  const offOptions = TACTICS_OFFENSE_ROLES.map((role) => `<option value="${role}" ${role === row.offenseRole ? "selected" : ""}>${role}</option>`).join("");
-  const defOptions = defenseRoles.map((role) => `<option value="${role}" ${role === row.defenseRole ? "selected" : ""}>${role}</option>`).join("");
+  const offOptions = TACTICS_OFFENSE_ROLES.map((role) => `<option value="${role}" ${role === row.offenseRole ? "selected" : ""}>${tacticsRoleLabel(role)}</option>`).join("");
+  const defOptions = defenseRoles.map((role) => `<option value="${role}" ${role === row.defenseRole ? "selected" : ""}>${tacticsRoleLabel(role)}</option>`).join("");
   return `
     <div class="tactics-lineup-row" data-group="${group}" data-idx="${idx}">
       <select data-field="pid">${playerOptions}</select>
@@ -1582,6 +2074,66 @@ function validateDefenseRoleUnique(changedEl, nextValue) {
   const all = [...document.querySelectorAll('.tactics-lineup-row select[data-field="defenseRole"]')];
   const dup = all.find((el) => el !== changedEl && el.value === nextValue);
   return !dup;
+}
+
+function computeTacticsSummary() {
+  const starters = state.tacticsDraft?.starters || [];
+  const rotation = state.tacticsDraft?.rotation || [];
+  const rows = [...starters, ...rotation];
+  const starterMinutes = starters.reduce((sum, x) => sum + Number(x.minutes || 0), 0);
+  const benchMinutes = rotation.reduce((sum, x) => sum + Number(x.minutes || 0), 0);
+  const totalMinutes = starterMinutes + benchMinutes;
+
+  const offCounts = {};
+  const defCounts = {};
+  rows.forEach((r) => {
+    if (r.offenseRole) offCounts[r.offenseRole] = (offCounts[r.offenseRole] || 0) + 1;
+    if (r.defenseRole) defCounts[r.defenseRole] = (defCounts[r.defenseRole] || 0) + 1;
+  });
+
+  const risks = [];
+  if (totalMinutes !== 240) risks.push(`출전 시간 총합이 ${240 - totalMinutes > 0 ? `${240 - totalMinutes}분 부족` : `${totalMinutes - 240}분 초과`}입니다.`);
+  if ((offCounts.Engine_Primary || 0) + (offCounts.Engine_Secondary || 0) < 2) risks.push("볼핸들러 역할이 부족합니다.");
+  if ((offCounts.SpotUp_Spacer || 0) + (offCounts.Movement_Shooter || 0) < 2) risks.push("스페이싱 자원이 부족합니다.");
+  if (!Object.keys(defCounts).some((k) => String(k).includes("Lowman") || String(k).includes("Anchor"))) risks.push("백라인 헬프/앵커 역할이 약합니다.");
+  if (!risks.length) risks.push("주요 리스크 없음. 현재 밸런스가 안정적입니다.");
+
+  let insight = "스타터와 벤치의 역할을 분리해 48분 내내 공격 방향성을 유지하세요.";
+  if (totalMinutes > 240) insight = "총합 시간이 초과되었습니다. 벤치 유닛 분배를 우선 조정하세요.";
+  else if (totalMinutes < 240) insight = "총합 시간이 부족합니다. 주축 볼핸들러/빅맨의 시간을 소폭 늘리세요.";
+
+  return { starterMinutes, benchMinutes, totalMinutes, offCounts, defCounts, risks, insight };
+}
+
+function renderRoleCounts(container, counts) {
+  const items = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([role, cnt]) => `<span class="tactics-chip"><strong>${tacticsRoleLabel(role)}</strong><em>${cnt}</em></span>`);
+  container.innerHTML = items.length ? items.join("") : '<span class="tactics-chip muted">데이터 없음</span>';
+}
+
+function renderTacticsSummaryPanel() {
+  const summary = computeTacticsSummary();
+  els.tacticsMinutesTotal.textContent = `${summary.totalMinutes}분`;
+  els.tacticsMinutesSplit.textContent = `${summary.starterMinutes} / ${summary.benchMinutes}`;
+  els.tacticsStarterMinutes.textContent = `스타터 ${summary.starterMinutes}분`;
+
+  const delta = 240 - summary.totalMinutes;
+  if (delta === 0) {
+    els.tacticsMinutesDelta.textContent = "목표 240분 달성";
+    els.tacticsMinutesDelta.className = "kpi-sub is-good";
+  } else if (delta > 0) {
+    els.tacticsMinutesDelta.textContent = `${delta}분 부족`;
+    els.tacticsMinutesDelta.className = "kpi-sub is-warn";
+  } else {
+    els.tacticsMinutesDelta.textContent = `${Math.abs(delta)}분 초과`;
+    els.tacticsMinutesDelta.className = "kpi-sub is-danger";
+  }
+
+  renderRoleCounts(els.tacticsOffRoleCounts, summary.offCounts);
+  renderRoleCounts(els.tacticsDefRoleCounts, summary.defCounts);
+  els.tacticsRiskList.innerHTML = summary.risks.map((r) => `<li>${r}</li>`).join("");
+  els.tacticsInsightCopy.textContent = summary.insight;
 }
 
 function bindLineupEvents() {
@@ -1600,10 +2152,13 @@ function bindLineupEvents() {
             return;
           }
           target.defenseRole = control.value;
-          return;
+        } else if (field === 'minutes') {
+          target.minutes = Math.max(0, Math.min(48, Number(control.value || 0)));
+        } else {
+          target[field] = control.value;
         }
-        if (field === 'minutes') target.minutes = Math.max(0, Math.min(48, Number(control.value || 0)));
-        else target[field] = control.value;
+        markTacticsDirty();
+        renderTacticsSummaryPanel();
       });
     });
   });
@@ -1611,19 +2166,59 @@ function bindLineupEvents() {
 
 function renderTacticsRosterList() {
   els.tacticsRosterList.innerHTML = (state.rosterRows || []).length
-    ? state.rosterRows.map((r) => `<div class="tactics-roster-item">${r.name || r.player_id}</div>`).join("")
+    ? state.rosterRows.map((r) => `<div class="tactics-roster-item"><strong>${r.name || r.player_id}</strong><span>${r.pos || "-"} · OVR ${Number(r.ovr || 0)}</span></div>`).join("")
     : '<p class="empty-copy">로스터 데이터가 없습니다.</p>';
 }
 
 function renderTacticsScreen() {
   if (!state.tacticsDraft) return;
+  const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId || "팀";
+  els.tacticsTeamTitle.textContent = `${teamName} 전술 보드`;
+  els.tacticsCurrentDate.textContent = state.currentDate || "시즌 진행 중";
+
+  const offMeta = TACTICS_OFFENSE_SCHEMES.find((x) => x.key === state.tacticsDraft.offenseScheme);
+  const defMeta = TACTICS_DEFENSE_SCHEMES.find((x) => x.key === state.tacticsDraft.defenseScheme);
   const defRoles = getDefenseRolesForScheme(state.tacticsDraft.defenseScheme);
-  els.tacticsOffenseCurrent.textContent = `현재: ${tacticsSchemeLabel(TACTICS_OFFENSE_SCHEMES, state.tacticsDraft.offenseScheme)}`;
-  els.tacticsDefenseCurrent.textContent = `현재: ${tacticsSchemeLabel(TACTICS_DEFENSE_SCHEMES, state.tacticsDraft.defenseScheme)}`;
+
+  els.tacticsOffenseCurrent.textContent = `현재 공격 스킴: ${offMeta?.label || state.tacticsDraft.offenseScheme}`;
+  els.tacticsDefenseCurrent.textContent = `현재 수비 스킴: ${defMeta?.label || state.tacticsDraft.defenseScheme}`;
   els.tacticsStarters.innerHTML = state.tacticsDraft.starters.map((r, i) => buildLineupRowHtml('starters', i, r, defRoles)).join('');
   els.tacticsRotation.innerHTML = state.tacticsDraft.rotation.map((r, i) => buildLineupRowHtml('rotation', i, r, defRoles)).join('');
+
   renderTacticsRosterList();
   bindLineupEvents();
+  renderTacticsSummaryPanel();
+}
+
+function autoBalanceTacticsMinutes() {
+  if (!state.tacticsDraft) return;
+  const rows = [...state.tacticsDraft.starters, ...state.tacticsDraft.rotation];
+  const total = rows.reduce((sum, r) => sum + Number(r.minutes || 0), 0);
+  let diff = 240 - total;
+  if (diff === 0) return;
+  const direction = diff > 0 ? 1 : -1;
+  diff = Math.abs(diff);
+
+  let guard = 0;
+  while (diff > 0 && guard < 500) {
+    for (let i = 0; i < rows.length && diff > 0; i += 1) {
+      const cur = Number(rows[i].minutes || 0);
+      const next = cur + direction;
+      if (next < 0 || next > 48) continue;
+      rows[i].minutes = next;
+      diff -= 1;
+    }
+    guard += 1;
+  }
+
+  markTacticsDirty();
+  renderTacticsScreen();
+}
+
+function saveTacticsDraft() {
+  if (!state.tacticsDraft) return;
+  state.tacticsSavedSnapshot = tacticsSnapshot();
+  setTacticsDirty(false);
 }
 
 
@@ -1647,6 +2242,31 @@ function formatSignedDelta(v) {
   };
 }
 
+function medicalRiskTierLabel(tier) {
+  const t = String(tier || '').toUpperCase();
+  if (t === 'HIGH') return 'HIGH';
+  if (t === 'MEDIUM') return 'ELEVATED';
+  if (t === 'LOW') return 'WATCH';
+  return 'HEALTHY';
+}
+
+function medicalStatusClass(label) {
+  const t = String(label || '').toUpperCase();
+  if (t === 'HIGH' || t === 'OUT') return 'is-high';
+  if (t === 'ELEVATED' || t === 'MEDIUM' || t === 'RETURNING') return 'is-elevated';
+  if (t === 'WATCH' || t === 'LOW') return 'is-watch';
+  return 'is-healthy';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function renderMedicalHero(alerts = {}) {
   const p = alerts?.primary_alert_player;
   const load = alerts?.team_load_context || {};
@@ -1656,19 +2276,20 @@ function renderMedicalHero(alerts = {}) {
   els.medicalAlertLevel.className = `medical-alert-badge ${level === 'CRITICAL' ? 'level-critical' : level === 'WARN' ? 'level-warn' : ''}`;
 
   if (!p) {
-    els.medicalAlertText.textContent = '현재 주요 경고가 없습니다.';
-    els.medicalAlertMeta.textContent = `다음 7일 경기 ${num(load?.next_7d_game_count, 0)}회 · B2B ${num(load?.next_7d_back_to_back_count, 0)}회`;
+    els.medicalAlertText.textContent = '현재 긴급 관리 대상이 없습니다.';
+    els.medicalAlertMeta.textContent = `다음 7일 경기 ${num(load?.next_7d_game_count, 0)}회 · B2B ${num(load?.next_7d_back_to_back_count, 0)}회 · 팀 컨디션 안정`;
     return;
   }
 
-  els.medicalAlertText.textContent = `${p.name || '-'} 리스크 ${p.risk_tier || '-'} (${num(p.risk_score, 0)})`;
-  els.medicalAlertMeta.textContent = `${p.injury_status || '-'} · OUT ${p.out_until_date || '-'} / RETURNING ${p.returning_until_date || '-'} · 다음 7일 ${num(load?.next_7d_game_count, 0)}경기 (B2B ${num(load?.next_7d_back_to_back_count, 0)}회)`;
+  const riskTier = medicalRiskTierLabel(p.risk_tier);
+  els.medicalAlertText.textContent = `${p.name || '-'} 위험도 ${riskTier} (${num(p.risk_score, 0)})`;
+  els.medicalAlertMeta.textContent = `${p.injury_status || '-'} · 결장 ${p.out_until_date || '-'} / 복귀관리 ${p.returning_until_date || '-'} · 다음 7일 ${num(load?.next_7d_game_count, 0)}경기 (B2B ${num(load?.next_7d_back_to_back_count, 0)}회)`;
 }
 
 function renderMedicalTimeline(playerName, events) {
-  els.medicalTimelineTitle.textContent = playerName ? `${playerName} 최근 부상 타임라인` : '워치리스트에서 선수를 선택하세요.';
+  els.medicalTimelineTitle.textContent = playerName ? `${playerName} 메디컬 이벤트 타임라인` : '워치리스트에서 선수를 선택하세요.';
   if (!events || !events.length) {
-    els.medicalTimelineList.innerHTML = '<p class="empty-copy">최근 이벤트가 없습니다.</p>';
+    els.medicalTimelineList.innerHTML = '<p class="empty-copy">최근 기록된 메디컬 이벤트가 없습니다. 현재 안정 구간입니다.</p>';
     return;
   }
   els.medicalTimelineList.innerHTML = events.map((e) => `
@@ -1701,6 +2322,37 @@ function renderMedicalActionRecommendations(payload, playerName) {
   }).join('');
 }
 
+function buildMedicalAlertsFromOverview(overview) {
+  const summary = overview?.summary || {};
+  const watch = overview?.watchlists || {};
+  const top = (watch?.highest_risk || [])[0];
+  const outCount = num(summary?.injury_status_counts?.OUT, 0);
+  const highCount = num(summary?.risk_tier_counts?.HIGH, 0);
+  const level = top && highCount > 0 ? 'WARN' : outCount > 0 ? 'WARN' : 'INFO';
+
+  return {
+    alert_level: level,
+    primary_alert_player: top ? {
+      player_id: top.player_id,
+      name: top.name,
+      injury_status: top.injury_status,
+      risk_tier: top.risk_tier,
+      risk_score: top.risk_score,
+      out_until_date: top?.injury_current?.out_until_date,
+      returning_until_date: top?.injury_current?.returning_until_date,
+    } : null,
+    team_load_context: {
+      next_7d_game_count: 0,
+      next_7d_back_to_back_count: 0,
+    },
+    kpi_delta_7d: {
+      out_count_delta: 0,
+      high_risk_count_delta: 0,
+      health_high_count_delta: 0,
+    },
+  };
+}
+
 function renderMedicalRiskCalendar(payload) {
   const days = payload?.days || [];
   if (!days.length) {
@@ -1710,7 +2362,7 @@ function renderMedicalRiskCalendar(payload) {
   els.medicalRiskCalendarList.innerHTML = days.map((d) => `
     <article class="medical-day-card ${d.is_game_day ? 'is-game' : ''} ${d.is_back_to_back ? 'is-b2b' : ''}">
       <div class="date">${d.date || '-'}</div>
-      <div class="meta">${d.is_game_day ? `vs/@ ${d.opponent_team_id || '-'}` : 'No Game'} · ${d.practice_session_type || '훈련 미정'}</div>
+      <div class="meta">${d.is_game_day ? `vs/@ ${d.opponent_team_id || '-'}` : '경기 없음'} · ${d.practice_session_type || '훈련 미정'}</div>
       <div class="badges">
         <span class="badge">HIGH ${num(d.high_risk_player_count, 0)}</span>
         <span class="badge">OUT ${num(d.out_player_count, 0)}</span>
@@ -1750,7 +2402,7 @@ function renderMedicalOverview(overview, alerts) {
   els.medicalAsOf.textContent = `기준일 ${overview?.as_of_date || '-'}`;
   els.medicalRosterCount.textContent = num(summary?.roster_count, 0);
   els.medicalOutCount.textContent = num(statusCounts?.OUT, 0);
-  els.medicalReturningCount.textContent = `복귀 관리: ${num(statusCounts?.RETURNING, 0)}명`;
+  els.medicalReturningCount.textContent = `복귀 프로토콜: ${num(statusCounts?.RETURNING, 0)}명`;
   els.medicalHighRiskCount.textContent = num(riskCounts?.HIGH, 0);
   els.medicalHealthFrustrationCount.textContent = num(summary?.health_frustration?.high_count, 0);
 
@@ -1773,22 +2425,39 @@ function renderMedicalOverview(overview, alerts) {
     els.medicalRiskBody.innerHTML = '';
     riskRows.forEach((r) => {
       const tr = document.createElement('tr');
-      tr.className = 'roster-row';
+      tr.className = 'roster-row medical-risk-row';
       const riskScore = num(r.risk_score, 0);
       const reinjuryTotal = Object.values(r?.risk_inputs?.reinjury_count || {}).reduce((acc, v) => acc + num(v, 0), 0);
+      const riskTier = medicalRiskTierLabel(r.risk_tier);
+      const statusLabel = String(r.injury_status || 'HEALTHY').toUpperCase();
+      const st = clamp((1 - num(r.condition?.short_term_fatigue, 0)) * 100, 0, 100);
+      const lt = clamp((1 - num(r.condition?.long_term_fatigue, 0)) * 100, 0, 100);
+      tr.dataset.playerId = r.player_id || '';
       tr.innerHTML = `
-        <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'} · ${num(r.age, 0)}세</span></td>
-        <td><span class="status-line ${riskTierClass(r.injury_status)}">${r.injury_status || '-'}</span></td>
         <td>
-          <strong class="${riskTierClass(r.risk_tier)}">${r.risk_tier || '-'} (${riskScore})</strong>
+          <div class="medical-player-cell">
+            <strong>${escapeHtml(r.name || '-')}</strong>
+            <span class="schedule-opponent-name">${escapeHtml(r.pos || '-')} · ${num(r.age, 0)}세</span>
+          </div>
+        </td>
+        <td><span class="medical-status-badge ${medicalStatusClass(statusLabel)}">${escapeHtml(statusLabel)}</span></td>
+        <td>
+          <strong class="${riskTierClass(r.risk_tier)}">${riskTier} (${riskScore})</strong>
           <div class="medical-risk-meter"><span style="width:${clamp(riskScore, 0, 100)}%"></span></div>
         </td>
-        <td>${formatPercent(1 - num(r.condition?.short_term_fatigue, 0))} / ${formatPercent(1 - num(r.condition?.long_term_fatigue, 0))}</td>
+        <td>
+          <div class="medical-stlt-cell">
+            <span>ST ${Math.round(st)}</span>
+            <span>LT ${Math.round(lt)}</span>
+          </div>
+        </td>
         <td>${Math.round(num(r.condition?.sharpness, 0))}</td>
         <td>${reinjuryTotal}</td>
       `;
       tr.addEventListener('click', () => {
         state.medicalSelectedPlayerId = r.player_id;
+        document.querySelectorAll('#medical-risk-body tr').forEach((row) => row.classList.remove('is-selected'));
+        tr.classList.add('is-selected');
         loadMedicalPlayerContext(r.player_id, r.name).catch((e) => alert(e.message));
       });
       els.medicalRiskBody.appendChild(tr);
@@ -1803,17 +2472,25 @@ function renderMedicalOverview(overview, alerts) {
       <td>${r.injury_current?.body_part || '-'} (${r.injury_current?.injury_type || '-'})</td>
       <td>${r.injury_current?.out_until_date || '-'} ~ ${r.injury_current?.returning_until_date || '-'}</td>
     </tr>
-  `).join('') : renderEmptyScheduleRow(4, '결장/복귀 관리 대상이 없습니다.');
+  `).join('') : renderEmptyScheduleRow(4, '현재 결장/복귀 관리 대상이 없습니다.');
 
   const healthRows = watch?.health_frustration_high || [];
-  els.medicalHealthBody.innerHTML = healthRows.length ? healthRows.map((r) => `
+  els.medicalHealthBody.innerHTML = healthRows.length ? healthRows.map((r) => {
+    const frustrationPct = clamp(num(r.health_frustration, 0) * 100, 0, 100);
+    return `
     <tr>
-      <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
-      <td>${num(r.health_frustration, 2)}</td>
+      <td>${escapeHtml(r.name || '-')} <span class="schedule-opponent-name">${escapeHtml(r.pos || '-')}</span></td>
+      <td>
+        <div class="medical-frustration-cell">
+          <span>${num(r.health_frustration, 2)}</span>
+          <div class="medical-frustration-meter"><span style="width:${frustrationPct}%"></span></div>
+        </div>
+      </td>
       <td>${num(r.trade_request_level, 0)}</td>
       <td>${num(r.escalation_health, 0)}</td>
     </tr>
-  `).join('') : renderEmptyScheduleRow(4, '건강 불만 상위 선수가 없습니다.');
+  `;
+  }).join('') : renderEmptyScheduleRow(4, '컨디션 불만 고위험 선수가 없습니다.');
 }
 
 async function showMedicalScreen() {
@@ -1823,11 +2500,12 @@ async function showMedicalScreen() {
   }
   setLoading(true, '메디컬 센터 데이터를 불러오는 중...');
   try {
-    const [overview, alerts, calendar] = await Promise.all([
+    const [overview, alertsPayload, calendar] = await Promise.all([
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/overview`),
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/alerts`).catch(() => ({})),
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/risk-calendar?days=14`).catch(() => ({ days: [] })),
     ]);
+    const alerts = alertsPayload && Object.keys(alertsPayload).length ? alertsPayload : buildMedicalAlertsFromOverview(overview);
     state.medicalOverview = overview;
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.medicalTitle.textContent = `${teamName} 메디컬 센터`;
@@ -1848,10 +2526,11 @@ async function showMedicalScreen() {
     const first = primaryPlayerId ? { player_id: primaryPlayerId, name: primaryPlayerName } : (overview?.watchlists?.highest_risk || [])[0];
     if (first?.player_id) {
       state.medicalSelectedPlayerId = first.player_id;
+      document.querySelectorAll('#medical-risk-body tr').forEach((row) => row.classList.toggle('is-selected', row.dataset.playerId === first.player_id));
       await loadMedicalPlayerContext(first.player_id, first.name);
     } else {
       renderMedicalTimeline(null, []);
-      els.medicalActionList.innerHTML = '<p class="empty-copy">권고안이 없습니다.</p>';
+      els.medicalActionList.innerHTML = '<p class="empty-copy">현재 표시 가능한 권고안이 없습니다.</p>';
     }
 
     activateScreen(els.medicalScreen);
@@ -1868,9 +2547,18 @@ async function showTacticsScreen() {
   }
   setLoading(true, '전술 데이터를 불러오는 중...');
   try {
-    const detail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+    const [detail, summary] = await Promise.all([
+      fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`),
+      fetchJson('/api/state/summary').catch(() => ({})),
+    ]);
     state.rosterRows = detail.roster || [];
     if (!state.tacticsDraft) state.tacticsDraft = buildTacticsDraft(state.rosterRows);
+    const currentDate = summary?.workflow_state?.league?.current_date || summary?.league?.current_date || '';
+    if (currentDate) state.currentDate = currentDate;
+
+    if (!state.tacticsSavedSnapshot) state.tacticsSavedSnapshot = tacticsSnapshot();
+    setTacticsDirty(tacticsSnapshot() !== state.tacticsSavedSnapshot);
+
     renderSchemeOptions('offense');
     renderSchemeOptions('defense');
     renderTacticsScreen();
@@ -1894,11 +2582,41 @@ els.tacticsMenuBtn.addEventListener("click", () => showTacticsScreen().catch((e)
 els.nextGameTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
 els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
 els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
+if (els.scheduleHeroTacticsBtn) els.scheduleHeroTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
+bindScheduleFilters();
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
 els.tacticsBackBtn.addEventListener("click", () => showMainScreen());
 els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offense"));
 els.tacticsDefenseBtn.addEventListener("click", () => toggleTacticsOptions("defense"));
+els.tacticsAutobalanceBtn?.addEventListener("click", () => autoBalanceTacticsMinutes());
+els.tacticsSaveBtn?.addEventListener("click", () => saveTacticsDraft());
 els.standingsMenuBtn.addEventListener("click", () => showStandingsScreen().catch((e) => alert(e.message)));
+if (els.standingsConferenceToggle) {
+  els.standingsConferenceToggle.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-conference]");
+    if (!btn) return;
+    state.standingsView.conference = btn.dataset.conference === "west" ? "west" : "east";
+    renderStandingsTable();
+  });
+}
+if (els.standingsSortKey) {
+  els.standingsSortKey.addEventListener("change", () => {
+    state.standingsView.sortKey = els.standingsSortKey.value || "pct";
+    renderStandingsTable();
+  });
+}
+if (els.standingsSortDirBtn) {
+  els.standingsSortDirBtn.addEventListener("click", () => {
+    state.standingsView.sortDir = state.standingsView.sortDir === "desc" ? "asc" : "desc";
+    renderStandingsTable();
+  });
+}
+if (els.standingsAdvancedToggle) {
+  els.standingsAdvancedToggle.addEventListener("click", () => {
+    state.standingsView.showAdvanced = !state.standingsView.showAdvanced;
+    renderStandingsTable();
+  });
+}
 els.collegeMenuBtn.addEventListener("click", () => showCollegeScreen().catch((e) => alert(e.message)));
 els.medicalMenuBtn.addEventListener("click", () => showMedicalScreen().catch((e) => alert(e.message)));
 els.trainingBackBtn.addEventListener("click", () => showMainScreen());
@@ -1916,6 +2634,14 @@ els.collegeLeaderSort.addEventListener("change", () => {
 els.collegeExpertSelect.addEventListener("change", () => {
   state.selectedCollegeExpertId = els.collegeExpertSelect.value || "";
   loadCollegeBigboard().catch((e) => alert(e.message));
+});
+els.collegeLeaderQuickSort?.addEventListener("click", (event) => {
+  const btn = event.target.closest("button[data-sort]");
+  if (!btn) return;
+  const sort = btn.dataset.sort;
+  state.collegeLeadersSort = sort;
+  els.collegeLeaderSort.value = sort;
+  loadCollegeLeaders().catch((e) => alert(e.message));
 });
 els.collegeAssignBtn.addEventListener("click", async () => {
   const scoutId = els.collegeScoutSelect.value;

@@ -1,299 +1,264 @@
-# 메디컬 센터 화면 기획안 (실행 가능한 UI/데이터 설계)
+# 메디컬 센터 탭 고도화 기획안 (프론트엔드 실행용)
 
-## 0) 문서 목적
-- 목적: 현재 `메디컬 센터` 화면을 **상업용 게임 품질**로 고도화하기 위한 실제 기획안을 제시한다.
-- 범위: 디자인/정보구조/데이터 소스/API 계약.
-- 제약: **게임 코드에 이미 존재하는 데이터만 사용**한다. 새로운 화면 정보가 필요하면, 기존 데이터 조합으로 계산 가능한 API만 설계한다.
-
----
-
-## 1) 현재 구현 기준 (SSOT)
-현재 메디컬 화면은 아래 UI와 API를 사용하고 있다.
-
-### 1-1. 현재 UI 구조
-- KPI 카드: 로스터 인원 / 현재 결장 / 고위험 선수 / 건강 불만.
-- 본문 테이블: 리스크 워치리스트, 결장/복귀 현황, 건강 불만 Top.
-- 선수 타임라인: 워치리스트 클릭 시 최근 부상 이벤트.
-
-### 1-2. 현재 API (이미 존재)
-1. `GET /api/medical/team/{team_id}/overview`
-   - 사용 데이터: `summary`, `watchlists.highest_risk`, `watchlists.currently_unavailable`, `watchlists.health_frustration_high`, `watchlists.recent_injury_events`.
-2. `GET /api/medical/team/{team_id}/players/{player_id}/timeline`
-   - 사용 데이터: 선수 상태/리스크/헬스 심리 + `timeline.events`.
-3. 보조 API
-   - `GET /api/medical/team/{team_id}/injury-risk`
-   - `GET /api/medical/team/{team_id}/injured`
-   - `GET /api/team-schedule/{team_id}`
-   - `GET /api/readiness/team/{team_id}/sharpness`
-   - `GET /api/practice/team/{team_id}/sessions`
-   - `POST /api/practice/team/{team_id}/preview`
+## 0) 문서 목적 / 작업 경계
+- 목적: 현재 메디컬 센터 화면을 **상업용 게임 출시 품질**로 끌어올리기 위한, 실제 구현 가능한 프론트엔드 기획 기준을 제공한다.
+- 이번 문서의 사용 대상: 다음 단계에서 `html / css / js`만 수정하는 프론트엔드 작업자.
+- 절대 경계:
+  - 메디컬 센터 탭 이외 UI/로직 변경 금지.
+  - 신규 서버 API 추가 금지.
+  - 기존 조회 API 응답 데이터만 재배치/가공/시각화.
 
 ---
 
-## 2) 목표 UX: “정보 확인”에서 “즉시 의사결정”으로
+## 1) 제품 목표 (한 줄 정의)
+**“GM이 5초 안에 팀 건강 리스크를 파악하고, 30초 안에 관리 우선순위를 결정하게 만드는 Medical Command UI”**
 
-## 2-1. 화면 IA (Information Architecture)
-
-### A. 상단 Hero Alert Bar (신규 영역)
-- 목적: 지금 당장 조치가 필요한 이슈를 1줄로 노출.
-- 노출 정보:
-  - 최우선 위험 선수명
-  - 현재 상태(OUT/RETURNING/HEALTHY)
-  - 위험 점수/등급
-  - 복귀 예정일(있으면)
-  - 다음 7일 경기 밀집도(예: 7일 4경기, B2B 1회)
-- UX:
-  - “선수 상세 보기” 버튼
-  - “권고안 보기” 버튼
-
-### B. KPI Strip (기존 4카드 고도화)
-- 카드 유지 + 증감/맥락 추가:
-  1) 로스터 인원
-  2) 현재 결장 (RETURNING 포함 별도 수치)
-  3) 고위험 선수 (HIGH)
-  4) 건강 불만 임계 초과 (`health_frustration >= 0.5`)
-- 각 카드 하단에 `지난 7일 대비` 변화값 추가.
-
-### C. 좌측 Primary Table: 리스크 워치리스트 (핵심 작업영역)
-- 컬럼 재설계:
-  - 선수(포지션, 나이)
-  - 상태 배지
-  - 리스크 (점수+티어+미니바)
-  - 컨디션(ST/LT stamina)
-  - Sharpness
-  - 재부상 카운트 합계
-  - 최근 이벤트일
-- 정렬 기본값: 리스크 점수 내림차순.
-
-### D. 우측 Context Panel: 선택 선수 상세
-- 섹션:
-  1) 현재 상태 요약 (부위/부상유형/복귀 윈도우)
-  2) 최근 타임라인 (기존 유지)
-  3) 액션 프리뷰 (신규: 권고안 비교)
-
-### E. 하단 Risk Calendar Strip (신규)
-- 다음 7일 기준으로 경기/훈련/위험선수 변동 가능성을 한 줄 캘린더로 표시.
-- 목표: “일정과 메디컬 상태를 같이” 보이도록 한다.
+핵심은 ‘정보량 추가’가 아니라, 이미 있는 데이터를 아래 순서로 보여주는 것이다.
+1. 지금 위험한가? (Alert)
+2. 누구를 봐야 하는가? (Watchlist)
+3. 어떤 맥락인가? (Unavailable/Frustration/Timeline)
+4. 당장 무엇을 할 것인가? (다음 행동 힌트)
 
 ---
 
-## 3) 컴포넌트별 데이터 소스 매핑 (어디서 가져오는지 명확화)
+## 2) 화면 구조 (메디컬 탭 한정)
 
-## 3-1. 이미 존재 API만으로 구성 가능한 항목
+## 2-1. 전체 레이아웃
+- **상단 1행**: Hero Alert Bar (신규)
+- **상단 2행**: KPI 카드 4개 (기존 고도화)
+- **중단 2열**:
+  - 좌 65%: 리스크 워치리스트 (Primary)
+  - 우 35%: 결장/복귀 현황 + 선수 타임라인 (Context)
+- **하단 2열**:
+  - 좌: 건강 불만 Top
+  - 우: 선택 선수 인사이트 카드 (신규 표현, 기존 데이터 기반)
 
-| UI 컴포넌트 | 필드 | 소스 API | 소스 필드 |
-|---|---|---|---|
-| KPI: 로스터 인원 | roster_count | `/api/medical/team/{team_id}/overview` | `summary.roster_count` |
-| KPI: 현재 결장/복귀 | OUT, RETURNING | 동일 | `summary.injury_status_counts.OUT`, `RETURNING` |
-| KPI: 고위험 선수 | HIGH count | 동일 | `summary.risk_tier_counts.HIGH` |
-| KPI: 건강 불만 | high_count | 동일 | `summary.health_frustration.high_count` |
-| 리스크 워치리스트 | 선수/상태/리스크/ST-LT/Sharp | 동일 | `watchlists.highest_risk[*]` |
-| 결장/복귀 표 | 부위/부상유형/복귀일정 | 동일 | `watchlists.currently_unavailable[*].injury_current.*` |
-| 건강 불만 Top | 불만도/요청단계/에스컬레이션 | 동일 | `watchlists.health_frustration_high[*]` |
-| 선수 타임라인 | 이벤트 목록 | `/api/medical/team/{team_id}/players/{player_id}/timeline` | `timeline.events[*]` |
-| 일정 맥락(다음 경기들) | date/opponent/status | `/api/team-schedule/{team_id}` | `games[*]` |
+> 구현 메모: 데스크톱 기준 1440px 이상은 12컬럼 그리드, 1280px 이하에서는 우측 패널을 하단으로 스택.
 
-## 3-2. “현재 UI에는 없지만 코드에 데이터가 존재”하는 항목
-
-| 추가 표시 정보 | 사용 이유 | 소스 API | 소스 필드 |
-|---|---|---|---|
-| 나이(age) | 고령 선수 위험 맥락 | `/api/medical/team/{team_id}/overview` | `watchlists.highest_risk[*].age` |
-| 리스크 입력값 디테일 | 왜 위험한지 설명 | `/api/medical/team/{team_id}/overview` | `watchlists.highest_risk[*].risk_inputs.*` |
-| 최근 부상 이벤트 Top | 팀 차원의 최근 사건 | `/api/medical/team/{team_id}/overview` | `watchlists.recent_injury_events[*]` |
-| 선수별 health psychology | 트레이드 요청 위험 연계 | `/api/medical/team/{team_id}/players/{player_id}/timeline` | `current.health_psychology.*` |
-| 팀 Sharpness 분포 | 메디컬/훈련 통합 지표 | `/api/readiness/team/{team_id}/sharpness?include_players=true` | `distribution.*`, `players[*]` |
-| 훈련 세션 이력 | 회복/강훈련 추세 해석 | `/api/practice/team/{team_id}/sessions` | `sessions[*]` |
+## 2-2. 시선 흐름 설계
+- 진입 즉시 Alert → KPI → Watchlist Top row로 시선이 흘러야 한다.
+- “선수 클릭 시 우측 패널 동기화”를 메인 인터랙션으로 통일.
+- 빈 상태(결장 0명, 이벤트 없음)는 “좋은 상태”로 연출해 신뢰감 강화.
 
 ---
 
-## 4) 신규 API 설계 (필요 시) — 단, 기존 데이터 조합만 사용
+## 3) 섹션별 상세 기획 (실장 수준)
 
-아래는 “신규 화면 경험”을 위해 필요하지만 현재 단일 API로는 바로 제공되지 않는 합성 데이터다.
+## 3-1. Hero Alert Bar (신규)
+### 역할
+- 현재 팀 메디컬 상황을 한 문장으로 요약.
 
-## 4-1. `GET /api/medical/team/{team_id}/alerts`
-- 목적: 상단 Hero Alert Bar 전용.
-- 데이터 출처:
-  - `/api/medical/team/{team_id}/overview`
-  - `/api/team-schedule/{team_id}`
-- 계산 규칙:
-  - `primary_alert_player` = `highest_risk[0]`
-  - `next_7d_game_count` = `games` 중 `current_date <= date < current_date+7` 개수
-  - `next_7d_back_to_back_count` = 위 기간 내 연속일 경기 쌍 개수
-
-### 응답 스키마 (제안)
-```json
-{
-  "team_id": "GSW",
-  "as_of_date": "2025-10-19",
-  "alert_level": "info|warn|critical",
-  "primary_alert_player": {
-    "player_id": "p_xxx",
-    "name": "...",
-    "pos": "PG",
-    "injury_status": "HEALTHY|OUT|RETURNING",
-    "risk_score": 72,
-    "risk_tier": "HIGH",
-    "out_until_date": "2025-10-25",
-    "returning_until_date": "2025-10-29"
-  },
-  "team_load_context": {
-    "next_7d_game_count": 4,
-    "next_7d_back_to_back_count": 1
-  },
-  "kpi_delta_7d": {
-    "out_count_delta": 1,
-    "high_risk_count_delta": 2,
-    "health_high_count_delta": 0
-  }
-}
-```
-
-> 주의: `kpi_delta_7d` 계산은 같은 API를 `as_of_date` 기준으로 7일 전 재계산하는 방식으로 구현 가능(신규 DB 필드 필요 없음).
-
-## 4-2. `GET /api/medical/team/{team_id}/risk-calendar`
-- 목적: 하단 Risk Calendar Strip.
-- 데이터 출처:
-  - `/api/team-schedule/{team_id}` (경기)
-  - `/api/practice/team/{team_id}/sessions` (훈련)
-  - `/api/medical/team/{team_id}/overview` + `/timeline` (리스크/이벤트)
-- 기간: 기본 14일.
-
-### 응답 스키마 (제안)
-```json
-{
-  "team_id": "GSW",
-  "date_from": "2025-10-19",
-  "date_to": "2025-11-01",
-  "days": [
-    {
-      "date": "2025-10-20",
-      "is_game_day": true,
-      "opponent_team_id": "LAL",
-      "is_back_to_back": false,
-      "practice_session_type": "RECOVERY|REST|OFF_TACTICS|DEF_TACTICS|FILM|SCRIMMAGE|null",
-      "high_risk_player_count": 2,
-      "out_player_count": 1,
-      "returning_player_count": 1,
-      "injury_event_count": 0
-    }
-  ]
-}
-```
-
-## 4-3. `GET /api/medical/team/{team_id}/players/{player_id}/action-recommendations`
-- 목적: 우측 패널에서 “조치 전/후 비교” 제공.
-- 데이터 출처:
-  - 현재 상태: `/api/medical/team/{team_id}/players/{player_id}/timeline`
-  - 팀 훈련 효과 프리뷰: `POST /api/practice/team/{team_id}/preview`
-- 제약:
-  - **실제 시뮬 결과를 단정하지 않고**, “예상 변화(heuristic)”로만 반환.
-  - 근거값(`basis`)을 반드시 노출해 블랙박스 느낌 제거.
-
-### 응답 스키마 (제안)
-```json
-{
-  "team_id": "GSW",
-  "player_id": "p_xxx",
-  "as_of_date": "2025-10-19",
-  "current": {
-    "injury_status": "HEALTHY|OUT|RETURNING",
-    "risk_score": 58,
-    "risk_tier": "MEDIUM",
-    "short_term_fatigue": 0.31,
-    "long_term_fatigue": 0.22,
-    "sharpness": 51.0,
-    "health_frustration": 0.34
-  },
-  "recommendations": [
-    {
-      "action_id": "RECOVERY_SESSION_NEXT_DAY",
-      "label": "다음 훈련일 회복 세션 배치",
-      "expected_delta": {
-        "short_term_fatigue": -0.04,
-        "sharpness": -0.5,
-        "risk_score": -3
-      },
-      "basis": {
-        "practice_preview_used": true,
-        "risk_formula_version": "core._risk_tier_from_inputs"
-      }
-    }
-  ]
-}
-```
-
----
-
-## 5) 화면별 상세 기획 (디자이너/프론트 전달용)
-
-## 5-1. Hero Alert Bar
-- 레이아웃: 좌(경고 아이콘+문구) / 우(CTA 2개)
+### 노출 규칙
+- 우선순위: `고위험 선수 > 결장/복귀 대상 > 건강불만 고위험 > 안정 상태`.
 - 문구 예시:
-  - `주의: Stephen Curry 리스크 HIGH(72) · 다음 7일 4경기(B2B 1회)`
-- 상태 컬러:
-  - info: 블루, warn: 앰버, critical: 레드
-- 클릭 액션:
-  - 선수 상세 열기
-  - 권고안 drawer 열기
+  - 위험 존재: `⚠️ Stephen Curry 위험도 HIGH (72) · 7일 4경기 일정`
+  - 안정 상태: `✅ 현재 긴급 관리 대상 없음 · 팀 컨디션 안정`
 
-## 5-2. 리스크 워치리스트 테이블
-- 행 높이 56px, 헤더 고정.
-- 셀 규칙:
-  - 리스크: `숫자 + 바(0~100)`
-  - 상태: 배지(HEALTHY/OUT/RETURNING)
-  - 컨디션: `ST stamina / LT stamina`를 %로 표기.
-- 행 클릭 시:
-  - 우측 패널 업데이트
-  - 타임라인 API 재호출
+### 데이터 소스
+- `overview.summary`
+- `overview.watchlists.highest_risk[0]`
+- `team-schedule`(가능하면 최근/다음 경기 수 계산)
 
-## 5-3. 우측 상세 패널
-- `상태 요약 카드` + `타임라인` + `권고안`
-- 타임라인 아이템에 최소 표시:
-  - 날짜, context, body_part, injury_type, severity, out/returning window
-
-## 5-4. 하단 Risk Calendar Strip
-- 14칸(일자별) 수평 스크롤.
-- 각 일자 칩:
-  - 경기 여부 아이콘
-  - 훈련 타입 라벨
-  - 위험 인원 뱃지(HIGH n명)
+### 인터랙션
+- “선수 보기” CTA 클릭 시 해당 선수 행으로 스크롤 + 선택 상태 적용.
 
 ---
 
-## 6) “절대 가져오면 안 되는 정보” 명시
-다음은 현재 코드/DB에서 근거가 확인되지 않으므로 사용 금지.
+## 3-2. KPI 카드 4종 (기존 개선)
+### 카드 목록
+1. 로스터 인원
+2. 결장 관리 (OUT + RETURNING 보조텍스트)
+3. 부상 고위험군 (HIGH tier)
+4. 컨디션 불만 고위험
 
-- 의료진 인원/의료진 능력치/치료 슬롯 수
-- 선수별 실제 생체 데이터(심박, 수면시간, GPS 부하 등)
-- 부상 확률의 외부 리그 데이터 연동값
-- 보험/재정 기반 치료비 관련 수치
+### 표현 원칙
+- 숫자(Primary) + 운영 문구(Secondary) + 상태색 점(Accent).
+- 기술 변수명 직접 노출 금지 (`health_frustration >= 0.5` 같은 표현 금지).
 
-> 위 정보가 필요하면, 먼저 데이터 모델과 저장 로직을 신규로 추가한 뒤 API를 설계해야 한다.
-
----
-
-## 7) 구현 우선순위 (디자인/개발 순차 적용)
-1. **P1 (즉시 가능)**: 기존 `overview + timeline`으로 레이아웃/스타일/정보 위계 개편.
-2. **P2 (중간 난이도)**: `alerts`, `risk-calendar` 합성 API 추가.
-3. **P3 (고급 UX)**: `action-recommendations`(근거 포함) 추가.
-
----
-
-## 8) QA 체크리스트
-- [ ] 모든 신규 숫자/문구가 기존 API 응답 필드로 추적 가능한가?
-- [ ] 신규 API 필드가 기존 테이블/상태에서 계산 가능한가?
-- [ ] `알 수 없음` 상태는 명시적으로 `null`/`-` 처리했는가?
-- [ ] 상태 배지 색/텍스트가 전체 화면에서 일관적인가?
-- [ ] 빈 상태(Empty state)에 다음 행동 버튼이 있는가?
-
+### 카피 가이드
+- `현재 결장` → `결장 관리`
+- `고위험 선수` → `부상 고위험군`
+- `건강 불만` → `컨디션 불만 고위험`
 
 ---
 
+## 3-3. 리스크 워치리스트 (핵심 테이블)
+### 컬럼 정의
+- 선수 (이름 + 포지션)
+- 상태 (배지)
+- 위험 (텍스트 + 미니바)
+- ST / LT
+- Sharp
 
-## 9) 구현 완료 상태 (2026-03)
-- 아래 조회 API가 실제 서버 라우트에 추가되어 UI 작업 착수 가능 상태이다.
-  - `GET /api/medical/team/{team_id}/alerts`
-  - `GET /api/medical/team/{team_id}/risk-calendar`
-  - `GET /api/medical/team/{team_id}/players/{player_id}/action-recommendations`
-- 기존 API 재사용 공통 로직(`overview` 계산)을 내부 헬퍼로 통합하여 동일 기준으로 데이터가 계산된다.
+### 시각 규칙
+- 기본 정렬: 위험 점수 내림차순.
+- 상위 3명은 좌측 얇은 강조바(amber/red 계열).
+- 행 hover 시 배경 4~6% 강조.
+- 선택 행은 명확한 active 스타일(테두리/배경).
 
+### 상태 배지 체계
+- HEALTHY / WATCH / ELEVATED / HIGH
+- 텍스트 + 배경톤 + 아이콘 동시 사용 (색맹 대응)
+
+### 비어있는 값 처리
+- 값 없음은 `—` 통일.
+- 숫자 0과 null 시각적 구분.
+
+---
+
+## 3-4. 결장/복귀 현황 패널
+### 역할
+- “지금 실제 운영에 영향 있는 선수”를 별도 컨텍스트로 표시.
+
+### 컬럼
+- 선수
+- 상태 (OUT/RETURNING)
+- 부위
+- 복귀 일정
+
+### Empty State
+- 아이콘 + 문구:
+  - `현재 결장/복귀 관리 대상이 없습니다.`
+  - `로테이션 운영 리스크가 낮은 상태입니다.`
+
+---
+
+## 3-5. 건강 불만 Top
+### 역할
+- 부상 위험과 별개로, 팀 내부 불안 신호를 조기 발견.
+
+### 컬럼
+- 선수
+- 불만도
+- 요청 단계
+- 에스컬레이션
+
+### 표현 디테일
+- 불만도는 수치 + 0~100 바 시각화.
+- 임계치 초과 항목만 배지 표시.
+
+---
+
+## 3-6. 선수 타임라인
+### 역할
+- 선택 선수 기준 최근 이벤트를 ‘스토리’로 전달.
+
+### UI
+- 좌측 점/선 기반 timeline list.
+- 이벤트 타입별 아이콘(부상, 복귀, 관리).
+- 최신 이벤트를 상단 고정.
+
+### Empty State
+- `최근 이벤트가 없습니다.` 대신
+  - `최근 기록된 메디컬 이벤트가 없습니다.`
+  - `현재 안정 구간으로 판단됩니다.`
+
+---
+
+## 4) 디자인 시스템 가이드 (바이브코딩 티 제거 핵심)
+
+## 4-1. 컬러 토큰
+- 배경: `#F3F6FB`
+- 카드: `#FFFFFF`
+- 텍스트 Primary: `#0F172A`
+- 텍스트 Secondary: `#64748B`
+- Border: `#E2E8F0`
+- 상태색:
+  - Safe `#22C55E`
+  - Watch `#EAB308`
+  - Risk `#F97316`
+  - Critical `#EF4444`
+
+## 4-2. 타이포
+- Page Title: 36/700
+- Section Title: 28/700
+- KPI Number: 40/700
+- Body: 16/400
+- Caption: 13/500
+- 표 숫자는 tabular-nums 적용.
+
+## 4-3. 간격/라운드/그림자
+- spacing scale: 4, 8, 12, 16, 20, 24, 32
+- 카드 radius: 16
+- 테이블 row height: 56~64
+- shadow: `0 6px 24px rgba(15,23,42,0.06)` (과한 글로우 금지)
+
+---
+
+## 5) 인터랙션 / 모션 가이드
+- 페이지 진입: 180~240ms fade-up.
+- 카드 hover: 120ms ease-out.
+- 테이블 정렬 변경: 아이콘 회전 + 즉시 재정렬.
+- 위험 상위 1~3행: 매우 약한 pulse(1.5~2.0s, opacity 변화만).
+- 접근성: `prefers-reduced-motion` 사용 시 애니메이션 최소화.
+
+---
+
+## 6) 데이터 가공 규칙 (기존 조회 API만 사용)
+
+## 6-1. 클라이언트 파생값 (신규 API 없이 계산)
+- `highRiskCount = summary.risk_tier_counts.HIGH || 0`
+- `outCount = summary.injury_status_counts.OUT || 0`
+- `returningCount = summary.injury_status_counts.RETURNING || 0`
+- `frustrationHighCount = summary.health_frustration.high_count || 0`
+- `primaryPlayer = watchlists.highest_risk[0] || null`
+
+## 6-2. 표시용 정규화
+- 퍼센트/스코어 표기 단위 통일 (`0~100`, `%`).
+- 날짜 표기 통일 (`YYYY-MM-DD` 또는 로케일 포맷 1종 선택).
+- null-safe 렌더 함수 공통화.
+
+## 6-3. 문구 생성 규칙
+- 위험도 기반 템플릿 문구를 JS에서 규칙 생성.
+- 예:
+  - HIGH & OUT: `즉시 관리 필요`
+  - ELEVATED & HEALTHY: `훈련 강도 조절 권장`
+
+---
+
+## 7) 구현 범위 명세 (다음 작업자를 위한 To-do)
+
+## 7-1. HTML (의미 구조 정리)
+- 메디컬 탭 루트에 섹션 landmark 부여:
+  - `header.hero-alert`
+  - `section.kpi-strip`
+  - `section.risk-watchlist`
+  - `aside.medical-context`
+  - `section.health-frustration`
+  - `section.player-timeline`
+- 카드/테이블 헤더에 `aria-label` 추가.
+
+## 7-2. CSS (토큰화 + 컴포넌트화)
+- 색/간격/폰트 CSS 변수로 통합.
+- 상태 배지, 리스크바, 카드, 테이블 row 상태를 재사용 클래스로 분리.
+- 미디어쿼리 2단계:
+  - `<=1280`: 2열 → 1열 스택
+  - `<=960`: 테이블 가독성 모드(축약)
+
+## 7-3. JS (렌더/상태 동기화)
+- 선수 선택 상태 단일 소스(`selectedPlayerId`) 유지.
+- Watchlist 클릭 시 Timeline/Context 패널 동기 갱신.
+- empty/error/loading 상태를 섹션별로 명확히 분기.
+- 기술문구→운영문구 변환 매퍼 도입.
+
+---
+
+## 8) 품질 기준 (출시 레벨 체크리스트)
+- [ ] 한 화면에서 정보 우선순위가 즉시 이해된다.
+- [ ] 변수명/디버그 문구가 사용자에게 노출되지 않는다.
+- [ ] 빈 상태 화면도 ‘완성된 제품’처럼 보인다.
+- [ ] 모든 수치/날짜 포맷이 일관된다.
+- [ ] 키보드 탐색 + 기본 접근성 속성이 동작한다.
+- [ ] 메디컬 탭 외 화면 영향이 없다.
+
+---
+
+## 9) 최종 산출물 기대 형태 (다음 단계 개발 목표)
+- “툴 화면”이 아닌 “게임 운영 콘솔” 느낌.
+- 위험 상황일수록 화면의 긴장도가 자연스럽게 올라감.
+- 안정 상태일 때도 빈약해 보이지 않고 신뢰감을 줌.
+- 유저가 ‘와, 잘 만들었다’고 느끼는 기준:
+  - 정돈된 위계
+  - 일관된 시스템
+  - 의미 있는 상호작용
+  - 말끔한 카피
