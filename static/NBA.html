@@ -180,22 +180,33 @@
       </div>
 
       <div class="roster-shell">
-        <div class="roster-table-wrap">
-          <table class="roster-table">
-            <thead>
-              <tr>
-                <th>선수명</th>
-                <th>포지션</th>
-                <th>나이</th>
-                <th>키</th>
-                <th>몸무게</th>
-                <th>샐러리</th>
-                <th class="condition-col">컨디션</th>
-                <th>경기력</th>
-              </tr>
-            </thead>
-            <tbody id="my-team-roster-body"></tbody>
-          </table>
+        <section id="roster-kpi-grid" class="roster-kpi-grid" aria-label="로스터 인사이트"></section>
+
+        <div class="roster-main-grid">
+          <div class="roster-table-wrap">
+            <table class="roster-table">
+              <thead>
+                <tr>
+                  <th>선수명</th>
+                  <th>포지션</th>
+                  <th>나이</th>
+                  <th>키</th>
+                  <th>몸무게</th>
+                  <th>샐러리</th>
+                  <th class="condition-col">컨디션</th>
+                  <th>경기력</th>
+                  <th>PPG</th>
+                  <th>APG</th>
+                  <th>RPG</th>
+                </tr>
+              </thead>
+              <tbody id="my-team-roster-body"></tbody>
+            </table>
+          </div>
+
+          <aside id="roster-focus-panel" class="roster-focus-panel" aria-live="polite">
+            <p class="empty-copy">선수를 선택하면 핵심 정보가 표시됩니다.</p>
+          </aside>
         </div>
       </div>
     </section>

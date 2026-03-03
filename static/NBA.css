@@ -1831,3 +1831,199 @@ body:has(#player-detail-screen.active) .app-shell {
   background: rgba(255, 255, 255, 0.94);
   color: #0f172a;
 }
+
+/* === Premium Roster + Player Detail Upgrade === */
+#my-team-screen .roster-shell {
+  display: grid;
+  gap: 14px;
+}
+
+#my-team-screen .roster-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#my-team-screen .roster-kpi-card {
+  background: linear-gradient(140deg, #0f172a, #1e293b);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 16px;
+  padding: 16px;
+  color: #e2e8f0;
+  box-shadow: 0 16px 30px rgba(2, 6, 23, 0.35);
+}
+
+#my-team-screen .roster-kpi-card h3 {
+  margin: 4px 0;
+  font-size: 1.55rem;
+  color: #fff;
+}
+
+#my-team-screen .roster-kpi-card h3 span {
+  font-size: .85rem;
+  color: #cbd5e1;
+  margin-left: 4px;
+}
+
+#my-team-screen .kpi-label {
+  margin: 0;
+  font-size: .72rem;
+  letter-spacing: .14em;
+  color: #94a3b8;
+}
+
+#my-team-screen .kpi-sub {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: .86rem;
+}
+
+#my-team-screen .roster-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.7fr);
+  gap: 14px;
+  align-items: start;
+}
+
+#my-team-screen .roster-focus-panel {
+  background: linear-gradient(160deg, #0f172a, #1f2937);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 16px;
+  color: #f8fafc;
+  padding: 16px;
+  min-height: 240px;
+  position: sticky;
+  top: 14px;
+}
+
+#my-team-screen .focus-hero h3 {
+  margin: 4px 0;
+  color: #fff;
+}
+
+#my-team-screen .focus-hero p {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+#my-team-screen .focus-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#my-team-screen .focus-grid div {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+#my-team-screen .focus-grid span {
+  color: #94a3b8;
+  font-size: .78rem;
+}
+
+#my-team-screen .focus-grid strong {
+  color: #fff;
+}
+
+#my-team-screen .focus-tags {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#my-team-screen .roster-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+#my-team-screen .roster-row.is-selected {
+  background: linear-gradient(90deg, rgba(29, 78, 216, 0.12), rgba(30, 64, 175, 0.06));
+}
+
+#player-detail-screen .player-detail-panel {
+  padding: 20px;
+}
+
+#player-detail-screen .player-layout {
+  grid-template-columns: minmax(0, 2fr) minmax(320px, .9fr);
+  grid-template-areas:
+    "header contract"
+    "attr dissatisfaction"
+    "attr health"
+    "gamelog gamelog"
+    "stats stats";
+}
+
+#player-detail-screen .detail-card-gamelog {
+  grid-area: gamelog;
+}
+
+#player-detail-screen .attr-group {
+  margin-bottom: 14px;
+}
+
+#player-detail-screen .attr-group h5 {
+  margin: 0 0 8px;
+  color: #334155;
+}
+
+#player-detail-screen .attr-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+#player-detail-screen .game-log-table-wrap {
+  overflow: auto;
+}
+
+#player-detail-screen .game-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+#player-detail-screen .game-log-table th,
+#player-detail-screen .game-log-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+  text-align: center;
+}
+
+#player-detail-screen .game-log-table th {
+  color: #64748b;
+  font-size: .78rem;
+  letter-spacing: .06em;
+}
+
+@media (max-width: 1180px) {
+  #my-team-screen .roster-main-grid,
+  #player-detail-screen .player-layout {
+    grid-template-columns: 1fr;
+  }
+
+  #my-team-screen .roster-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #my-team-screen .roster-focus-panel {
+    position: static;
+  }
+
+  #player-detail-screen .player-layout {
+    grid-template-areas:
+      "header"
+      "contract"
+      "dissatisfaction"
+      "health"
+      "attr"
+      "gamelog"
+      "stats";
+  }
+}
