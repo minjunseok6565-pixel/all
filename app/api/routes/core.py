@@ -4,8 +4,9 @@ import json
 import os
 import sqlite3
 import hashlib
+import time
 from datetime import date, timedelta
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -31,6 +32,9 @@ TEAM_FULL_NAMES: Dict[str, str] = {
     "POR": "Portland Trail Blazers", "SAC": "Sacramento Kings", "SAS": "San Antonio Spurs", "TOR": "Toronto Raptors",
     "UTA": "Utah Jazz", "WAS": "Washington Wizards",
 }
+
+
+_HOME_DASHBOARD_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 def _format_mmdd(date_value: Any) -> str:
@@ -200,140 +204,150 @@ def _build_risk_profile(
     }
 
 
-def _medical_team_overview_payload(
-    *,
-    team_id: str,
-    season_year: int,
-    as_of: date,
-    history_days: int,
-    top_n: int,
-) -> Dict[str, Any]:
-    db_path = state.get_db_path()
-    tid = str(normalize_team_id(team_id, strict=True))
-    as_of_iso = as_of.isoformat()
-    history_days = max(1, min(int(history_days or 180), 730))
-    top_n = max(1, min(int(top_n or 5), 20))
-    health_high_threshold = 0.5
+def _average(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
 
-    from agency import repo as agency_repo
+
+def _last5_form_from_games(games: List[Dict[str, Any]], *, team_id: str) -> List[str]:
+    completed = [g for g in games if bool(g.get("is_completed"))]
+    completed_sorted = sorted(completed, key=lambda x: (str(x.get("date") or ""), str(x.get("game_id") or "")))
+    last5 = completed_sorted[-5:]
+    result: List[str] = []
+    for g in last5:
+        if team_id == g.get("home_team_id"):
+            hs = g.get("home_score")
+            a_s = g.get("away_score")
+            if hs is None or a_s is None:
+                continue
+            result.append("W" if int(hs) > int(a_s) else "L")
+        elif team_id == g.get("away_team_id"):
+            hs = g.get("home_score")
+            a_s = g.get("away_score")
+            if hs is None or a_s is None:
+                continue
+            result.append("W" if int(a_s) > int(hs) else "L")
+    return result
+
+
+def _find_team_row_in_standings(standings_table: Dict[str, Any], team_id: str) -> Optional[Dict[str, Any]]:
+    rows = []
+    if isinstance(standings_table.get("east"), list):
+        rows.extend(standings_table.get("east") or [])
+    if isinstance(standings_table.get("west"), list):
+        rows.extend(standings_table.get("west") or [])
+    for row in rows:
+        if str(row.get("team_id") or "") == team_id:
+            return row
+    return None
+
+
+def _rank_map_from_standings(standings_table: Dict[str, Any]) -> Dict[str, int]:
+    rank_map: Dict[str, int] = {}
+    for conf_key in ("east", "west"):
+        rows = standings_table.get(conf_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            tid = str(row.get("team_id") or "")
+            rank = _safe_int(row.get("rank"), 0)
+            if tid and rank > 0:
+                rank_map[tid] = rank
+    return rank_map
+
+
+def _difficulty_from_opp_rank(opp_rank: Optional[int]) -> str:
+    if opp_rank is None or opp_rank <= 0:
+        return "unknown"
+    if opp_rank <= 5:
+        return "high"
+    if opp_rank <= 10:
+        return "medium"
+    return "low"
+
+
+def _build_alerts(
+    *,
+    medical_summary: Dict[str, Any],
+    two_way_summary_data: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    alerts: List[Dict[str, Any]] = []
+    med_summary = (medical_summary.get("summary") or {}) if isinstance(medical_summary, dict) else {}
+    injury_counts = (med_summary.get("injury_status_counts") or {}) if isinstance(med_summary, dict) else {}
+    risk_counts = (med_summary.get("risk_tier_counts") or {}) if isinstance(med_summary, dict) else {}
+    health_summary = (med_summary.get("health_frustration") or {}) if isinstance(med_summary, dict) else {}
+
+    out_count = _safe_int(injury_counts.get("OUT"), 0)
+    high_risk_count = _safe_int(risk_counts.get("HIGH"), 0)
+    health_high_count = _safe_int(health_summary.get("high_count"), 0)
+    open_two_way_slots = _safe_int(two_way_summary_data.get("open_two_way_slots"), 0)
+
+    if out_count >= 2:
+        alerts.append({
+            "severity": "warning",
+            "code": "INJURY_OUT_COUNT",
+            "title": f"OUT 선수가 {out_count}명입니다",
+            "cta": "메디컬 센터",
+        })
+    if high_risk_count >= 3:
+        alerts.append({
+            "severity": "warning",
+            "code": "INJURY_HIGH_RISK",
+            "title": f"부상 리스크 HIGH 선수가 {high_risk_count}명입니다",
+            "cta": "메디컬 센터",
+        })
+    if health_high_count >= 1:
+        alerts.append({
+            "severity": "warning",
+            "code": "HEALTH_FRUSTRATION_HIGH",
+            "title": f"건강 불만 고위험 선수가 {health_high_count}명입니다",
+            "cta": "선수 상태 확인",
+        })
+    if open_two_way_slots > 0:
+        alerts.append({
+            "severity": "info",
+            "code": "TWO_WAY_SLOT_OPEN",
+            "title": f"투웨이 슬롯 {open_two_way_slots}개가 비어 있습니다",
+            "cta": "로스터 관리",
+        })
+
+    return alerts[:5]
+
+
+def _compute_team_condition_snapshot(team_id: str, season_year: int) -> Dict[str, float]:
     from fatigue import repo as fatigue_repo
-    from injury import repo as injury_repo
     from readiness import repo as readiness_repo
 
+    db_path = state.get_db_path()
     with LeagueRepo(db_path) as repo:
         repo.init_db()
-        roster_rows = repo.get_team_roster(tid)
+        roster_rows = repo.get_team_roster(team_id)
         pids = [str(r.get("player_id")) for r in (roster_rows or []) if r.get("player_id")]
 
         with repo.transaction() as cur:
             fatigue_by_pid = fatigue_repo.get_player_fatigue_states(cur, pids) if pids else {}
             sharp_by_pid = readiness_repo.get_player_sharpness_states(cur, pids, season_year=season_year) if (pids and season_year > 0) else {}
-            injury_by_pid = injury_repo.get_player_injury_states(cur, pids) if pids else {}
-            agency_by_pid = agency_repo.get_player_agency_states(cur, pids) if pids else {}
-            start_iso = (as_of - timedelta(days=history_days)).isoformat()
-            end_iso = (as_of + timedelta(days=1)).isoformat()
-            recent_events = injury_repo.get_overlapping_injury_events(cur, pids, start_date=start_iso, end_date=end_iso) if pids else []
 
-    risk_items: List[Dict[str, Any]] = []
-    unavailable: List[Dict[str, Any]] = []
-    health_rows: List[Dict[str, Any]] = []
+    short_stamina_vals: List[float] = []
+    long_stamina_vals: List[float] = []
+    sharpness_vals: List[float] = []
 
-    status_counts = {"OUT": 0, "RETURNING": 0, "HEALTHY": 0}
-    risk_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for pid in pids:
+        fatigue_state = fatigue_by_pid.get(pid) or {}
+        short_stamina_vals.append(max(0.0, 1.0 - _safe_float(fatigue_state.get("short_term_fatigue"), 0.0)))
+        long_stamina_vals.append(max(0.0, 1.0 - _safe_float(fatigue_state.get("long_term_fatigue"), 0.0)))
 
-    for row in roster_rows:
-        pid = str(row.get("player_id"))
-        prof = _build_risk_profile(
-            row=row,
-            injury_state=injury_by_pid.get(pid) or {},
-            fatigue_state=fatigue_by_pid.get(pid) or {},
-            sharpness_state=sharp_by_pid.get(pid) or {},
-            as_of_date=as_of_iso,
-        )
-        risk_items.append(prof)
-        status = str(prof.get("injury_status") or "HEALTHY")
-        status_counts[status] = status_counts.get(status, 0) + 1
-        tier = str(prof.get("risk_tier") or "LOW")
-        risk_counts[tier] = risk_counts.get(tier, 0) + 1
-
-        if status in {"OUT", "RETURNING"}:
-            st = prof.get("injury_state") or {}
-            unavailable.append({
-                "player_id": pid,
-                "name": row.get("name"),
-                "pos": row.get("pos"),
-                "recovery_status": status,
-                "injury_current": {
-                    "body_part": st.get("body_part"),
-                    "injury_type": st.get("injury_type"),
-                    "severity": st.get("severity"),
-                    "out_until_date": st.get("out_until_date"),
-                    "returning_until_date": st.get("returning_until_date"),
-                },
-            })
-
-        agency_state = agency_by_pid.get(pid) or {}
-        hf = _safe_float(agency_state.get("health_frustration"), 0.0)
-        if agency_state:
-            health_rows.append({
-                "player_id": pid,
-                "name": row.get("name"),
-                "pos": row.get("pos"),
-                "health_frustration": hf,
-                "trade_request_level": _safe_int(agency_state.get("trade_request_level"), 0),
-                "cooldown_health_until": agency_state.get("cooldown_health_until"),
-                "escalation_health": _safe_int(agency_state.get("escalation_health"), 0),
-            })
-
-    risk_items_sorted = sorted(risk_items, key=lambda x: (int(x.get("risk_score") or 0), str(x.get("name") or "")), reverse=True)
-    unavailable_sorted = sorted(unavailable, key=lambda x: (str((x.get("injury_current") or {}).get("out_until_date") or ""), str(x.get("name") or "")))
-    health_sorted = sorted(health_rows, key=lambda x: (float(x.get("health_frustration") or 0.0), str(x.get("name") or "")), reverse=True)
-
-    name_by_pid = {str(r.get("player_id")): r.get("name") for r in roster_rows}
-    recent_events_sorted = sorted(recent_events, key=lambda x: str(x.get("date") or ""), reverse=True)
-    recent_event_items: List[Dict[str, Any]] = []
-    for e in recent_events_sorted[:top_n]:
-        pid = str(e.get("player_id") or "")
-        recent_event_items.append({
-            "injury_id": e.get("injury_id"),
-            "player_id": pid,
-            "name": name_by_pid.get(pid),
-            "date": e.get("date"),
-            "context": e.get("context"),
-            "body_part": e.get("body_part"),
-            "injury_type": e.get("injury_type"),
-            "severity": e.get("severity"),
-            "out_until_date": e.get("out_until_date"),
-            "returning_until_date": e.get("returning_until_date"),
-        })
-
-    hf_values = [float(r.get("health_frustration") or 0.0) for r in health_rows]
-    hf_count = len(hf_values)
+        sharp_state = sharp_by_pid.get(pid) or {}
+        sharpness_vals.append(_clamp(_safe_float(sharp_state.get("sharpness"), 0.0), 0.0, 1.0))
 
     return {
-        "team_id": tid,
-        "season_year": season_year,
-        "as_of_date": as_of_iso,
-        "history_days": history_days,
-        "top_n": top_n,
-        "summary": {
-            "roster_count": len(roster_rows),
-            "injury_status_counts": status_counts,
-            "risk_tier_counts": risk_counts,
-            "health_frustration": {
-                "count_with_state": hf_count,
-                "high_count": sum(1 for v in hf_values if v >= health_high_threshold),
-                "max": max(hf_values) if hf_values else 0.0,
-                "avg": (sum(hf_values) / hf_count) if hf_values else 0.0,
-            },
-        },
-        "watchlists": {
-            "highest_risk": risk_items_sorted[:top_n],
-            "currently_unavailable": unavailable_sorted[:top_n],
-            "health_frustration_high": [r for r in health_sorted if float(r.get("health_frustration") or 0.0) >= health_high_threshold][:top_n],
-            "recent_injury_events": recent_event_items,
-        },
+        "stamina_short_avg": round(_average(short_stamina_vals), 3),
+        "stamina_long_avg": round(_average(long_stamina_vals), 3),
+        "sharpness_avg": round(_average(sharpness_vals), 3),
     }
+
+
 @router.get("/")
 async def root():
     """간단한 헬스체크 및 NBA.html 링크 안내."""
@@ -1472,6 +1486,146 @@ async def team_schedule(team_id: str):
         "current_date": current_date,
         "games": formatted_games,
     }
+
+
+@router.get("/api/home/dashboard/{team_id}")
+async def home_dashboard(
+    team_id: str,
+    include_prediction: bool = False,
+    top_n: int = 5,
+):
+    """Home 화면 전용 집계 조회 API.
+
+    기존 분산 API를 서버에서 fan-in하여 프런트의 초기 로딩 복잡도를 낮춘다.
+    """
+    tid = str(normalize_team_id(team_id, strict=True))
+    top_n = max(1, min(int(top_n or 5), 10))
+
+    cache_key = f"{tid}:{1 if include_prediction else 0}:{top_n}"
+    now = time.monotonic()
+    cached = _HOME_DASHBOARD_CACHE.get(cache_key)
+    if cached and (now - cached[0]) <= 20.0:
+        return cached[1]
+
+    league = state.export_full_state_snapshot().get("league", {})
+    season_id = str(league.get("active_season_id") or "")
+    season_year = int(league.get("season_year") or 0)
+    as_of_date = str(league.get("current_date") or "")[:10]
+
+    schedule_data = await team_schedule(tid)
+    games = schedule_data.get("games") if isinstance(schedule_data, dict) else []
+    games = games if isinstance(games, list) else []
+
+    next_game = next((g for g in games if not bool(g.get("is_completed"))), None)
+    if next_game is None:
+        raise HTTPException(status_code=404, detail=f"No upcoming game found for team '{tid}'")
+
+    opp_tid = str(next_game.get("opponent_team_id") or "")
+    opp_schedule = await team_schedule(opp_tid) if opp_tid else {"games": []}
+    opp_games = opp_schedule.get("games") if isinstance(opp_schedule, dict) else []
+    opp_games = opp_games if isinstance(opp_games, list) else []
+
+    standings_table = get_conference_standings_table()
+    team_row = _find_team_row_in_standings(standings_table, tid) or {}
+    rank_map = _rank_map_from_standings(standings_table)
+
+    med = await api_medical_team_overview(tid, history_days=180, top_n=top_n)
+    roster = await roster_summary(tid)
+    two_way = await two_way_summary(tid)
+    condition = _compute_team_condition_snapshot(tid, season_year=season_year)
+
+    med_summary = (med.get("summary") or {}) if isinstance(med, dict) else {}
+    med_watch = (med.get("watchlists") or {}) if isinstance(med, dict) else {}
+    injury_counts = (med_summary.get("injury_status_counts") or {}) if isinstance(med_summary, dict) else {}
+    risk_counts = (med_summary.get("risk_tier_counts") or {}) if isinstance(med_summary, dict) else {}
+    highest_risk = med_watch.get("highest_risk") if isinstance(med_watch.get("highest_risk"), list) else []
+
+    user_last5 = _last5_form_from_games(games, team_id=tid)
+    opp_last5 = _last5_form_from_games(opp_games, team_id=opp_tid) if opp_tid else []
+
+    pending_games = [g for g in games if not bool(g.get("is_completed"))]
+    pending_games = sorted(pending_games, key=lambda x: (str(x.get("date") or ""), str(x.get("game_id") or "")))[:5]
+
+    schedule_preview = []
+    for g in pending_games:
+        opponent_id = str(g.get("opponent_team_id") or "")
+        opp_rank = rank_map.get(opponent_id)
+        schedule_preview.append({
+            "date": g.get("date"),
+            "date_mmdd": g.get("date_mmdd"),
+            "opponent_team_id": opponent_id,
+            "opponent_team_name": g.get("opponent_team_name"),
+            "is_home": bool(g.get("is_home")),
+            "tipoff_time": g.get("tipoff_time"),
+            "difficulty": _difficulty_from_opp_rank(opp_rank),
+        })
+
+    response = {
+        "meta": {
+            "team_id": tid,
+            "as_of_date": as_of_date,
+            "season_id": season_id,
+        },
+        "hero": {
+            "next_game": {
+                "game_id": next_game.get("game_id"),
+                "date": next_game.get("date"),
+                "tipoff_time": next_game.get("tipoff_time"),
+                "is_home": bool(next_game.get("is_home")),
+                "opponent_team_id": opp_tid,
+                "opponent_team_name": next_game.get("opponent_team_name"),
+                "labels": ["REG", "HOME" if bool(next_game.get("is_home")) else "AWAY"],
+            },
+            "user_team": {
+                "team_id": tid,
+                "name": TEAM_FULL_NAMES.get(tid, tid),
+            },
+            "opponent_team": {
+                "team_id": opp_tid,
+                "name": TEAM_FULL_NAMES.get(opp_tid, opp_tid),
+            },
+            "form": {
+                "user_last5": user_last5,
+                "opp_last5": opp_last5,
+            },
+            "prediction": {
+                "available": bool(include_prediction),
+                "user_win_prob": None,
+                "model": None,
+            },
+        },
+        "snapshots": {
+            "condition": condition,
+            "medical": {
+                "out_count": _safe_int(injury_counts.get("OUT"), 0),
+                "returning_count": _safe_int(injury_counts.get("RETURNING"), 0),
+                "high_risk_count": _safe_int(risk_counts.get("HIGH"), 0),
+                "top_risk_player": highest_risk[0] if highest_risk else None,
+            },
+            "standing": {
+                "conference": team_row.get("conference"),
+                "rank": _safe_int(team_row.get("rank"), 0),
+                "wins": _safe_int(team_row.get("wins"), 0),
+                "losses": _safe_int(team_row.get("losses"), 0),
+                "last10": team_row.get("l10"),
+                "streak": team_row.get("strk"),
+                "gb": team_row.get("gb_display"),
+            },
+            "roster": {
+                "top_players": (roster.get("players") or [])[:3],
+                "two_way": {
+                    "used": _safe_int(two_way.get("used_two_way_slots"), 0),
+                    "max": _safe_int(two_way.get("max_two_way_slots"), 3),
+                    "open": _safe_int(two_way.get("open_two_way_slots"), 0),
+                },
+            },
+        },
+        "alerts": _build_alerts(medical_summary=med, two_way_summary_data=two_way),
+        "schedule_preview": schedule_preview,
+    }
+
+    _HOME_DASHBOARD_CACHE[cache_key] = (now, response)
+    return response
 
 
 # -------------------------------------------------------------------------
