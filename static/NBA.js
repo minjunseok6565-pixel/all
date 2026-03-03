@@ -1894,6 +1894,31 @@ function formatSignedDelta(v) {
   };
 }
 
+function medicalRiskTierLabel(tier) {
+  const t = String(tier || '').toUpperCase();
+  if (t === 'HIGH') return 'HIGH';
+  if (t === 'MEDIUM') return 'ELEVATED';
+  if (t === 'LOW') return 'WATCH';
+  return 'HEALTHY';
+}
+
+function medicalStatusClass(label) {
+  const t = String(label || '').toUpperCase();
+  if (t === 'HIGH' || t === 'OUT') return 'is-high';
+  if (t === 'ELEVATED' || t === 'MEDIUM' || t === 'RETURNING') return 'is-elevated';
+  if (t === 'WATCH' || t === 'LOW') return 'is-watch';
+  return 'is-healthy';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function renderMedicalHero(alerts = {}) {
   const p = alerts?.primary_alert_player;
   const load = alerts?.team_load_context || {};
@@ -1903,19 +1928,20 @@ function renderMedicalHero(alerts = {}) {
   els.medicalAlertLevel.className = `medical-alert-badge ${level === 'CRITICAL' ? 'level-critical' : level === 'WARN' ? 'level-warn' : ''}`;
 
   if (!p) {
-    els.medicalAlertText.textContent = '현재 주요 경고가 없습니다.';
-    els.medicalAlertMeta.textContent = `다음 7일 경기 ${num(load?.next_7d_game_count, 0)}회 · B2B ${num(load?.next_7d_back_to_back_count, 0)}회`;
+    els.medicalAlertText.textContent = '현재 긴급 관리 대상이 없습니다.';
+    els.medicalAlertMeta.textContent = `다음 7일 경기 ${num(load?.next_7d_game_count, 0)}회 · B2B ${num(load?.next_7d_back_to_back_count, 0)}회 · 팀 컨디션 안정`;
     return;
   }
 
-  els.medicalAlertText.textContent = `${p.name || '-'} 리스크 ${p.risk_tier || '-'} (${num(p.risk_score, 0)})`;
-  els.medicalAlertMeta.textContent = `${p.injury_status || '-'} · OUT ${p.out_until_date || '-'} / RETURNING ${p.returning_until_date || '-'} · 다음 7일 ${num(load?.next_7d_game_count, 0)}경기 (B2B ${num(load?.next_7d_back_to_back_count, 0)}회)`;
+  const riskTier = medicalRiskTierLabel(p.risk_tier);
+  els.medicalAlertText.textContent = `${p.name || '-'} 위험도 ${riskTier} (${num(p.risk_score, 0)})`;
+  els.medicalAlertMeta.textContent = `${p.injury_status || '-'} · 결장 ${p.out_until_date || '-'} / 복귀관리 ${p.returning_until_date || '-'} · 다음 7일 ${num(load?.next_7d_game_count, 0)}경기 (B2B ${num(load?.next_7d_back_to_back_count, 0)}회)`;
 }
 
 function renderMedicalTimeline(playerName, events) {
-  els.medicalTimelineTitle.textContent = playerName ? `${playerName} 최근 부상 타임라인` : '워치리스트에서 선수를 선택하세요.';
+  els.medicalTimelineTitle.textContent = playerName ? `${playerName} 메디컬 이벤트 타임라인` : '워치리스트에서 선수를 선택하세요.';
   if (!events || !events.length) {
-    els.medicalTimelineList.innerHTML = '<p class="empty-copy">최근 이벤트가 없습니다.</p>';
+    els.medicalTimelineList.innerHTML = '<p class="empty-copy">최근 기록된 메디컬 이벤트가 없습니다. 현재 안정 구간입니다.</p>';
     return;
   }
   els.medicalTimelineList.innerHTML = events.map((e) => `
@@ -1948,6 +1974,37 @@ function renderMedicalActionRecommendations(payload, playerName) {
   }).join('');
 }
 
+function buildMedicalAlertsFromOverview(overview) {
+  const summary = overview?.summary || {};
+  const watch = overview?.watchlists || {};
+  const top = (watch?.highest_risk || [])[0];
+  const outCount = num(summary?.injury_status_counts?.OUT, 0);
+  const highCount = num(summary?.risk_tier_counts?.HIGH, 0);
+  const level = top && highCount > 0 ? 'WARN' : outCount > 0 ? 'WARN' : 'INFO';
+
+  return {
+    alert_level: level,
+    primary_alert_player: top ? {
+      player_id: top.player_id,
+      name: top.name,
+      injury_status: top.injury_status,
+      risk_tier: top.risk_tier,
+      risk_score: top.risk_score,
+      out_until_date: top?.injury_current?.out_until_date,
+      returning_until_date: top?.injury_current?.returning_until_date,
+    } : null,
+    team_load_context: {
+      next_7d_game_count: 0,
+      next_7d_back_to_back_count: 0,
+    },
+    kpi_delta_7d: {
+      out_count_delta: 0,
+      high_risk_count_delta: 0,
+      health_high_count_delta: 0,
+    },
+  };
+}
+
 function renderMedicalRiskCalendar(payload) {
   const days = payload?.days || [];
   if (!days.length) {
@@ -1957,7 +2014,7 @@ function renderMedicalRiskCalendar(payload) {
   els.medicalRiskCalendarList.innerHTML = days.map((d) => `
     <article class="medical-day-card ${d.is_game_day ? 'is-game' : ''} ${d.is_back_to_back ? 'is-b2b' : ''}">
       <div class="date">${d.date || '-'}</div>
-      <div class="meta">${d.is_game_day ? `vs/@ ${d.opponent_team_id || '-'}` : 'No Game'} · ${d.practice_session_type || '훈련 미정'}</div>
+      <div class="meta">${d.is_game_day ? `vs/@ ${d.opponent_team_id || '-'}` : '경기 없음'} · ${d.practice_session_type || '훈련 미정'}</div>
       <div class="badges">
         <span class="badge">HIGH ${num(d.high_risk_player_count, 0)}</span>
         <span class="badge">OUT ${num(d.out_player_count, 0)}</span>
@@ -1997,7 +2054,7 @@ function renderMedicalOverview(overview, alerts) {
   els.medicalAsOf.textContent = `기준일 ${overview?.as_of_date || '-'}`;
   els.medicalRosterCount.textContent = num(summary?.roster_count, 0);
   els.medicalOutCount.textContent = num(statusCounts?.OUT, 0);
-  els.medicalReturningCount.textContent = `복귀 관리: ${num(statusCounts?.RETURNING, 0)}명`;
+  els.medicalReturningCount.textContent = `복귀 프로토콜: ${num(statusCounts?.RETURNING, 0)}명`;
   els.medicalHighRiskCount.textContent = num(riskCounts?.HIGH, 0);
   els.medicalHealthFrustrationCount.textContent = num(summary?.health_frustration?.high_count, 0);
 
@@ -2020,22 +2077,39 @@ function renderMedicalOverview(overview, alerts) {
     els.medicalRiskBody.innerHTML = '';
     riskRows.forEach((r) => {
       const tr = document.createElement('tr');
-      tr.className = 'roster-row';
+      tr.className = 'roster-row medical-risk-row';
       const riskScore = num(r.risk_score, 0);
       const reinjuryTotal = Object.values(r?.risk_inputs?.reinjury_count || {}).reduce((acc, v) => acc + num(v, 0), 0);
+      const riskTier = medicalRiskTierLabel(r.risk_tier);
+      const statusLabel = String(r.injury_status || 'HEALTHY').toUpperCase();
+      const st = clamp((1 - num(r.condition?.short_term_fatigue, 0)) * 100, 0, 100);
+      const lt = clamp((1 - num(r.condition?.long_term_fatigue, 0)) * 100, 0, 100);
+      tr.dataset.playerId = r.player_id || '';
       tr.innerHTML = `
-        <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'} · ${num(r.age, 0)}세</span></td>
-        <td><span class="status-line ${riskTierClass(r.injury_status)}">${r.injury_status || '-'}</span></td>
         <td>
-          <strong class="${riskTierClass(r.risk_tier)}">${r.risk_tier || '-'} (${riskScore})</strong>
+          <div class="medical-player-cell">
+            <strong>${escapeHtml(r.name || '-')}</strong>
+            <span class="schedule-opponent-name">${escapeHtml(r.pos || '-')} · ${num(r.age, 0)}세</span>
+          </div>
+        </td>
+        <td><span class="medical-status-badge ${medicalStatusClass(statusLabel)}">${escapeHtml(statusLabel)}</span></td>
+        <td>
+          <strong class="${riskTierClass(r.risk_tier)}">${riskTier} (${riskScore})</strong>
           <div class="medical-risk-meter"><span style="width:${clamp(riskScore, 0, 100)}%"></span></div>
         </td>
-        <td>${formatPercent(1 - num(r.condition?.short_term_fatigue, 0))} / ${formatPercent(1 - num(r.condition?.long_term_fatigue, 0))}</td>
+        <td>
+          <div class="medical-stlt-cell">
+            <span>ST ${Math.round(st)}</span>
+            <span>LT ${Math.round(lt)}</span>
+          </div>
+        </td>
         <td>${Math.round(num(r.condition?.sharpness, 0))}</td>
         <td>${reinjuryTotal}</td>
       `;
       tr.addEventListener('click', () => {
         state.medicalSelectedPlayerId = r.player_id;
+        document.querySelectorAll('#medical-risk-body tr').forEach((row) => row.classList.remove('is-selected'));
+        tr.classList.add('is-selected');
         loadMedicalPlayerContext(r.player_id, r.name).catch((e) => alert(e.message));
       });
       els.medicalRiskBody.appendChild(tr);
@@ -2050,17 +2124,25 @@ function renderMedicalOverview(overview, alerts) {
       <td>${r.injury_current?.body_part || '-'} (${r.injury_current?.injury_type || '-'})</td>
       <td>${r.injury_current?.out_until_date || '-'} ~ ${r.injury_current?.returning_until_date || '-'}</td>
     </tr>
-  `).join('') : renderEmptyScheduleRow(4, '결장/복귀 관리 대상이 없습니다.');
+  `).join('') : renderEmptyScheduleRow(4, '현재 결장/복귀 관리 대상이 없습니다.');
 
   const healthRows = watch?.health_frustration_high || [];
-  els.medicalHealthBody.innerHTML = healthRows.length ? healthRows.map((r) => `
+  els.medicalHealthBody.innerHTML = healthRows.length ? healthRows.map((r) => {
+    const frustrationPct = clamp(num(r.health_frustration, 0) * 100, 0, 100);
+    return `
     <tr>
-      <td>${r.name || '-'} <span class="schedule-opponent-name">${r.pos || '-'}</span></td>
-      <td>${num(r.health_frustration, 2)}</td>
+      <td>${escapeHtml(r.name || '-')} <span class="schedule-opponent-name">${escapeHtml(r.pos || '-')}</span></td>
+      <td>
+        <div class="medical-frustration-cell">
+          <span>${num(r.health_frustration, 2)}</span>
+          <div class="medical-frustration-meter"><span style="width:${frustrationPct}%"></span></div>
+        </div>
+      </td>
       <td>${num(r.trade_request_level, 0)}</td>
       <td>${num(r.escalation_health, 0)}</td>
     </tr>
-  `).join('') : renderEmptyScheduleRow(4, '건강 불만 상위 선수가 없습니다.');
+  `;
+  }).join('') : renderEmptyScheduleRow(4, '컨디션 불만 고위험 선수가 없습니다.');
 }
 
 async function showMedicalScreen() {
@@ -2070,11 +2152,12 @@ async function showMedicalScreen() {
   }
   setLoading(true, '메디컬 센터 데이터를 불러오는 중...');
   try {
-    const [overview, alerts, calendar] = await Promise.all([
+    const [overview, alertsPayload, calendar] = await Promise.all([
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/overview`),
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/alerts`).catch(() => ({})),
       fetchJson(`/api/medical/team/${encodeURIComponent(state.selectedTeamId)}/risk-calendar?days=14`).catch(() => ({ days: [] })),
     ]);
+    const alerts = alertsPayload && Object.keys(alertsPayload).length ? alertsPayload : buildMedicalAlertsFromOverview(overview);
     state.medicalOverview = overview;
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.medicalTitle.textContent = `${teamName} 메디컬 센터`;
@@ -2095,10 +2178,11 @@ async function showMedicalScreen() {
     const first = primaryPlayerId ? { player_id: primaryPlayerId, name: primaryPlayerName } : (overview?.watchlists?.highest_risk || [])[0];
     if (first?.player_id) {
       state.medicalSelectedPlayerId = first.player_id;
+      document.querySelectorAll('#medical-risk-body tr').forEach((row) => row.classList.toggle('is-selected', row.dataset.playerId === first.player_id));
       await loadMedicalPlayerContext(first.player_id, first.name);
     } else {
       renderMedicalTimeline(null, []);
-      els.medicalActionList.innerHTML = '<p class="empty-copy">권고안이 없습니다.</p>';
+      els.medicalActionList.innerHTML = '<p class="empty-copy">현재 표시 가능한 권고안이 없습니다.</p>';
     }
 
     activateScreen(els.medicalScreen);

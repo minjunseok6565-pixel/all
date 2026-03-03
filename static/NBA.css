@@ -1946,10 +1946,75 @@ h1, h2, h3 { margin: 0 0 12px; }
 }
 .medical-table th,
 .medical-table td {
-  padding: 10px 8px;
-  border-bottom: 1px solid rgba(255,255,255,.08);
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
   text-align: left;
   vertical-align: top;
+}
+
+.medical-table tbody tr {
+  transition: background-color .16s ease, box-shadow .16s ease;
+}
+
+.medical-table tbody tr:hover {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.medical-risk-row {
+  cursor: pointer;
+}
+
+.medical-risk-row.is-selected {
+  background: rgba(37, 99, 235, 0.12);
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.medical-player-cell {
+  display: grid;
+  gap: 2px;
+}
+
+.medical-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 80px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 800;
+  border: 1px solid transparent;
+}
+
+.medical-status-badge.is-healthy {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.medical-status-badge.is-watch {
+  color: #92400e;
+  background: #fef9c3;
+  border-color: #fde047;
+}
+
+.medical-status-badge.is-elevated {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fdba74;
+}
+
+.medical-status-badge.is-high {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.medical-stlt-cell {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .medical-risk-meter {
@@ -1994,6 +2059,26 @@ h1, h2, h3 { margin: 0 0 12px; }
 .medical-action-item strong { color: #0f172a; }
 .medical-action-item p { margin: 4px 0 0; font-size: .84rem; color: #64748b; }
 
+.medical-frustration-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 120px;
+}
+
+.medical-frustration-meter {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.medical-frustration-meter > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444);
+}
+
 .medical-calendar-panel { margin-bottom: 0; }
 .medical-risk-calendar-list {
   margin-top: 10px;
@@ -2019,6 +2104,15 @@ h1, h2, h3 { margin: 0 0 12px; }
   font-size: .72rem;
   background: #f1f5f9;
   color: #334155;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .medical-table tbody tr,
+  .medical-alert-bar,
+  .medical-kpi-card::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }
 
 @media (max-width: 1320px) {
