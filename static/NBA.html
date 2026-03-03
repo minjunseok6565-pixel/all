@@ -124,6 +124,55 @@
         <button id="schedule-back-btn" class="btn btn-secondary" type="button">메인으로</button>
       </div>
 
+      <section class="schedule-hero" aria-label="다음 경기 요약">
+        <div class="schedule-hero-main">
+          <p class="schedule-hero-eyebrow">NEXT GAME</p>
+          <h3 id="schedule-hero-matchup" class="schedule-hero-matchup">예정된 다음 경기가 없습니다.</h3>
+          <p id="schedule-hero-datetime" class="schedule-hero-datetime">-</p>
+          <div class="schedule-hero-badges">
+            <span id="schedule-hero-status" class="schedule-status-badge">UPCOMING</span>
+            <span id="schedule-hero-venue" class="schedule-venue-badge">-</span>
+          </div>
+        </div>
+        <div class="schedule-hero-actions">
+          <button type="button" class="btn btn-primary">경기 진행</button>
+          <button type="button" id="schedule-hero-tactics-btn" class="btn btn-secondary">전술로 이동</button>
+          <button type="button" class="btn btn-secondary">빠른 진행</button>
+        </div>
+      </section>
+
+      <section class="schedule-toolbar" aria-label="스케쥴 필터">
+        <div class="schedule-filter-group" role="group" aria-label="경기 상태 필터">
+          <button type="button" class="schedule-filter-btn is-active" data-filter-group="segment" data-filter-value="all">전체</button>
+          <button type="button" class="schedule-filter-btn" data-filter-group="segment" data-filter-value="completed">완료</button>
+          <button type="button" class="schedule-filter-btn" data-filter-group="segment" data-filter-value="upcoming">예정</button>
+        </div>
+        <div class="schedule-filter-group" role="group" aria-label="장소 필터">
+          <button type="button" class="schedule-filter-btn is-active" data-filter-group="venue" data-filter-value="all">전체 장소</button>
+          <button type="button" class="schedule-filter-btn" data-filter-group="venue" data-filter-value="home">홈</button>
+          <button type="button" class="schedule-filter-btn" data-filter-group="venue" data-filter-value="away">원정</button>
+        </div>
+      </section>
+
+      <section class="schedule-insights" aria-label="스케쥴 인사이트">
+        <article class="schedule-insight-card">
+          <p>완료 경기</p>
+          <strong id="schedule-insight-completed">0</strong>
+        </article>
+        <article class="schedule-insight-card">
+          <p>예정 경기</p>
+          <strong id="schedule-insight-upcoming">0</strong>
+        </article>
+        <article class="schedule-insight-card">
+          <p>홈 / 원정</p>
+          <strong id="schedule-insight-home-away">0 / 0</strong>
+        </article>
+        <article class="schedule-insight-card">
+          <p>백투백</p>
+          <strong id="schedule-insight-b2b">0회</strong>
+        </article>
+      </section>
+
       <div class="schedule-shell">
         <article class="schedule-card">
           <div class="schedule-card-head">

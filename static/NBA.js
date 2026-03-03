@@ -105,6 +105,8 @@ const state = {
   tacticsDirty: false,
   medicalOverview: null,
   medicalSelectedPlayerId: null,
+  scheduleFilter: { segment: "all", venue: "all" },
+  scheduleGames: [],
 };
 
 const els = {
@@ -132,6 +134,15 @@ const els = {
   scheduleTitle: document.getElementById("schedule-title"),
   scheduleCompletedBody: document.getElementById("schedule-completed-body"),
   scheduleUpcomingBody: document.getElementById("schedule-upcoming-body"),
+  scheduleHeroMatchup: document.getElementById("schedule-hero-matchup"),
+  scheduleHeroDatetime: document.getElementById("schedule-hero-datetime"),
+  scheduleHeroStatus: document.getElementById("schedule-hero-status"),
+  scheduleHeroVenue: document.getElementById("schedule-hero-venue"),
+  scheduleHeroTacticsBtn: document.getElementById("schedule-hero-tactics-btn"),
+  scheduleInsightCompleted: document.getElementById("schedule-insight-completed"),
+  scheduleInsightUpcoming: document.getElementById("schedule-insight-upcoming"),
+  scheduleInsightHomeAway: document.getElementById("schedule-insight-home-away"),
+  scheduleInsightB2b: document.getElementById("schedule-insight-b2b"),
   trainingMenuBtn: document.getElementById("training-menu-btn"),
   tacticsScreen: document.getElementById("tactics-screen"),
   tacticsBackBtn: document.getElementById("tactics-back-btn"),
@@ -491,6 +502,123 @@ function renderEmptyScheduleRow(colSpan, text) {
   return `<tr><td colspan="${colSpan}" class="schedule-empty">${text}</td></tr>`;
 }
 
+
+function scheduleVenueType(game) {
+  const label = String(game?.opponent_label || "").trim().toLowerCase();
+  if (label.startsWith("vs")) return "home";
+  if (label.startsWith("@")) return "away";
+  return "all";
+}
+
+function scheduleGameDate(game) {
+  const iso = String(game?.date || "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return new Date(`${iso}T00:00:00`);
+  const mmdd = String(game?.date_mmdd || "");
+  const m = mmdd.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const seasonYear = month >= 10 ? 2025 : 2026;
+  return new Date(seasonYear, month - 1, day);
+}
+
+function dateDiffDays(gameA, gameB) {
+  const a = scheduleGameDate(gameA);
+  const b = scheduleGameDate(gameB);
+  if (!a || !b) return null;
+  return Math.round((b - a) / (1000 * 60 * 60 * 24));
+}
+
+function applyScheduleFilter(games) {
+  const segment = state.scheduleFilter?.segment || "all";
+  const venue = state.scheduleFilter?.venue || "all";
+  return (games || []).filter((g) => {
+    const completed = !!g?.is_completed;
+    const passSegment = segment === "all" || (segment === "completed" && completed) || (segment === "upcoming" && !completed);
+    const gameVenue = scheduleVenueType(g);
+    const passVenue = venue === "all" || gameVenue === venue;
+    return passSegment && passVenue;
+  });
+}
+
+function renderScheduleHero(games) {
+  const upcoming = (games || []).filter((g) => !g?.is_completed);
+  const nextGame = upcoming[0];
+  if (!nextGame) {
+    els.scheduleHeroMatchup.textContent = "예정된 다음 경기가 없습니다.";
+    els.scheduleHeroDatetime.textContent = "-";
+    els.scheduleHeroStatus.textContent = "IDLE";
+    els.scheduleHeroVenue.textContent = "-";
+    return;
+  }
+  const short = nextGame.opponent_label || "-";
+  const team = nextGame.opponent_team_name || nextGame.opponent_team_id || "상대팀";
+  els.scheduleHeroMatchup.textContent = `${short} ${team}`;
+  els.scheduleHeroDatetime.textContent = `${nextGame.date_mmdd || "--/--"} · ${nextGame.tipoff_time || "--:-- --"}`;
+  els.scheduleHeroStatus.textContent = "UPCOMING";
+  els.scheduleHeroVenue.textContent = scheduleVenueType(nextGame) === "home" ? "HOME" : "AWAY";
+}
+
+function renderScheduleInsights(games) {
+  const list = games || [];
+  const completed = list.filter((g) => g?.is_completed);
+  const upcoming = list.filter((g) => !g?.is_completed);
+  const home = list.filter((g) => scheduleVenueType(g) === "home").length;
+  const away = list.filter((g) => scheduleVenueType(g) === "away").length;
+  const sorted = [...list].sort((a, b) => {
+    const ad = scheduleGameDate(a)?.getTime() || 0;
+    const bd = scheduleGameDate(b)?.getTime() || 0;
+    return ad - bd;
+  });
+  let b2b = 0;
+  for (let i = 1; i < sorted.length; i += 1) {
+    const d = dateDiffDays(sorted[i - 1], sorted[i]);
+    if (d === 1) b2b += 1;
+  }
+  els.scheduleInsightCompleted.textContent = String(completed.length);
+  els.scheduleInsightUpcoming.textContent = String(upcoming.length);
+  els.scheduleInsightHomeAway.textContent = `${home} / ${away}`;
+  els.scheduleInsightB2b.textContent = `${b2b}회`;
+}
+
+function refreshScheduleFilterButtons() {
+  document.querySelectorAll('#schedule-screen .schedule-filter-btn').forEach((btn) => {
+    const group = btn.dataset.filterGroup;
+    const value = btn.dataset.filterValue;
+    const active = state.scheduleFilter?.[group] === value;
+    btn.classList.toggle('is-active', active);
+  });
+}
+
+function renderScheduleScreenData() {
+  const source = state.scheduleGames || [];
+  renderScheduleHero(source);
+  renderScheduleInsights(source);
+  const filtered = applyScheduleFilter(source);
+  const completed = filtered.filter((g) => g?.is_completed);
+  const upcoming = filtered.filter((g) => !g?.is_completed);
+  renderScheduleTables(filtered);
+  if ((state.scheduleFilter?.segment === 'all' || state.scheduleFilter?.segment === 'completed') && completed.length === 0) {
+    els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, '조건에 맞는 완료 경기가 없습니다.');
+  }
+  if ((state.scheduleFilter?.segment === 'all' || state.scheduleFilter?.segment === 'upcoming') && upcoming.length === 0) {
+    els.scheduleUpcomingBody.innerHTML = renderEmptyScheduleRow(3, '조건에 맞는 예정 경기가 없습니다.');
+  }
+  refreshScheduleFilterButtons();
+}
+
+function bindScheduleFilters() {
+  document.querySelectorAll('#schedule-screen .schedule-filter-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const group = btn.dataset.filterGroup;
+      const value = btn.dataset.filterValue;
+      if (!group || !value) return;
+      state.scheduleFilter[group] = value;
+      renderScheduleScreenData();
+    });
+  });
+}
+
 function renderScheduleTables(games) {
   const completed = (games || []).filter((g) => g?.is_completed);
   const upcoming = (games || []).filter((g) => !g?.is_completed);
@@ -536,7 +664,8 @@ async function showScheduleScreen() {
     const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.scheduleTitle.textContent = `${teamName} 정규 시즌 일정`;
-    renderScheduleTables(schedule?.games || []);
+    state.scheduleGames = schedule?.games || [];
+    renderScheduleScreenData();
     activateScreen(els.scheduleScreen);
   } catch (e) {
     els.scheduleCompletedBody.innerHTML = renderEmptyScheduleRow(7, `스케줄 로딩 실패: ${e.message}`);
@@ -1872,6 +2001,8 @@ els.tacticsMenuBtn.addEventListener("click", () => showTacticsScreen().catch((e)
 els.nextGameTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
 els.scheduleBtn.addEventListener("click", () => showScheduleScreen().catch((e) => alert(e.message)));
 els.scheduleBackBtn.addEventListener("click", () => showMainScreen());
+if (els.scheduleHeroTacticsBtn) els.scheduleHeroTacticsBtn.addEventListener("click", () => showTacticsScreen().catch((e) => alert(e.message)));
+bindScheduleFilters();
 els.trainingMenuBtn.addEventListener("click", () => showTrainingScreen().catch((e) => alert(e.message)));
 els.tacticsBackBtn.addEventListener("click", () => showMainScreen());
 els.tacticsOffenseBtn.addEventListener("click", () => toggleTacticsOptions("offense"));
