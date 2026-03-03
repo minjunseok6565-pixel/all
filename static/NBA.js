@@ -81,6 +81,25 @@ const els = {
   teamAName: document.getElementById("team-a-name"),
   teamBName: document.getElementById("team-b-name"),
   nextGameDatetime: document.getElementById("next-game-datetime"),
+  heroGameLabel: document.getElementById("hero-game-label"),
+  heroCountdown: document.getElementById("hero-countdown"),
+  formAway: document.getElementById("form-away"),
+  formHome: document.getElementById("form-home"),
+  metricStaminaShort: document.getElementById("metric-stamina-short"),
+  metricStaminaLong: document.getElementById("metric-stamina-long"),
+  metricSharpness: document.getElementById("metric-sharpness"),
+  metricMedicalOut: document.getElementById("metric-medical-out"),
+  metricMedicalReturning: document.getElementById("metric-medical-returning"),
+  metricMedicalHigh: document.getElementById("metric-medical-high"),
+  metricTopRisk: document.getElementById("metric-top-risk"),
+  metricStandingRank: document.getElementById("metric-standing-rank"),
+  metricStandingRecord: document.getElementById("metric-standing-record"),
+  metricStandingLast10: document.getElementById("metric-standing-last10"),
+  metricStandingStreak: document.getElementById("metric-standing-streak"),
+  metricTopPlayers: document.getElementById("metric-top-players"),
+  metricTwoWay: document.getElementById("metric-two-way"),
+  homeAlertList: document.getElementById("home-alert-list"),
+  homeSchedulePreview: document.getElementById("home-schedule-preview"),
   myTeamTitle: document.getElementById("my-team-title"),
   myTeamBtn: document.getElementById("my-team-btn"),
   tacticsMenuBtn: document.getElementById("tactics-menu-btn"),
@@ -413,6 +432,10 @@ function resetNextGameCard() {
   els.teamAName.textContent = "Team A";
   els.teamBName.textContent = "Team B";
   els.nextGameDatetime.textContent = "YYYY-MM-DD --:-- PM";
+  if (els.heroGameLabel) els.heroGameLabel.textContent = "REG";
+  if (els.heroCountdown) els.heroCountdown.textContent = "D-0";
+  if (els.formAway) els.formAway.innerHTML = '<span class="form-chip">-</span>';
+  if (els.formHome) els.formHome.innerHTML = '<span class="form-chip">-</span>';
 }
 
 function formatLeader(leader) {
@@ -480,40 +503,117 @@ async function showScheduleScreen() {
   }
 }
 
+function formatRatio(v) {
+  return `${Math.round(clamp(num(v, 0), 0, 1) * 100)}%`;
+}
+
+function formatFormChips(values) {
+  const arr = Array.isArray(values) ? values : [];
+  if (!arr.length) return '<span class="form-chip">-</span>';
+  return arr.slice(-5).map((x) => {
+    const val = String(x || "-").toUpperCase();
+    const cls = val === "W" ? "win" : (val === "L" ? "loss" : "");
+    return `<span class="form-chip ${cls}">${val}</span>`;
+  }).join("");
+}
+
+function renderFeedList(el, items, renderItem) {
+  if (!el) return;
+  if (!Array.isArray(items) || !items.length) {
+    el.innerHTML = '<li class="feed-item"><span>표시할 항목이 없습니다.</span></li>';
+    return;
+  }
+  el.innerHTML = items.map(renderItem).join("");
+}
+
 async function refreshMainDashboard() {
   if (!state.selectedTeamId) return;
 
   try {
-    const currentDate = await fetchInGameDate();
+    const dashboard = await fetchJson(`/api/home/dashboard/${encodeURIComponent(state.selectedTeamId)}?top_n=5`);
+
+    const meta = dashboard?.meta || {};
+    const hero = dashboard?.hero || {};
+    const nextGame = hero?.next_game || {};
+    const snapshots = dashboard?.snapshots || {};
+    const condition = snapshots?.condition || {};
+    const medical = snapshots?.medical || {};
+    const standing = snapshots?.standing || {};
+    const roster = snapshots?.roster || {};
+
+    const currentDate = formatIsoDate(meta?.as_of_date);
     state.currentDate = currentDate;
     els.mainCurrentDate.textContent = currentDate;
 
-    const schedule = await fetchJson(`/api/team-schedule/${encodeURIComponent(state.selectedTeamId)}`);
-    const games = schedule?.games || [];
-    const nextGame = games.find((g) => {
-      const date = String(g?.date || "").slice(0, 10);
-      return date >= currentDate && !isCompletedGame(g);
-    });
+    const oppName = hero?.opponent_team?.name || nextGame?.opponent_team_name || "상대팀";
+    const userName = hero?.user_team?.name || state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
+    els.teamAName.textContent = oppName;
+    els.teamBName.textContent = userName;
 
-    if (!nextGame) {
-      resetNextGameCard();
-      els.nextGameDatetime.textContent = "예정된 다음 경기가 없습니다.";
-      return;
+    const isHome = Boolean(nextGame?.is_home);
+    els.heroGameLabel.textContent = isHome ? "REG · HOME" : "REG · AWAY";
+
+    const gameDate = formatIsoDate(nextGame?.date);
+    const tipoff = nextGame?.tipoff_time || randomTipoffTime();
+    els.nextGameDatetime.textContent = `${gameDate} ${tipoff}`;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(currentDate) && /^\d{4}-\d{2}-\d{2}$/.test(gameDate)) {
+      const d0 = new Date(`${currentDate}T00:00:00`);
+      const d1 = new Date(`${gameDate}T00:00:00`);
+      const diffDays = Math.max(0, Math.round((d1 - d0) / (24 * 60 * 60 * 1000)));
+      els.heroCountdown.textContent = `D-${diffDays}`;
+    } else {
+      els.heroCountdown.textContent = "D-0";
     }
 
-    const homeId = String(nextGame.home_team_id || "").toUpperCase();
-    const awayId = String(nextGame.away_team_id || "").toUpperCase();
-    const gameDate = formatIsoDate(nextGame.date);
-    els.teamAName.textContent = TEAM_FULL_NAMES[homeId] || homeId || "Team A";
-    els.teamBName.textContent = TEAM_FULL_NAMES[awayId] || awayId || "Team B";
-    const tipoffTime = nextGame.tipoff_time || randomTipoffTime();
-    els.nextGameDatetime.textContent = `${gameDate} ${tipoffTime}`;
+    els.formAway.innerHTML = formatFormChips(hero?.form?.opp_last5);
+    els.formHome.innerHTML = formatFormChips(hero?.form?.user_last5);
+
+    els.metricStaminaShort.textContent = formatRatio(condition?.stamina_short_avg);
+    els.metricStaminaLong.textContent = formatRatio(condition?.stamina_long_avg);
+    els.metricSharpness.textContent = formatRatio(condition?.sharpness_avg);
+
+    els.metricMedicalOut.textContent = String(num(medical?.out_count, 0));
+    els.metricMedicalReturning.textContent = String(num(medical?.returning_count, 0));
+    els.metricMedicalHigh.textContent = String(num(medical?.high_risk_count, 0));
+    els.metricTopRisk.textContent = medical?.top_risk_player?.name
+      ? `Top risk: ${medical.top_risk_player.name} (${num(medical.top_risk_player.risk_score, 0)})`
+      : "Top risk: -";
+
+    els.metricStandingRank.textContent = standing?.rank ? `${standing.rank}위 (${standing?.conference || "-"})` : "-";
+    els.metricStandingRecord.textContent = `${num(standing?.wins, 0)}-${num(standing?.losses, 0)}`;
+    els.metricStandingLast10.textContent = standing?.last10 || "-";
+    els.metricStandingStreak.textContent = `연속 기록: ${standing?.streak || "-"}`;
+
+    const topPlayers = Array.isArray(roster?.top_players) ? roster.top_players : [];
+    els.metricTopPlayers.textContent = topPlayers.length
+      ? topPlayers.map((p) => `${p.name} (${Math.round(num(p.overall, 0))})`).join(" · ")
+      : "-";
+    const twoWay = roster?.two_way || {};
+    els.metricTwoWay.textContent = `투웨이 슬롯: ${num(twoWay.used, 0)}/${num(twoWay.max, 3)} 사용 (여유 ${num(twoWay.open, 0)})`;
+
+    renderFeedList(els.homeAlertList, dashboard?.alerts || [], (a) => `
+      <li class="feed-item">
+        <span>${a?.title || "-"} <em>${a?.cta || ""}</em></span>
+        <span class="severity ${String(a?.severity || "info").toLowerCase()}">${a?.severity || "info"}</span>
+      </li>
+    `);
+
+    renderFeedList(els.homeSchedulePreview, dashboard?.schedule_preview || [], (g) => `
+      <li class="feed-item">
+        <span>${g?.date_mmdd || "--/--"} · ${g?.is_home ? "vs" : "@"} ${(g?.opponent_team_name || g?.opponent_team_id || "-")}</span>
+        <em>${String(g?.difficulty || "unknown").toUpperCase()}</em>
+      </li>
+    `);
   } catch (e) {
     resetNextGameCard();
     els.mainCurrentDate.textContent = "YYYY-MM-DD";
     els.nextGameDatetime.textContent = `다음 경기 정보를 불러오지 못했습니다: ${e.message}`;
+    renderFeedList(els.homeAlertList, [], () => "");
+    renderFeedList(els.homeSchedulePreview, [], () => "");
   }
 }
+
 
 function num(v, fallback = 0) {
   const n = Number(v);

@@ -75,6 +75,7 @@
           <div>
             <p class="eyebrow">MY FRANCHISE</p>
             <h2 id="main-team-title">팀 이름</h2>
+            <p id="main-subtitle" class="subtitle">다음 경기와 핵심 팀 상태를 확인하세요.</p>
           </div>
           <div class="franchise-header-actions">
             <span id="main-current-date" class="franchise-date">YYYY-MM-DD</span>
@@ -84,7 +85,13 @@
         </div>
 
         <section class="next-game-panel" aria-label="다음 경기">
-          <h3 class="next-game-title">다음 경기</h3>
+          <div class="next-game-head">
+            <h3 class="next-game-title">NEXT MATCHUP</h3>
+            <div class="next-game-head-meta">
+              <span id="hero-game-label" class="hero-badge">REG</span>
+              <span id="hero-countdown" class="hero-countdown">D-0</span>
+            </div>
+          </div>
 
           <div class="next-game-team-row">
             <div class="next-game-team-name" id="team-a-name">Team A</div>
@@ -103,13 +110,83 @@
             <span class="home-away-label">Away</span>
           </div>
 
+          <div class="form-row" aria-label="최근 5경기 폼">
+            <div class="form-box">
+              <p class="form-label">상대 최근 5경기</p>
+              <div id="form-away" class="form-chips"></div>
+            </div>
+            <div class="form-box">
+              <p class="form-label">우리팀 최근 5경기</p>
+              <div id="form-home" class="form-chips"></div>
+            </div>
+          </div>
+
           <p id="next-game-datetime" class="next-game-datetime">YYYY-MM-DD --:-- PM</p>
 
           <div class="next-game-actions">
-            <button type="button" class="menu-card next-game-action-btn">경기 진행</button>
+            <button type="button" class="menu-card next-game-action-btn next-game-action-primary">경기 시작</button>
             <button type="button" id="next-game-tactics-btn" class="menu-card next-game-action-btn">전술</button>
             <button type="button" class="menu-card next-game-action-btn">빠른 진행</button>
           </div>
+        </section>
+
+        <section class="home-insight-grid" aria-label="팀 인사이트">
+          <article class="home-insight-card">
+            <p class="insight-label">컨디션</p>
+            <h4>Team Readiness</h4>
+            <div class="insight-metrics">
+              <div><span>단기 체력</span><strong id="metric-stamina-short">-</strong></div>
+              <div><span>장기 체력</span><strong id="metric-stamina-long">-</strong></div>
+              <div><span>샤프니스</span><strong id="metric-sharpness">-</strong></div>
+            </div>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">메디컬</p>
+            <h4>Injury Watch</h4>
+            <div class="insight-metrics">
+              <div><span>OUT</span><strong id="metric-medical-out">0</strong></div>
+              <div><span>복귀 관리</span><strong id="metric-medical-returning">0</strong></div>
+              <div><span>HIGH RISK</span><strong id="metric-medical-high">0</strong></div>
+            </div>
+            <p id="metric-top-risk" class="insight-footnote">Top risk: -</p>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">순위</p>
+            <h4>Conference Snapshot</h4>
+            <div class="insight-metrics">
+              <div><span>순위</span><strong id="metric-standing-rank">-</strong></div>
+              <div><span>시즌 성적</span><strong id="metric-standing-record">-</strong></div>
+              <div><span>최근 10경기</span><strong id="metric-standing-last10">-</strong></div>
+            </div>
+            <p id="metric-standing-streak" class="insight-footnote">연속 기록: -</p>
+          </article>
+
+          <article class="home-insight-card">
+            <p class="insight-label">로스터</p>
+            <h4>Front Office</h4>
+            <p id="metric-top-players" class="insight-list">-</p>
+            <p id="metric-two-way" class="insight-footnote">투웨이 슬롯: -</p>
+          </article>
+        </section>
+
+        <section class="home-lower-grid" aria-label="알림 및 일정">
+          <article class="home-feed-card">
+            <div class="home-feed-head">
+              <h4>Front Office Alerts</h4>
+              <span class="feed-head-caption">최대 5개</span>
+            </div>
+            <ul id="home-alert-list" class="feed-list"></ul>
+          </article>
+
+          <article class="home-feed-card">
+            <div class="home-feed-head">
+              <h4>Upcoming 5 Games</h4>
+              <span class="feed-head-caption">난이도 기반</span>
+            </div>
+            <ul id="home-schedule-preview" class="feed-list"></ul>
+          </article>
         </section>
       </section>
     </section>
