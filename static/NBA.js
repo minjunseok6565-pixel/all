@@ -63,6 +63,11 @@ const state = {
   tacticsDraft: null,
   medicalOverview: null,
   medicalSelectedPlayerId: null,
+  rosterView: {
+    query: "",
+    pos: "ALL",
+    sort: "salary_desc",
+  },
 };
 
 const els = {
@@ -144,6 +149,11 @@ const els = {
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
+  rosterSnapshotCards: document.getElementById("roster-snapshot-cards"),
+  rosterInsightStrip: document.getElementById("roster-insight-strip"),
+  rosterSearchInput: document.getElementById("roster-search-input"),
+  rosterPosFilter: document.getElementById("roster-pos-filter"),
+  rosterSortSelect: document.getElementById("roster-sort-select"),
   playerDetailTitle: document.getElementById("player-detail-title"),
   playerDetailPanel: document.getElementById("player-detail-panel"),
   playerDetailContent: document.getElementById("player-detail-content"),
@@ -581,26 +591,150 @@ function renderConditionRing(longStamina, shortStamina) {
   return `<div class="condition-ring" style="--long-pct:${longPct};--short-pct:${shortPct};--long-color:${longColor};--short-color:${shortColor};" title="장기 ${Math.round(longPct)}% · 단기 ${Math.round(shortPct)}%"></div>`;
 }
 
+
+function conditionLabelByScore(score) {
+  const n = clamp(num(score, 0), 0, 100);
+  if (n >= 85) return "Excellent";
+  if (n >= 70) return "Good";
+  if (n >= 55) return "Caution";
+  return "Risk";
+}
+
+function classifyRole(attrs) {
+  const a = attrs || {};
+  const outside = num(a.OUTSIDE_SCORING, 0);
+  const pass = num(a.PASS_ACCURACY, 0) + num(a.PASS_VISION, 0);
+  const def = num(a.DEFENSE, 0) + num(a.PERIMETER_DEFENSE, 0) + num(a.INTERIOR_DEFENSE, 0);
+  const reb = num(a.DEFENSIVE_REBOUND, 0) + num(a.OFFENSIVE_REBOUND, 0);
+  const paint = num(a.INSIDE_SCORING, 0) + num(a.DRIVING_DUNK, 0);
+  if (outside >= 90) return "Elite Shooter";
+  if (pass >= 160) return "Playmaker";
+  if (def >= 145) return "Defender";
+  if (reb >= 120 || paint >= 120) return "Big Finisher";
+  return "Two-Way";
+}
+
+function enrichRosterRow(row) {
+  const attrs = row.attrs || {};
+  const shortStamina = row.short_term_stamina ?? (1 - num(row.short_term_fatigue, 0));
+  const longStamina = row.long_term_stamina ?? (1 - num(row.long_term_fatigue, 0));
+  const sharpness = clamp(num(row.sharpness, 50), 0, 100);
+  const ovr = clamp(num(attrs.OVR ?? attrs.OVERALL ?? attrs.OVERALL_RATING, 60), 0, 100);
+  const conditionScore = Math.round((clamp(num(shortStamina, 0), 0, 1) + clamp(num(longStamina, 0), 0, 1)) * 50);
+  const salary = num(row.salary, 0);
+  return {
+    ...row,
+    shortStamina,
+    longStamina,
+    sharpness,
+    ovr,
+    conditionScore,
+    roleTag: classifyRole(attrs),
+    salaryEff: salary > 0 ? (ovr / salary) * 1000000 : 0,
+  };
+}
+
+function rosterCompareBySort(a, b, sortKey) {
+  const sorters = {
+    salary_desc: () => b.salary - a.salary,
+    ovr_desc: () => b.ovr - a.ovr,
+    sharpness_desc: () => b.sharpness - a.sharpness,
+    condition_desc: () => b.conditionScore - a.conditionScore,
+    age_asc: () => num(a.age, 0) - num(b.age, 0),
+    name_asc: () => String(a.name || "").localeCompare(String(b.name || "")),
+  };
+  const fn = sorters[sortKey] || sorters.salary_desc;
+  const result = fn();
+  return result !== 0 ? result : String(a.name || "").localeCompare(String(b.name || ""));
+}
+
+function renderRosterSnapshots(rows) {
+  if (!els.rosterSnapshotCards) return;
+  if (!rows.length) {
+    els.rosterSnapshotCards.innerHTML = '<p class="empty-copy">로스터 데이터가 없습니다.</p>';
+    return;
+  }
+
+  const avgOvr = Math.round(rows.reduce((acc, r) => acc + r.ovr, 0) / rows.length);
+  const avgAge = Math.round((rows.reduce((acc, r) => acc + num(r.age, 0), 0) / rows.length) * 10) / 10;
+  const totalSalary = rows.reduce((acc, r) => acc + r.salary, 0);
+  const riskCount = rows.filter((r) => r.conditionScore < 55 || r.sharpness < 55).length;
+
+  const cards = [
+    { label: 'AVG OVR', value: `${avgOvr}` },
+    { label: 'AVG AGE', value: `${avgAge}` },
+    { label: 'TOTAL SALARY', value: formatMoney(totalSalary) },
+    { label: 'RISK PLAYERS', value: `${riskCount}명` },
+  ];
+
+  els.rosterSnapshotCards.innerHTML = cards.map((c) => `
+    <article class="roster-snapshot-card">
+      <p>${c.label}</p>
+      <strong>${c.value}</strong>
+    </article>
+  `).join('');
+}
+
+function updateRosterInsight(rows) {
+  if (!els.rosterInsightStrip) return;
+  if (!rows.length) {
+    els.rosterInsightStrip.textContent = '현재 표시할 로스터 인사이트가 없습니다.';
+    return;
+  }
+  const lowCondition = [...rows].sort((a, b) => a.conditionScore - b.conditionScore).slice(0, 2).map((r) => r.name).join(', ');
+  const highSalaryLowEff = [...rows].sort((a, b) => b.salary - a.salary).filter((r) => r.salaryEff < 2.5).slice(0, 2).map((r) => r.name).join(', ');
+  const lowConditionText = lowCondition ? `컨디션 관리 필요: ${lowCondition}` : '컨디션 리스크 낮음';
+  const effText = highSalaryLowEff ? `연봉 효율 점검: ${highSalaryLowEff}` : '연봉 효율 안정적';
+  els.rosterInsightStrip.textContent = `${lowConditionText} · ${effText}`;
+}
+
+function getFilteredRosterRows(sourceRows) {
+  const query = (state.rosterView.query || '').trim().toLowerCase();
+  const pos = state.rosterView.pos || 'ALL';
+  const sort = state.rosterView.sort || 'salary_desc';
+
+  return sourceRows
+    .map(enrichRosterRow)
+    .filter((r) => (!query || String(r.name || '').toLowerCase().includes(query)))
+    .filter((r) => (pos === 'ALL' ? true : String(r.pos || '').toUpperCase() === pos))
+    .sort((a, b) => rosterCompareBySort(a, b, sort));
+}
+
 function renderRosterRows(rows) {
   els.rosterBody.innerHTML = "";
+  if (!rows.length) {
+    els.rosterBody.innerHTML = '<tr><td class="schedule-empty" colspan="8">조건에 맞는 선수가 없습니다.</td></tr>';
+    return;
+  }
+
   for (const row of rows) {
     const tr = document.createElement("tr");
     tr.className = "roster-row";
     tr.dataset.playerId = row.player_id;
 
-    const shortStamina = row.short_term_stamina ?? (1 - num(row.short_term_fatigue, 0));
-    const longStamina = row.long_term_stamina ?? (1 - num(row.long_term_fatigue, 0));
-    const sharpness = clamp(num(row.sharpness, 50), 0, 100);
+    if (String(state.selectedPlayerId || "") === String(row.player_id || "")) {
+      tr.classList.add("is-selected");
+    }
 
     tr.innerHTML = `
-      <td>${row.name || "-"}</td>
-      <td>${row.pos || "-"}</td>
+      <td>
+        <div class="roster-name-cell">
+          <strong>${row.name || "-"}</strong>
+          <span class="roster-role-tag">${row.roleTag}</span>
+        </div>
+      </td>
+      <td><span class="pos-pill">${row.pos || "-"}</span></td>
       <td>${num(row.age, 0)}</td>
       <td>${formatHeightIn(row.height_in)}</td>
       <td>${formatWeightLb(row.weight_lb)}</td>
-      <td>${formatMoney(row.salary)}</td>
-      <td class="condition-cell">${renderConditionRing(longStamina, shortStamina)}</td>
-      <td><span class="sharpness-badge" style="background:${ratioToColor(sharpness / 100)}">${Math.round(sharpness)}%</span></td>
+      <td class="num-cell">${formatMoney(row.salary)}</td>
+      <td class="condition-cell">
+        ${renderConditionRing(row.longStamina, row.shortStamina)}
+        <span class="condition-label">${conditionLabelByScore(row.conditionScore)}</span>
+      </td>
+      <td>
+        <span class="sharpness-badge" style="background:${ratioToColor(row.sharpness / 100)}">${Math.round(row.sharpness)}%</span>
+      </td>
     `;
 
     tr.addEventListener("click", () => {
@@ -632,20 +766,62 @@ function getDissatisfactionSummary(d) {
   };
 }
 
-function renderAttrGrid(attrs) {
-  const entries = Object.entries(attrs || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+function normalizeAttrValue(v) {
+  if (typeof v !== "number") return num(v, 0);
+  return Math.abs(v) <= 1 ? Math.round(v * 100) : Math.round(v);
+}
+
+function attrGroupLabel(score) {
+  if (score >= 85) return "Elite";
+  if (score >= 75) return "Great";
+  if (score >= 60) return "Solid";
+  return "Risk";
+}
+
+function attrGroupByKey(key) {
+  const k = String(key || "").toUpperCase();
+  if (["OUTSIDE", "MID", "CLOSE", "FREE_THROW", "LAYUP", "DRIVING_DUNK", "INSIDE_SCORING"].some((x) => k.includes(x))) return "공격";
+  if (["PASS", "BALL_HANDLE", "HANDS", "DRAW_FOUL", "IQ"].some((x) => k.includes(x))) return "플레이메이킹";
+  if (["DEFENSE", "BLOCK", "REBOUND", "STEAL", "PERIMETER", "INTERIOR", "HELP"].some((x) => k.includes(x))) return "수비";
+  if (["SPEED", "AGILITY", "ATHLETIC", "STRENGTH", "DURABILITY", "INJURY"].some((x) => k.includes(x))) return "피지컬";
+  if (["HUSTLE", "CONSISTENCY", "LOYALTY", "AMBITION", "EGO", "WORKETHIC", "INTANGIBLES", "ADAPTABILITY", "COACHABILITY"].some((x) => k.includes(x))) return "멘탈";
+  return "기타";
+}
+
+function renderAttrGroups(attrs) {
+  const entries = Object.entries(attrs || {})
+    .map(([k, v]) => [k, normalizeAttrValue(v)])
+    .filter(([, v]) => Number.isFinite(v));
+
   if (!entries.length) return '<p class="empty-copy">능력치 데이터가 없습니다.</p>';
-  return entries
-    .map(([k, v]) => {
-      const value = typeof v === "number" ? (Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`) : String(v);
-      return `
-        <div class="attr-card">
-          <span class="attr-name">${k}</span>
-          <strong class="attr-value">${value}</strong>
+
+  const groups = new Map();
+  for (const [k, v] of entries) {
+    const g = attrGroupByKey(k);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push([k, v]);
+  }
+
+  const order = ["공격", "플레이메이킹", "수비", "피지컬", "멘탈", "기타"];
+  return order.filter((g) => groups.has(g)).map((g) => {
+    const items = groups.get(g).sort((a, b) => b[1] - a[1]);
+    const avg = Math.round(items.reduce((acc, [,v]) => acc + v, 0) / items.length);
+    const top2 = items.slice(0, 2).map(([k,v]) => `${k} ${v}`).join(" · ");
+    const low2 = [...items].slice(-2).map(([k,v]) => `${k} ${v}`).join(" · ");
+    return `
+      <article class="attr-group-card">
+        <header>
+          <h5>${g}</h5>
+          <div class="attr-group-meta"><strong>${avg}</strong><span>${attrGroupLabel(avg)}</span></div>
+        </header>
+        <p class="attr-group-highlight">강점: ${top2}</p>
+        <p class="attr-group-highlight attr-group-highlight-low">약점: ${low2}</p>
+        <div class="attr-group-grid">
+          ${items.map(([k, v]) => `<div class="attr-card"><span class="attr-name">${k}</span><strong class="attr-value">${v}</strong></div>`).join("")}
         </div>
-      `;
-    })
-    .join("");
+      </article>
+    `;
+  }).join("");
 }
 
 function buildContractRows(contractActive, fallbackSalary) {
@@ -737,8 +913,13 @@ function renderPlayerDetail(detail) {
           <div>
             <h3>${playerName}</h3>
             <p class="detail-subline">${p.pos || "-"} · ${num(p.age, 0)}세 · ${formatHeightIn(p.height_in)} / ${formatWeightLb(p.weight_lb)}</p>
+            <p class="section-copy">역할 프로필: ${classifyRole(p.attrs || {})}</p>
           </div>
-          <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
+          <div class="detail-kpi-stack">
+            <span class="detail-kpi">OVR ${num((p.attrs || {}).OVR ?? (p.attrs || {}).OVERALL, 0)}</span>
+            <span class="detail-kpi">컨디션 ${Math.round((num(condition.short_term_stamina, 0.5) + num(condition.long_term_stamina, 0.5)) * 50)}%</span>
+            <span class="sharpness-badge" style="background:${ratioToColor(num(condition.sharpness, 50) / 100)}">경기력 ${Math.round(num(condition.sharpness, 50))}%</span>
+          </div>
         </div>
       </section>
 
@@ -759,7 +940,7 @@ function renderPlayerDetail(detail) {
 
       <section class="detail-card detail-card-attr">
         <h4>능력치 (ATTR)</h4>
-        <div class="attr-grid">${renderAttrGrid(p.attrs || {})}</div>
+        <div class="attr-groups">${renderAttrGroups(p.attrs || {})}</div>
       </section>
 
       <section class="detail-card detail-card-health">
@@ -808,7 +989,10 @@ async function showMyTeamScreen() {
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.myTeamTitle.textContent = `${teamName} 선수단`;
 
-    renderRosterRows(state.rosterRows);
+    const rosterViewRows = getFilteredRosterRows(state.rosterRows);
+    renderRosterSnapshots(rosterViewRows);
+    updateRosterInsight(rosterViewRows);
+    renderRosterRows(rosterViewRows);
     els.playerDetailContent.innerHTML = "";
     els.playerDetailTitle.textContent = "선수 상세 정보";
     activateScreen(els.myTeamScreen);
@@ -817,6 +1001,35 @@ async function showMyTeamScreen() {
   }
 }
 
+
+
+function refreshRosterView() {
+  const rosterViewRows = getFilteredRosterRows(state.rosterRows || []);
+  renderRosterSnapshots(rosterViewRows);
+  updateRosterInsight(rosterViewRows);
+  renderRosterRows(rosterViewRows);
+}
+
+function bindRosterControls() {
+  if (els.rosterSearchInput) {
+    els.rosterSearchInput.addEventListener("input", (e) => {
+      state.rosterView.query = String(e.target.value || "");
+      refreshRosterView();
+    });
+  }
+  if (els.rosterPosFilter) {
+    els.rosterPosFilter.addEventListener("change", (e) => {
+      state.rosterView.pos = String(e.target.value || "ALL");
+      refreshRosterView();
+    });
+  }
+  if (els.rosterSortSelect) {
+    els.rosterSortSelect.addEventListener("change", (e) => {
+      state.rosterView.sort = String(e.target.value || "salary_desc");
+      refreshRosterView();
+    });
+  }
+}
 async function confirmTeamSelection(teamId, fullName) {
   const confirmed = window.confirm(`${fullName}을(를) 선택하시겠습니까?`);
   if (!confirmed) return;
@@ -1739,6 +1952,7 @@ els.trainingTypeButtons.querySelectorAll("button[data-training-type]").forEach((
 els.backToMainBtn.addEventListener("click", () => showMainScreen());
 els.backToRosterBtn.addEventListener("click", () => activateScreen(els.myTeamScreen));
 
+bindRosterControls();
 loadSavesStatus();
 
 window.__debugRenderMyTeam = function __debugRenderMyTeam() {
@@ -1750,7 +1964,7 @@ window.__debugRenderMyTeam = function __debugRenderMyTeam() {
     { player_id: "p3", name: "K. Porzingis", pos: "C", age: 29, height_in: 87, weight_lb: 240, salary: 36000000, short_term_stamina: 0.33, long_term_stamina: 0.62, sharpness: 42 }
   ];
   els.myTeamTitle.textContent = `${state.selectedTeamName} 선수단`;
-  renderRosterRows(state.rosterRows);
+  refreshRosterView();
   els.playerDetailTitle.textContent = "선수 상세 정보";
   els.playerDetailContent.innerHTML = "";
   activateScreen(els.myTeamScreen);
