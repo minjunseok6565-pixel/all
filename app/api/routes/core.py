@@ -190,6 +190,78 @@ def _build_risk_profile(
         "risk_score": int(risk["risk_score"]),
         "risk_tier": risk["risk_tier"],
     }
+
+
+def _row_stat_float(row: Mapping[str, Any], *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        try:
+            raw = row.get(key)
+        except AttributeError:
+            raw = None
+        if raw is None:
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return float(default)
+
+
+def _row_stat_int(row: Mapping[str, Any], *keys: str, default: int = 0) -> int:
+    return int(round(_row_stat_float(row, *keys, default=float(default))))
+
+
+def _row_player_id(row: Mapping[str, Any]) -> str:
+    candidates = (
+        row.get("PlayerID"),
+        row.get("player_id"),
+        row.get("PLAYER_ID"),
+        row.get("id"),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        sval = str(value).strip()
+        if sval:
+            return sval
+    return ""
+
+
+def _estimate_game_score(row: Mapping[str, Any]) -> float:
+    pts = _row_stat_float(row, "PTS", "points")
+    fgm = _row_stat_float(row, "FGM")
+    fga = _row_stat_float(row, "FGA")
+    ftm = _row_stat_float(row, "FTM")
+    fta = _row_stat_float(row, "FTA")
+    orb = _row_stat_float(row, "OREB", "ORB")
+    drb = _row_stat_float(row, "DREB", "DRB")
+    stl = _row_stat_float(row, "STL")
+    ast = _row_stat_float(row, "AST")
+    blk = _row_stat_float(row, "BLK")
+    pf = _row_stat_float(row, "PF")
+    tov = _row_stat_float(row, "TOV", "TO")
+    score = (
+        pts
+        + 0.4 * fgm
+        - 0.7 * fga
+        - 0.4 * (fta - ftm)
+        + 0.7 * orb
+        + 0.3 * drb
+        + stl
+        + 0.7 * ast
+        + 0.7 * blk
+        - 0.4 * pf
+        - tov
+    )
+    return round(score, 1)
+
+
+def _ratio(num: float, den: float) -> float:
+    if den <= 0:
+        return 0.0
+    return float(num) / float(den)
+
+
 @router.get("/")
 async def root():
     """간단한 헬스체크 및 NBA.html 링크 안내."""
@@ -464,6 +536,275 @@ async def api_player_detail(player_id: str, season_year: Optional[int] = None):
             "sharpness_state": sharpness_state,
         },
         "injury": injury,
+    }
+
+
+@router.get("/api/players/{player_id}/game-log")
+async def api_player_game_log(player_id: str, limit: int = 10):
+    """Return latest completed game logs for a player from workflow game_results."""
+    pid = str(normalize_player_id(player_id, strict=False, allow_legacy_numeric=True))
+    if not pid:
+        raise HTTPException(status_code=400, detail="Invalid player_id")
+
+    limit = max(1, min(int(limit or 10), 30))
+
+    workflow_state = state.export_workflow_state() or {}
+    if not isinstance(workflow_state, dict):
+        workflow_state = {}
+
+    full_snapshot = state.export_full_state_snapshot()
+    league = full_snapshot.get("league", {}) if isinstance(full_snapshot, dict) else {}
+    season_id = str((league or {}).get("active_season_id") or "")
+    game_results = workflow_state.get("game_results") or {}
+    if not isinstance(game_results, dict):
+        game_results = {}
+
+    items: List[Dict[str, Any]] = []
+    for game_id, gr in game_results.items():
+        if not isinstance(gr, dict):
+            continue
+        game_date = str(gr.get("date") or "")[:10]
+        teams = gr.get("teams")
+        if not isinstance(teams, dict):
+            continue
+
+        found_row: Optional[Mapping[str, Any]] = None
+        owner_team_id: Optional[str] = None
+        for team_id, team_box in teams.items():
+            players = (team_box or {}).get("players") if isinstance(team_box, dict) else None
+            if not isinstance(players, list):
+                continue
+            for row in players:
+                if not isinstance(row, dict):
+                    continue
+                if _row_player_id(row) == pid:
+                    found_row = row
+                    owner_team_id = str(team_id)
+                    break
+            if found_row is not None:
+                break
+
+        if found_row is None or owner_team_id is None:
+            continue
+
+        home_team_id = str(gr.get("home_team_id") or "")
+        away_team_id = str(gr.get("away_team_id") or "")
+        is_home = owner_team_id == home_team_id
+        opponent_team_id = away_team_id if is_home else home_team_id
+
+        fgm = _row_stat_int(found_row, "FGM")
+        fga = _row_stat_int(found_row, "FGA")
+        tpm = _row_stat_int(found_row, "3PM", "TPM")
+        tpa = _row_stat_int(found_row, "3PA", "TPA")
+        ftm = _row_stat_int(found_row, "FTM")
+        fta = _row_stat_int(found_row, "FTA")
+        pts = _row_stat_int(found_row, "PTS")
+        reb = _row_stat_int(found_row, "REB", "TRB")
+        ast = _row_stat_int(found_row, "AST")
+
+        items.append(
+            {
+                "game_id": str(game_id),
+                "date": game_date,
+                "team_id": owner_team_id,
+                "opponent_team_id": opponent_team_id,
+                "is_home": bool(is_home),
+                "minutes": round(_row_stat_float(found_row, "MIN", "minutes"), 1),
+                "pts": pts,
+                "reb": reb,
+                "ast": ast,
+                "stl": _row_stat_int(found_row, "STL"),
+                "blk": _row_stat_int(found_row, "BLK"),
+                "tov": _row_stat_int(found_row, "TOV", "TO"),
+                "fgm": fgm,
+                "fga": fga,
+                "tpm": tpm,
+                "tpa": tpa,
+                "ftm": ftm,
+                "fta": fta,
+                "fg_pct": round(_ratio(fgm, fga), 3),
+                "tp_pct": round(_ratio(tpm, tpa), 3),
+                "ft_pct": round(_ratio(ftm, fta), 3),
+                "plus_minus": _row_stat_int(found_row, "+/-", "PLUS_MINUS", "plus_minus"),
+                "game_score": _estimate_game_score(found_row),
+            }
+        )
+
+    items_sorted = sorted(items, key=lambda x: (str(x.get("date") or ""), str(x.get("game_id") or "")), reverse=True)
+    recent = items_sorted[:limit]
+
+    last_n = recent[: min(5, len(recent))]
+    if last_n:
+        ts_num = sum(r.get("pts", 0.0) for r in last_n)
+        ts_den = 2.0 * sum((r.get("fga", 0.0) + 0.44 * r.get("fta", 0.0)) for r in last_n)
+        summary_last_5 = {
+            "games": len(last_n),
+            "pts": round(sum(r.get("pts", 0.0) for r in last_n) / len(last_n), 1),
+            "reb": round(sum(r.get("reb", 0.0) for r in last_n) / len(last_n), 1),
+            "ast": round(sum(r.get("ast", 0.0) for r in last_n) / len(last_n), 1),
+            "game_score": round(sum(r.get("game_score", 0.0) for r in last_n) / len(last_n), 1),
+            "ts_pct": round(_ratio(ts_num, ts_den), 3),
+        }
+    else:
+        summary_last_5 = {"games": 0, "pts": 0.0, "reb": 0.0, "ast": 0.0, "game_score": 0.0, "ts_pct": 0.0}
+
+    return {
+        "player_id": pid,
+        "season_id": season_id,
+        "limit": limit,
+        "items": recent,
+        "summary_last_5": summary_last_5,
+    }
+
+
+@router.get("/api/team/{team_id}/roster-insights")
+async def api_team_roster_insights(team_id: str, top_n: int = 3):
+    """Roster decision-support summary for UI cards."""
+    tid = str(normalize_team_id(team_id, strict=True))
+    top_n = max(1, min(int(top_n or 3), 10))
+
+    detail = get_team_detail(tid)
+    roster = detail.get("roster") or []
+    if not isinstance(roster, list):
+        roster = []
+
+    medical = await api_medical_team_overview(team_id=tid, top_n=max(top_n, 5))
+    summary = (detail.get("summary") or {}) if isinstance(detail, dict) else {}
+    as_of_date = str((medical or {}).get("as_of_date") or state.get_current_date_as_date().isoformat())
+
+    def position_bucket(pos: str) -> str:
+        p = str(pos or "").upper()
+        if p in {"PG", "SG", "G"}:
+            return "guards"
+        if p in {"SF", "PF", "F"}:
+            return "forwards"
+        if p in {"C"}:
+            return "centers"
+        return "unknown"
+
+    pos_counts = {"guards": 0, "forwards": 0, "centers": 0, "unknown": 0}
+    value_rows: List[Dict[str, Any]] = []
+    for row in roster:
+        if not isinstance(row, dict):
+            continue
+        pos_counts[position_bucket(str(row.get("pos") or ""))] += 1
+        salary_m = max(_row_stat_float(row, "salary", default=0.0) / 1_000_000.0, 0.0)
+        production = (
+            _row_stat_float(row, "pts")
+            + 0.7 * _row_stat_float(row, "reb")
+            + 0.7 * _row_stat_float(row, "ast")
+        )
+        sharpness_adj = 0.7 + 0.3 * _clamp(_row_stat_float(row, "sharpness", default=50.0) / 100.0, 0.0, 1.0)
+        durability_adj = 0.8 + 0.2 * _clamp(_row_stat_float(row, "long_term_stamina", default=0.5), 0.0, 1.0)
+        value_score = (production * sharpness_adj * durability_adj) / max(0.2, salary_m)
+        value_rows.append(
+            {
+                "player_id": str(row.get("player_id") or ""),
+                "name": row.get("name"),
+                "pos": row.get("pos"),
+                "salary": _row_stat_float(row, "salary"),
+                "production_proxy": round(production, 2),
+                "value_score": round(value_score * 10.0, 1),
+            }
+        )
+
+    value_rows_sorted = sorted(value_rows, key=lambda x: (float(x.get("value_score") or 0.0), str(x.get("name") or "")), reverse=True)
+    top_positive = value_rows_sorted[:top_n]
+    top_negative = list(reversed(value_rows_sorted[-top_n:])) if value_rows_sorted else []
+    team_value_score = round(
+        (sum(float(r.get("value_score") or 0.0) for r in value_rows_sorted) / len(value_rows_sorted)) if value_rows_sorted else 0.0,
+        1,
+    )
+
+    high_risk_count = int((((medical or {}).get("summary") or {}).get("risk_tier_counts") or {}).get("HIGH") or 0)
+    unavailable_count = len((((medical or {}).get("watchlists") or {}).get("currently_unavailable") or []))
+    health_score = _clamp((high_risk_count * 22.0) + (unavailable_count * 18.0), 0.0, 100.0)
+    health_risk_index = {
+        "score": int(round(health_score)),
+        "tier": "HIGH" if health_score >= 67 else ("MEDIUM" if health_score >= 34 else "LOW"),
+        "high_risk_count": high_risk_count,
+        "unavailable_count": unavailable_count,
+    }
+
+    need_flags: List[str] = []
+    if pos_counts["centers"] <= 1:
+        need_flags.append("BACKUP_CENTER_THIN")
+    if pos_counts["guards"] <= 2:
+        need_flags.append("BALL_HANDLER_THIN")
+    if pos_counts["forwards"] <= 2:
+        need_flags.append("WING_DEPTH_THIN")
+    if not need_flags:
+        need_flags.append("BALANCED")
+
+    return {
+        "team_id": tid,
+        "as_of_date": as_of_date,
+        "record": {
+            "wins": int(summary.get("wins") or 0),
+            "losses": int(summary.get("losses") or 0),
+            "rank": summary.get("rank"),
+        },
+        "health_risk_index": health_risk_index,
+        "salary_efficiency": {
+            "team_value_score": team_value_score,
+            "top_positive": top_positive,
+            "top_negative": top_negative,
+        },
+        "rotation_balance": {
+            "guards": pos_counts["guards"],
+            "forwards": pos_counts["forwards"],
+            "centers": pos_counts["centers"],
+            "unknown": pos_counts["unknown"],
+            "need_flags": need_flags,
+        },
+    }
+
+
+@router.get("/api/meta/attribute-groups")
+async def api_meta_attribute_groups():
+    """Attribute grouping metadata for UI rendering.
+
+    Uses only existing attribute key names already present in player attrs.
+    """
+    return {
+        "version": 1,
+        "groups": [
+            {
+                "group_key": "finishing",
+                "label": "마무리",
+                "attr_keys": ["DRIVING_LAYUP", "DRIVING_DUNK", "STANDING_DUNK", "CLOSE_SHOT", "DRAW_FOUL"],
+            },
+            {
+                "group_key": "shooting",
+                "label": "슈팅",
+                "attr_keys": ["MID-RANGE_SHOT", "THREE_POINT_SHOT", "FREE_THROW", "SHOT_IQ", "OFFENSIVE_CONSISTENCY"],
+            },
+            {
+                "group_key": "playmaking",
+                "label": "플레이메이킹",
+                "attr_keys": ["PASS_ACCURACY", "PASS_VISION", "PASS_IQ", "BALL_HANDLE", "HANDS"],
+            },
+            {
+                "group_key": "defense",
+                "label": "수비",
+                "attr_keys": ["INTERIOR_DEFENSE", "PERIMETER_DEFENSE", "STEAL", "BLOCK", "HELP_DEFENSE_IQ", "DEFENSIVE_CONSISTENCY"],
+            },
+            {
+                "group_key": "rebounding",
+                "label": "리바운드",
+                "attr_keys": ["OFFENSIVE_REBOUND", "DEFENSIVE_REBOUND"],
+            },
+            {
+                "group_key": "physical",
+                "label": "피지컬",
+                "attr_keys": ["SPEED", "ACCELERATION", "STRENGTH", "VERTICAL", "STAMINA", "HUSTLE", "OVERALL_DURABILITY", "L_INJURYFREQ"],
+            },
+            {
+                "group_key": "mental",
+                "label": "멘탈",
+                "attr_keys": ["INTANGIBLES", "M_ADAPTABILITY", "M_AMBITION", "M_LOYALTY", "M_EGO", "M_COACHABILITY", "M_WORKETHIC"],
+            },
+        ],
     }
 
 
