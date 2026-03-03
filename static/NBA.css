@@ -42,6 +42,8 @@ body {
   padding: 44px 0;
 }
 
+body:has(#start-screen.active) .app-shell,
+body:has(#team-screen.active) .app-shell,
 body:has(#main-screen.active) .app-shell {
   width: 100%;
   max-width: none;
@@ -125,18 +127,30 @@ h1, h2, h3 { margin: 0 0 12px; }
 
 #start-screen,
 #team-screen {
-  max-width: 1040px;
-  margin: 24px auto 0;
+  position: relative;
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  min-height: 100vh;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 40px 0;
+  color: #0f172a;
+}
+
+#start-screen > *,
+#team-screen > * {
+  width: min(1280px, 94vw);
+  margin-inline: auto;
 }
 
 #start-screen {
   text-align: center;
-  padding: 54px 40px;
   background:
     radial-gradient(circle at 82% -18%, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0) 42%),
     linear-gradient(180deg, #f4f7fb 0%, #e9edf5 55%, #e3e8f1 100%);
-  border: 1px solid rgba(148, 163, 184, 0.42);
-  color: #0f172a;
 }
 
 #start-screen h1 {
@@ -179,12 +193,15 @@ h1, h2, h3 { margin: 0 0 12px; }
   background:
     radial-gradient(circle at 78% -20%, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0) 40%),
     linear-gradient(180deg, #f2f5fa 0%, #e8edf5 52%, #e2e8f1 100%);
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  color: #0f172a;
 }
 
 #team-screen h2 {
   color: #0f172a;
+}
+
+#start-screen h1,
+#team-screen h2 {
+  margin-bottom: 14px;
 }
 
 #team-screen .team-grid {
@@ -1612,6 +1629,18 @@ body:has(#player-detail-screen.active) .app-shell {
 @media (max-width: 980px) {
   #team-screen .team-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  #start-screen,
+  #team-screen {
+    padding: 20px 0 28px;
+  }
+
+  #start-screen > *,
+  #team-screen > * {
+    width: min(1280px, 98vw);
   }
 }
 
