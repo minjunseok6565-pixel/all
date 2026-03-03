@@ -830,6 +830,109 @@ h1, h2, h3 { margin: 0 0 12px; }
   gap: 10px;
 }
 
+
+#college-screen .college-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+#college-screen .college-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#college-screen .college-inbox-badge {
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  font-size: .78rem;
+  color: #7f1d1d;
+  border: 1px solid rgba(225, 29, 72, 0.35);
+  background: linear-gradient(135deg, rgba(255, 228, 230, 0.92), rgba(254, 242, 242, 0.92));
+}
+
+#college-screen .college-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+#college-screen .college-kpi-card {
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background:
+    radial-gradient(circle at 95% -10%, rgba(59, 130, 246, 0.16), rgba(59,130,246,0) 36%),
+    linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+#college-screen .college-kpi-label {
+  margin: 0 0 8px;
+  font-size: .72rem;
+  letter-spacing: .08em;
+  color: #64748b;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+#college-screen .college-kpi-value {
+  margin: 0;
+  font-size: 1.12rem;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+#college-screen .college-kpi-sub {
+  margin: 6px 0 0;
+  font-size: .82rem;
+  color: #475569;
+}
+
+#college-screen .college-inline-chip {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: .78rem;
+  font-weight: 800;
+  letter-spacing: .03em;
+  color: #1e3a8a;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  background: rgba(219, 234, 254, 0.72);
+}
+
+#college-screen .college-tier-chip {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: .76rem;
+  font-weight: 800;
+  color: #7f1d1d;
+  border: 1px solid rgba(225, 29, 72, 0.32);
+  background: rgba(255, 228, 230, 0.78);
+}
+
+#college-screen .college-signals-cell {
+  font-weight: 700;
+  color: #334155;
+}
+
+#college-screen .college-tab-row .btn-secondary {
+  min-width: 102px;
+  font-weight: 800;
+}
+
+#college-screen .college-tab-row .btn.is-active {
+  color: #fff;
+  border-color: rgba(190, 24, 93, .7);
+  box-shadow: 0 10px 18px rgba(190, 24, 93, 0.22);
+}
+
 .roster-table-wrap,
 .player-detail-panel {
   background: var(--card-bg);
@@ -1173,6 +1276,10 @@ h1, h2, h3 { margin: 0 0 12px; }
   .college-two-col {
     grid-template-columns: 1fr;
   }
+
+  #college-screen .college-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -1189,6 +1296,20 @@ h1, h2, h3 { margin: 0 0 12px; }
   .franchise-header-actions {
     justify-content: space-between;
     flex-wrap: wrap;
+  }
+
+  #college-screen .college-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #college-screen .college-hero-actions {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  #college-screen .college-kpi-grid {
+    grid-template-columns: 1fr;
   }
 
   .top-league-tab {

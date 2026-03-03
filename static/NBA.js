@@ -63,6 +63,12 @@ const state = {
   tacticsDraft: null,
   medicalOverview: null,
   medicalSelectedPlayerId: null,
+  selectedCollegeTeamId: null,
+  collegeLeadersSort: "pts",
+  selectedCollegeExpertId: "consensus",
+  collegeExperts: [],
+  scoutingScouts: [],
+  scoutingReports: [],
 };
 
 const els = {
@@ -114,6 +120,15 @@ const els = {
   medicalBackBtn: document.getElementById("medical-back-btn"),
   collegeBackBtn: document.getElementById("college-back-btn"),
   collegeMetaLine: document.getElementById("college-meta-line"),
+  collegeInboxBadge: document.getElementById("college-inbox-badge"),
+  collegeKpiTopTeam: document.getElementById("college-kpi-top-team"),
+  collegeKpiTopTeamSub: document.getElementById("college-kpi-top-team-sub"),
+  collegeKpiLeaders: document.getElementById("college-kpi-leaders"),
+  collegeKpiLeadersSub: document.getElementById("college-kpi-leaders-sub"),
+  collegeKpiBigboard: document.getElementById("college-kpi-bigboard"),
+  collegeKpiBigboardSub: document.getElementById("college-kpi-bigboard-sub"),
+  collegeKpiScouting: document.getElementById("college-kpi-scouting"),
+  collegeKpiScoutingSub: document.getElementById("college-kpi-scouting-sub"),
   collegeTabTeams: document.getElementById("college-tab-teams"),
   collegeTabLeaders: document.getElementById("college-tab-leaders"),
   collegeTabBigboard: document.getElementById("college-tab-bigboard"),
@@ -134,6 +149,7 @@ const els = {
   collegeAssignBtn: document.getElementById("college-assign-btn"),
   collegeUnassignBtn: document.getElementById("college-unassign-btn"),
   collegeReportsBody: document.getElementById("college-reports-body"),
+  collegeScoutingSummary: document.getElementById("college-scouting-summary"),
   teamTrainingTabBtn: document.getElementById("team-training-tab-btn"),
   playerTrainingTabBtn: document.getElementById("player-training-tab-btn"),
   trainingCalendarGrid: document.getElementById("training-calendar-grid"),
@@ -205,6 +221,30 @@ function collegeStat(player, key) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function fmt(value, digits = 1) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : "-";
+}
+
+function renderCollegeDashboardSummary(summary) {
+  const topTeam = summary?.team_ranking?.top_team;
+  els.collegeKpiTopTeam.textContent = topTeam?.name || "-";
+  els.collegeKpiTopTeamSub.textContent = `SRS ${fmt(topTeam?.srs, 2)} · Avg ${fmt(summary?.team_ranking?.avg_srs, 2)}`;
+
+  const leaders = summary?.leaderboard || {};
+  const leaderLabel = [leaders.pts_leader?.name, leaders.reb_leader?.name, leaders.ast_leader?.name].filter(Boolean).join(" / ");
+  els.collegeKpiLeaders.textContent = leaderLabel || "-";
+  els.collegeKpiLeadersSub.textContent = `PTS ${fmt(leaders.pts_leader?.value)} · REB ${fmt(leaders.reb_leader?.value)} · AST ${fmt(leaders.ast_leader?.value)}`;
+
+  const big = summary?.bigboard || {};
+  els.collegeKpiBigboard.textContent = `${big?.pool_mode_used || "-"}`.toUpperCase();
+  els.collegeKpiBigboardSub.textContent = `Tier1 ${big?.tier1_count ?? 0} · Avg Pick ${fmt(big?.avg_projected_pick, 1)}`;
+
+  const scouting = summary?.scouting || {};
+  els.collegeKpiScouting.textContent = `ACTIVE ${scouting?.active_assignments ?? 0}`;
+  els.collegeKpiScoutingSub.textContent = `Idle ${scouting?.idle_scouts ?? 0} · Reports ${scouting?.reports_this_period ?? 0}`;
+}
+
 function switchCollegeTab(tab) {
   const mapping = {
     teams: [els.collegeTabTeams, els.collegePanelTeams],
@@ -222,18 +262,10 @@ function switchCollegeTab(tab) {
 
 function renderCollegeTeams(teams) {
   if (!teams.length) {
-    renderCollegeEmpty(els.collegeTeamsBody, 6, "대학 팀 데이터가 없습니다.");
+    renderCollegeEmpty(els.collegeTeamsBody, 10, "대학 팀 데이터가 없습니다.");
     return;
   }
-  const sorted = [...teams].sort((a, b) => {
-    const wa = Number(a?.wins ?? -9999);
-    const wb = Number(b?.wins ?? -9999);
-    if (wb !== wa) return wb - wa;
-    const la = Number(a?.losses ?? 9999);
-    const lb = Number(b?.losses ?? 9999);
-    if (la !== lb) return la - lb;
-    return Number(b?.srs ?? -9999) - Number(a?.srs ?? -9999);
-  });
+  const sorted = [...teams].sort((a, b) => Number(b?.srs ?? -9999) - Number(a?.srs ?? -9999));
   els.collegeTeamsBody.innerHTML = "";
   sorted.forEach((team, idx) => {
     const tr = document.createElement("tr");
@@ -244,7 +276,11 @@ function renderCollegeTeams(teams) {
       <td>${team?.conference || "-"}</td>
       <td>${team?.wins ?? "-"}</td>
       <td>${team?.losses ?? "-"}</td>
-      <td>${Number(team?.srs ?? 0).toFixed(2)}</td>
+      <td>${fmt(team?.srs, 2)}</td>
+      <td>${fmt(team?.pace, 1)}</td>
+      <td>${fmt(team?.off_ppg, 1)}</td>
+      <td>${fmt(team?.def_ppg, 1)}</td>
+      <td>${team?.declared_count ?? 0}</td>
     `;
     tr.addEventListener("click", () => loadCollegeTeamDetail(team?.college_team_id).catch((e) => alert(e.message)));
     els.collegeTeamsBody.appendChild(tr);
@@ -253,6 +289,7 @@ function renderCollegeTeams(teams) {
     state.selectedCollegeTeamId = sorted[0].college_team_id;
   }
 }
+
 
 async function loadCollegeTeamDetail(teamId) {
   if (!teamId) return;
@@ -288,35 +325,43 @@ async function loadCollegeLeaders() {
       <td>${collegeStat(p, "ast").toFixed(1)}</td>
       <td>${collegeStat(p, "stl").toFixed(1)}</td>
       <td>${collegeStat(p, "blk").toFixed(1)}</td>
+      <td>${(collegeStat(p, "ts_pct") * 100).toFixed(1)}%</td>
+      <td>${collegeStat(p, "usg").toFixed(1)}</td>
     </tr>
-  `).join("") : `<tr><td class="schedule-empty" colspan="9">리더보드 데이터가 없습니다.</td></tr>`;
+  `).join("") : `<tr><td class="schedule-empty" colspan="11">리더보드 데이터가 없습니다.</td></tr>`;
 }
 
+
 async function loadCollegeBigboard() {
-  const expertId = state.selectedCollegeExpertId;
-  if (!expertId) {
-    renderCollegeEmpty(els.collegeBigboardBody, 5, "전문가를 선택하세요.");
+  const profile = state.selectedCollegeExpertId || "consensus";
+  const draftYear = state.collegeMeta?.upcoming_draft_year;
+  if (!draftYear) {
+    renderCollegeEmpty(els.collegeBigboardBody, 7, "드래프트 연도 정보가 없습니다.");
     return;
   }
-  const payload = await fetchJson(`/api/offseason/draft/bigboard/expert?expert_id=${encodeURIComponent(expertId)}&pool_mode=auto`);
-  const board = payload?.board || [];
+  const payload = await fetchJson(`/api/college/bigboard?draft_year=${encodeURIComponent(draftYear)}&expert_profile=${encodeURIComponent(profile)}&limit=100`);
+  const board = payload?.items || [];
   els.collegeBigboardBody.innerHTML = board.length ? board.map((r) => `
     <tr>
       <td>${r?.rank ?? "-"}</td>
-      <td>${r?.name || "-"}</td>
-      <td>${r?.pos || "-"}</td>
-      <td>${r?.tier || "-"}</td>
+      <td>${r?.player?.name || "-"}</td>
+      <td>${r?.player?.pos || "-"}</td>
+      <td><span class="college-tier-chip">${r?.tier || "-"}</span></td>
+      <td>#${r?.consensus_projected_pick ?? "-"}</td>
+      <td class="college-signals-cell">PROD ${fmt(r?.signals?.production_score, 2)} · EFF ${fmt(r?.signals?.efficiency_score, 2)} · RISK ${fmt(r?.signals?.risk_score, 2)}</td>
       <td>${r?.summary || "-"}</td>
     </tr>
-  `).join("") : `<tr><td class="schedule-empty" colspan="5">빅보드 데이터가 없습니다.</td></tr>`;
+  `).join("") : `<tr><td class="schedule-empty" colspan="7">빅보드 데이터가 없습니다.</td></tr>`;
 }
+
 
 async function loadCollegeScouting() {
   if (!state.selectedTeamId) return;
-  const [scoutsPayload, playersPayload, reportsPayload] = await Promise.all([
+  const [scoutsPayload, playersPayload, reportsPayload, inboxSummary] = await Promise.all([
     fetchJson(`/api/scouting/scouts/${encodeURIComponent(state.selectedTeamId)}`),
     fetchJson("/api/college/players?sort=pts&order=desc&limit=200"),
     fetchJson(`/api/scouting/reports?team_id=${encodeURIComponent(state.selectedTeamId)}&limit=50`),
+    fetchJson(`/api/scouting/inbox-summary?team_id=${encodeURIComponent(state.selectedTeamId)}`),
   ]);
   state.scoutingScouts = scoutsPayload?.scouts || [];
   state.scoutingReports = reportsPayload?.reports || [];
@@ -325,16 +370,19 @@ async function loadCollegeScouting() {
   els.collegeScoutSelect.innerHTML = state.scoutingScouts.map((s) => `<option value="${s.scout_id}">${s.display_name} (${s.specialty_key})</option>`).join("");
   els.collegeScoutPlayerSelect.innerHTML = players.map((p) => `<option value="${p.player_id}">${p.name} · ${p.college_team_name || p.college_team_id}</option>`).join("");
 
+  els.collegeScoutingSummary.textContent = `ACTIVE ${inboxSummary?.active_assignments ?? 0} · REPORT ${inboxSummary?.reports_this_period ?? 0}`;
+  els.collegeInboxBadge.textContent = `SCOUTING INBOX · ${inboxSummary?.reports_this_period ?? 0}`;
   els.collegeReportsBody.innerHTML = state.scoutingReports.length ? state.scoutingReports.map((r) => `
     <tr>
       <td>${String(r?.as_of_date || "-").slice(0, 10)}</td>
       <td>${r?.scout?.display_name || r?.scout?.scout_id || "-"}</td>
       <td>${r?.player_snapshot?.name || r?.target_player_id || "-"}</td>
       <td>${r?.status || "-"}</td>
-      <td>${(r?.report_text || "").slice(0, 80) || "(텍스트 리포트 없음)"}</td>
+      <td>${(r?.report_text || "").slice(0, 92) || "(텍스트 리포트 없음)"}</td>
     </tr>
   `).join("") : `<tr><td class="schedule-empty" colspan="5">리포트가 없습니다. 배정 후 월말 진행 시 생성됩니다.</td></tr>`;
 }
+
 
 async function showCollegeScreen() {
   if (!state.selectedTeamId) {
@@ -343,16 +391,16 @@ async function showCollegeScreen() {
   }
   setLoading(true, "대학 리그 정보를 불러오는 중입니다...");
   try {
-    const [meta, teams, experts] = await Promise.all([
+    const [meta, teams, summary] = await Promise.all([
       fetchJson("/api/college/meta"),
       fetchJson("/api/college/teams"),
-      fetchJson("/api/offseason/draft/experts"),
+      fetchJson(`/api/college/dashboard-summary?team_id=${encodeURIComponent(state.selectedTeamId)}`),
     ]);
     state.collegeMeta = meta;
     state.collegeTeams = teams || [];
-    state.collegeExperts = experts?.experts || [];
 
     els.collegeMetaLine.textContent = `시즌 ${meta?.season_year || "-"} · 대학팀 ${meta?.college?.teams || 0}개 · 예정 드래프트 ${meta?.upcoming_draft_year || "-"}`;
+    renderCollegeDashboardSummary(summary || {});
     renderCollegeTeams(state.collegeTeams);
     if (state.selectedCollegeTeamId) {
       await loadCollegeTeamDetail(state.selectedCollegeTeamId);
@@ -363,9 +411,16 @@ async function showCollegeScreen() {
     els.collegeLeaderSort.value = state.collegeLeadersSort;
     await loadCollegeLeaders();
 
-    els.collegeExpertSelect.innerHTML = state.collegeExperts.map((e) => `<option value="${e.expert_id}">${e.display_name}</option>`).join("");
-    if (!state.selectedCollegeExpertId && state.collegeExperts[0]?.expert_id) {
-      state.selectedCollegeExpertId = state.collegeExperts[0].expert_id;
+    const expertProfiles = [
+      { id: "consensus", name: "컨센서스" },
+      { id: "efficiency", name: "효율" },
+      { id: "upside", name: "업사이드" },
+      { id: "defense", name: "수비" },
+    ];
+    state.collegeExperts = expertProfiles;
+    els.collegeExpertSelect.innerHTML = expertProfiles.map((e) => `<option value="${e.id}">${e.name}</option>`).join("");
+    if (!state.selectedCollegeExpertId) {
+      state.selectedCollegeExpertId = "consensus";
     }
     els.collegeExpertSelect.value = state.selectedCollegeExpertId;
     await loadCollegeBigboard();
@@ -377,6 +432,7 @@ async function showCollegeScreen() {
     setLoading(false);
   }
 }
+
 
 function showTeamSelection() { activateScreen(els.teamScreen); }
 

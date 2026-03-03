@@ -332,14 +332,40 @@
     </section>
 
     <section id="college-screen" class="panel" aria-hidden="true">
-      <div class="screen-header-row">
+      <div class="college-hero">
         <div>
           <p class="eyebrow">COLLEGE LEAGUE</p>
           <h2>대학 리그</h2>
           <p class="subtitle" id="college-meta-line">대학 팀 순위, 리더보드, 빅보드, 스카우팅을 관리합니다.</p>
         </div>
-        <button id="college-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+        <div class="college-hero-actions">
+          <div id="college-inbox-badge" class="college-inbox-badge">SCOUTING INBOX · 0</div>
+          <button id="college-back-btn" class="btn btn-secondary" type="button">메인으로</button>
+        </div>
       </div>
+
+      <section class="college-kpi-grid" aria-label="대학 리그 핵심 지표">
+        <article class="college-kpi-card">
+          <p class="college-kpi-label">Top Team</p>
+          <p id="college-kpi-top-team" class="college-kpi-value">-</p>
+          <p id="college-kpi-top-team-sub" class="college-kpi-sub">SRS -</p>
+        </article>
+        <article class="college-kpi-card">
+          <p class="college-kpi-label">Leaders</p>
+          <p id="college-kpi-leaders" class="college-kpi-value">-</p>
+          <p id="college-kpi-leaders-sub" class="college-kpi-sub">PTS/REB/AST 리더</p>
+        </article>
+        <article class="college-kpi-card">
+          <p class="college-kpi-label">Big Board</p>
+          <p id="college-kpi-bigboard" class="college-kpi-value">-</p>
+          <p id="college-kpi-bigboard-sub" class="college-kpi-sub">Tier1 · Lottery</p>
+        </article>
+        <article class="college-kpi-card">
+          <p class="college-kpi-label">Scouting</p>
+          <p id="college-kpi-scouting" class="college-kpi-value">-</p>
+          <p id="college-kpi-scouting-sub" class="college-kpi-sub">ACTIVE · Reports</p>
+        </article>
+      </section>
 
       <div class="college-tab-row">
         <button id="college-tab-teams" type="button" class="btn btn-secondary is-active">팀 순위</button>
@@ -356,7 +382,7 @@
               <table class="college-table">
                 <thead>
                   <tr>
-                    <th>RK</th><th>팀</th><th>컨퍼런스</th><th>W</th><th>L</th><th>SRS</th>
+                    <th>RK</th><th>팀</th><th>컨퍼런스</th><th>W</th><th>L</th><th>SRS</th><th>PACE</th><th>OFF</th><th>DEF</th><th>DECL.</th>
                   </tr>
                 </thead>
                 <tbody id="college-teams-body"></tbody>
@@ -391,7 +417,7 @@
             <table class="college-table">
               <thead>
                 <tr>
-                  <th>RK</th><th>선수</th><th>팀</th><th>POS</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th>
+                  <th>RK</th><th>선수</th><th>팀</th><th>POS</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>TS%</th><th>USG</th>
                 </tr>
               </thead>
               <tbody id="college-leaders-body"></tbody>
@@ -404,7 +430,7 @@
         <article class="college-card">
           <div class="college-card-head-inline">
             <h3>전문가 빅보드</h3>
-            <label>전문가
+            <label>프로필
               <select id="college-expert-select"></select>
             </label>
           </div>
@@ -412,7 +438,7 @@
             <table class="college-table">
               <thead>
                 <tr>
-                  <th>RANK</th><th>선수</th><th>POS</th><th>TIER</th><th>요약</th>
+                  <th>RANK</th><th>선수</th><th>POS</th><th>TIER</th><th>Projected</th><th>Signals</th><th>요약</th>
                 </tr>
               </thead>
               <tbody id="college-bigboard-body"></tbody>
@@ -435,7 +461,10 @@
             </div>
           </article>
           <article class="college-card">
-            <h3>스카우팅 리포트</h3>
+            <div class="college-card-head-inline">
+              <h3>스카우팅 리포트</h3>
+              <span id="college-scouting-summary" class="college-inline-chip">ACTIVE 0 · REPORT 0</span>
+            </div>
             <div class="college-table-wrap">
               <table class="college-table">
                 <thead>
