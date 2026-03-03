@@ -163,6 +163,8 @@ const els = {
   backToMainBtn: document.getElementById("back-to-main-btn"),
   backToRosterBtn: document.getElementById("back-to-roster-btn"),
   rosterBody: document.getElementById("my-team-roster-body"),
+  rosterKpiGrid: document.getElementById("roster-kpi-grid"),
+  rosterFocusPanel: document.getElementById("roster-focus-panel"),
   playerDetailTitle: document.getElementById("player-detail-title"),
   playerDetailPanel: document.getElementById("player-detail-panel"),
   playerDetailContent: document.getElementById("player-detail-content"),
@@ -701,10 +703,15 @@ function renderRosterRows(rows) {
       <td>${formatMoney(row.salary)}</td>
       <td class="condition-cell">${renderConditionRing(longStamina, shortStamina)}</td>
       <td><span class="sharpness-badge" style="background:${ratioToColor(sharpness / 100)}">${Math.round(sharpness)}%</span></td>
+      <td>${num(row.pts, 0).toFixed(1)}</td>
+      <td>${num(row.ast, 0).toFixed(1)}</td>
+      <td>${num(row.reb, 0).toFixed(1)}</td>
     `;
 
     tr.addEventListener("click", () => {
       state.selectedPlayerId = row.player_id;
+      document.querySelectorAll("#my-team-roster-body .roster-row").forEach((el) => el.classList.remove("is-selected"));
+      tr.classList.add("is-selected");
       loadPlayerDetail(row.player_id).catch((e) => alert(e.message));
     });
 
@@ -732,19 +739,59 @@ function getDissatisfactionSummary(d) {
   };
 }
 
-function renderAttrGrid(attrs) {
-  const entries = Object.entries(attrs || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+function attrDisplayValue(v) {
+  if (typeof v === "number") {
+    return Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`;
+  }
+  return String(v);
+}
+
+function renderAttrGrid(attrs, attrMeta = null) {
+  const entries = Object.entries(attrs || {});
   if (!entries.length) return '<p class="empty-copy">능력치 데이터가 없습니다.</p>';
-  return entries
-    .map(([k, v]) => {
-      const value = typeof v === "number" ? (Math.abs(v) <= 1 ? `${Math.round(v * 100)}` : `${Math.round(v)}`) : String(v);
-      return `
+
+  const groupMap = new Map();
+  (attrMeta?.groups || []).forEach((g) => {
+    (g.attr_keys || []).forEach((key) => groupMap.set(String(key).toUpperCase(), g));
+  });
+
+  if (!groupMap.size) {
+    return entries
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .map(([k, v]) => `
         <div class="attr-card">
           <span class="attr-name">${k}</span>
-          <strong class="attr-value">${value}</strong>
+          <strong class="attr-value">${attrDisplayValue(v)}</strong>
         </div>
-      `;
-    })
+      `)
+      .join("");
+  }
+
+  const grouped = new Map();
+  entries.forEach(([k, v]) => {
+    const g = groupMap.get(String(k).toUpperCase());
+    const name = g?.label || "기타";
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name).push([k, v]);
+  });
+
+  return Array.from(grouped.entries())
+    .map(([groupName, rows]) => `
+      <section class="attr-group">
+        <h5>${groupName}</h5>
+        <div class="attr-group-grid">
+          ${rows
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+            .map(([k, v]) => `
+              <div class="attr-card">
+                <span class="attr-name">${k}</span>
+                <strong class="attr-value">${attrDisplayValue(v)}</strong>
+              </div>
+            `)
+            .join("")}
+        </div>
+      </section>
+    `)
     .join("");
 }
 
@@ -792,7 +839,60 @@ function buildContractRows(contractActive, fallbackSalary) {
   return rows.concat(outstandingOptionRows);
 }
 
-function renderPlayerDetail(detail) {
+function renderRosterInsightsKpi(teamDetail, insights) {
+  const summary = teamDetail?.summary || {};
+  const hi = insights?.health_risk_index || {};
+  const se = insights?.salary_efficiency || {};
+  const rb = insights?.rotation_balance || {};
+  els.rosterKpiGrid.innerHTML = `
+    <article class="roster-kpi-card">
+      <p class="kpi-label">TEAM RECORD</p>
+      <h3>${num(summary.wins, 0)}-${num(summary.losses, 0)}</h3>
+      <p class="kpi-sub">컨퍼런스 순위 ${summary.rank ?? "-"}위 · GB ${summary.gb ?? "-"}</p>
+    </article>
+    <article class="roster-kpi-card">
+      <p class="kpi-label">HEALTH RISK</p>
+      <h3>${num(hi.score, 0)} <span>${hi.tier || "LOW"}</span></h3>
+      <p class="kpi-sub">고위험 ${num(hi.high_risk_count, 0)}명 · 이탈 ${num(hi.unavailable_count, 0)}명</p>
+    </article>
+    <article class="roster-kpi-card">
+      <p class="kpi-label">SALARY EFFICIENCY</p>
+      <h3>${num(se.team_value_score, 0)}</h3>
+      <p class="kpi-sub">G/F/C ${num(rb.guards, 0)}/${num(rb.forwards, 0)}/${num(rb.centers, 0)}</p>
+    </article>
+  `;
+}
+
+function renderRosterFocusPanel(player, detail = null) {
+  if (!player) {
+    els.rosterFocusPanel.innerHTML = '<p class="empty-copy">선수를 선택하면 핵심 정보가 표시됩니다.</p>';
+    return;
+  }
+  const p = detail?.player || {};
+  const condition = detail?.condition || {};
+  const injury = detail?.injury || {};
+  const diss = detail?.dissatisfaction || {};
+  const name = p.name || player.name || "선수";
+  els.rosterFocusPanel.innerHTML = `
+    <div class="focus-hero">
+      <p class="kpi-label">SELECTED PLAYER</p>
+      <h3>${name}</h3>
+      <p>${p.pos || player.pos || "-"} · ${num(p.age ?? player.age, 0)}세 · OVR ${num(p.ovr ?? player.ovr, 0)}</p>
+    </div>
+    <div class="focus-grid">
+      <div><span>장기 체력</span><strong>${formatPercent(condition.long_term_stamina ?? player.long_term_stamina)}</strong></div>
+      <div><span>단기 체력</span><strong>${formatPercent(condition.short_term_stamina ?? player.short_term_stamina)}</strong></div>
+      <div><span>경기력</span><strong>${Math.round(num(condition.sharpness ?? player.sharpness, 50))}%</strong></div>
+      <div><span>연봉</span><strong>${formatMoney(detail?.roster?.salary_amount ?? player.salary)}</strong></div>
+    </div>
+    <div class="focus-tags">
+      <span class="status-line ${injury.is_injured ? "status-danger" : "status-ok"}">${injury.is_injured ? "부상 관리 필요" : "정상"}</span>
+      <span class="status-line ${diss.is_dissatisfied ? "status-danger" : "status-ok"}">${diss.is_dissatisfied ? "불만 있음" : "불만 없음"}</span>
+    </div>
+  `;
+}
+
+function renderPlayerDetail(detail, extras = {}) {
   const p = detail.player || {};
   const contract = detail.contract || {};
   const diss = getDissatisfactionSummary(detail.dissatisfaction);
@@ -859,7 +959,7 @@ function renderPlayerDetail(detail) {
 
       <section class="detail-card detail-card-attr">
         <h4>능력치 (ATTR)</h4>
-        <div class="attr-grid">${renderAttrGrid(p.attrs || {})}</div>
+        <div class="attr-grid">${renderAttrGrid(p.attrs || {}, extras.attrMeta)}</div>
       </section>
 
       <section class="detail-card detail-card-health">
@@ -878,6 +978,24 @@ function renderPlayerDetail(detail) {
         <p class="section-copy">출전 경기 수: ${num(seasonStats.games, 0)}경기</p>
         ${statsSummary}
       </section>
+
+      <section class="detail-card detail-card-gamelog">
+        <h4>최근 경기 로그</h4>
+        ${(() => {
+          const logs = extras.gameLog?.items || [];
+          if (!logs.length) return '<p class="empty-copy">최근 경기 데이터가 없습니다.</p>';
+          return `
+            <div class="game-log-table-wrap">
+              <table class="game-log-table">
+                <thead><tr><th>DATE</th><th>OPP</th><th>PTS</th><th>REB</th><th>AST</th><th>FG%</th><th>3P%</th><th>GmSc</th></tr></thead>
+                <tbody>
+                  ${logs.slice(0, 10).map((g) => `<tr><td>${String(g.date || '').slice(5)}</td><td>${g.is_home ? 'vs' : '@'} ${g.opponent_team_id || '-'}</td><td>${num(g.pts, 0)}</td><td>${num(g.reb, 0)}</td><td>${num(g.ast, 0)}</td><td>${Math.round(num(g.fg_pct, 0) * 100)}%</td><td>${Math.round(num(g.tp_pct, 0) * 100)}%</td><td>${num(g.game_score, 0)}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        })()}
+      </section>
     </div>
   `;
 }
@@ -885,8 +1003,14 @@ function renderPlayerDetail(detail) {
 async function loadPlayerDetail(playerId) {
   setLoading(true, "선수 상세 정보를 불러오는 중...");
   try {
-    const detail = await fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`);
-    renderPlayerDetail(detail);
+    const [detail, gameLog, attrMeta] = await Promise.all([
+      fetchJson(`/api/player-detail/${encodeURIComponent(playerId)}`),
+      fetchJson(`/api/players/${encodeURIComponent(playerId)}/game-log?limit=10`).catch(() => ({ items: [] })),
+      fetchJson('/api/meta/attribute-groups').catch(() => ({ groups: [] })),
+    ]);
+    const selectedRow = state.rosterRows.find((r) => String(r.player_id) === String(playerId));
+    renderRosterFocusPanel(selectedRow, detail);
+    renderPlayerDetail(detail, { gameLog, attrMeta });
     activateScreen(els.playerDetailScreen);
   } finally {
     setLoading(false);
@@ -901,14 +1025,19 @@ async function showMyTeamScreen() {
 
   setLoading(true, "내 팀 로스터를 불러오는 중...");
   try {
-    const detail = await fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`);
+    const [detail, insights] = await Promise.all([
+      fetchJson(`/api/team-detail/${encodeURIComponent(state.selectedTeamId)}`),
+      fetchJson(`/api/team/${encodeURIComponent(state.selectedTeamId)}/roster-insights`).catch(() => ({})),
+    ]);
     state.rosterRows = detail.roster || [];
     state.selectedPlayerId = null;
 
     const teamName = state.selectedTeamName || TEAM_FULL_NAMES[state.selectedTeamId] || state.selectedTeamId;
     els.myTeamTitle.textContent = `${teamName} 선수단`;
 
+    renderRosterInsightsKpi(detail, insights);
     renderRosterRows(state.rosterRows);
+    renderRosterFocusPanel(state.rosterRows[0] || null, null);
     els.playerDetailContent.innerHTML = "";
     els.playerDetailTitle.textContent = "선수 상세 정보";
     activateScreen(els.myTeamScreen);
