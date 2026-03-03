@@ -229,6 +229,37 @@
       </div>
 
       <div class="roster-shell">
+        <section class="roster-command-bar" aria-label="로스터 도구 모음">
+          <div id="roster-snapshot-cards" class="roster-snapshot-cards"></div>
+          <div class="roster-toolbar-controls">
+            <label class="roster-field" for="roster-search-input">
+              <span>선수 검색</span>
+              <input id="roster-search-input" type="search" placeholder="이름으로 검색" autocomplete="off" />
+            </label>
+            <label class="roster-field" for="roster-pos-filter">
+              <span>포지션</span>
+              <select id="roster-pos-filter">
+                <option value="ALL">전체</option>
+                <option value="G">G</option>
+                <option value="F">F</option>
+                <option value="C">C</option>
+              </select>
+            </label>
+            <label class="roster-field" for="roster-sort-select">
+              <span>정렬</span>
+              <select id="roster-sort-select">
+                <option value="salary_desc">샐러리 높은 순</option>
+                <option value="ovr_desc">OVR 높은 순</option>
+                <option value="sharpness_desc">경기력 높은 순</option>
+                <option value="condition_desc">컨디션 높은 순</option>
+                <option value="age_asc">나이 어린 순</option>
+                <option value="name_asc">이름순</option>
+              </select>
+            </label>
+          </div>
+          <p id="roster-insight-strip" class="roster-insight-strip"></p>
+        </section>
+
         <div class="roster-table-wrap">
           <table class="roster-table">
             <thead>

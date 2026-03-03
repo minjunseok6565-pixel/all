@@ -1442,6 +1442,248 @@ h1, h2, h3 { margin: 0 0 12px; }
   font-size: .86rem;
 }
 
+
+
+/* Premium refresh: My Team + Player Detail only */
+#my-team-screen .roster-shell {
+  display: grid;
+  gap: 14px;
+}
+
+#my-team-screen .roster-command-bar {
+  background: linear-gradient(145deg, #0f1a2d, #172640);
+  border: 1px solid rgba(116, 146, 198, 0.28);
+  border-radius: 16px;
+  box-shadow: 0 14px 30px rgba(3, 9, 18, 0.42);
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+#my-team-screen .roster-snapshot-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+#my-team-screen .roster-snapshot-card {
+  background: linear-gradient(165deg, rgba(31, 49, 82, 0.88), rgba(13, 22, 40, 0.95));
+  border: 1px solid rgba(148, 179, 238, 0.2);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+#my-team-screen .roster-snapshot-card p {
+  margin: 0;
+  font-size: .72rem;
+  color: #9fb2d4;
+  letter-spacing: .04em;
+}
+
+#my-team-screen .roster-snapshot-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.1rem;
+  color: #f3f7ff;
+}
+
+#my-team-screen .roster-toolbar-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.8fr) repeat(2, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+#my-team-screen .roster-field {
+  display: grid;
+  gap: 6px;
+  color: #a9bbda;
+  font-size: .78rem;
+}
+
+#my-team-screen .roster-field input,
+#my-team-screen .roster-field select {
+  background: rgba(11, 20, 35, 0.84);
+  border: 1px solid rgba(145, 173, 227, 0.28);
+  color: #eef4ff;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+#my-team-screen .roster-field input:focus-visible,
+#my-team-screen .roster-field select:focus-visible {
+  outline: 2px solid rgba(93, 154, 255, 0.72);
+  outline-offset: 1px;
+}
+
+#my-team-screen .roster-insight-strip {
+  margin: 0;
+  border-radius: 10px;
+  background: rgba(9, 17, 30, 0.72);
+  border: 1px solid rgba(125, 161, 222, 0.24);
+  color: #d8e5fb;
+  font-size: .86rem;
+  padding: 10px 12px;
+}
+
+#my-team-screen .roster-table-wrap {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+#my-team-screen .roster-row {
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+#my-team-screen .roster-row:hover {
+  background: rgba(59, 97, 177, 0.14);
+}
+
+#my-team-screen .roster-row.is-selected {
+  background: rgba(82, 130, 229, 0.18);
+  box-shadow: inset 3px 0 0 #6da4ff;
+}
+
+#my-team-screen .roster-name-cell {
+  display: grid;
+  gap: 4px;
+}
+
+#my-team-screen .roster-name-cell strong {
+  color: #f8fbff;
+}
+
+#my-team-screen .roster-role-tag {
+  font-size: .72rem;
+  color: #a6bce2;
+}
+
+#my-team-screen .pos-pill {
+  display: inline-block;
+  min-width: 30px;
+  border-radius: 999px;
+  background: rgba(50, 83, 147, 0.35);
+  border: 1px solid rgba(134, 168, 230, 0.42);
+  font-size: .75rem;
+  font-weight: 700;
+  padding: 3px 8px;
+}
+
+#my-team-screen .num-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+#my-team-screen .condition-cell {
+  display: inline-grid;
+  justify-items: center;
+  gap: 5px;
+}
+
+#my-team-screen .condition-label {
+  font-size: .68rem;
+  color: #9fb3d7;
+}
+
+#player-detail-screen .player-detail-panel {
+  border-radius: 18px;
+  background: radial-gradient(circle at 10% 10%, rgba(48, 71, 116, 0.24), transparent 40%), linear-gradient(180deg, #0f172a, #121d35 45%, #162744);
+  border: 1px solid rgba(124, 155, 214, 0.28);
+}
+
+#player-detail-screen .detail-card {
+  border-radius: 16px;
+  border: 1px solid rgba(145, 175, 230, 0.24);
+  background: linear-gradient(145deg, rgba(18, 30, 52, 0.92), rgba(10, 17, 34, 0.94));
+}
+
+#player-detail-screen .detail-kpi-stack {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+#player-detail-screen .detail-kpi {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: .76rem;
+  font-weight: 700;
+  background: rgba(39, 68, 120, 0.6);
+  border: 1px solid rgba(129, 165, 232, 0.36);
+}
+
+#player-detail-screen .attr-groups {
+  display: grid;
+  gap: 10px;
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+#player-detail-screen .attr-group-card {
+  border: 1px solid rgba(131, 163, 222, 0.2);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(8, 16, 30, 0.66);
+}
+
+#player-detail-screen .attr-group-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+#player-detail-screen .attr-group-card h5 {
+  margin: 0;
+  font-size: .92rem;
+}
+
+#player-detail-screen .attr-group-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+#player-detail-screen .attr-group-meta strong {
+  font-size: 1.02rem;
+}
+
+#player-detail-screen .attr-group-meta span {
+  color: #93abd3;
+  font-size: .72rem;
+}
+
+#player-detail-screen .attr-group-highlight {
+  margin: 0 0 6px;
+  font-size: .78rem;
+  color: #b8cae8;
+}
+
+#player-detail-screen .attr-group-highlight-low {
+  color: #e0b7b7;
+}
+
+#player-detail-screen .attr-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 980px) {
+  #my-team-screen .roster-snapshot-cards,
+  #my-team-screen .roster-toolbar-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  #my-team-screen .roster-snapshot-cards,
+  #my-team-screen .roster-toolbar-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
 .loading-overlay {
   position: fixed;
   inset: 0;
@@ -2602,6 +2844,29 @@ body:has(#player-detail-screen.active) .app-shell {
   color: #0f172a;
 }
 
+/* Keep premium roster/player styles from being overridden by global light panel rules */
+#my-team-screen .roster-table-wrap,
+#player-detail-screen .player-detail-panel {
+  background: linear-gradient(180deg, #0f192b, #13233f);
+  border-color: rgba(116, 146, 198, 0.28);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+}
+
+#my-team-screen .roster-table th,
+#my-team-screen .roster-table td,
+#player-detail-screen .detail-subline,
+#player-detail-screen .compact-kv-list span,
+#player-detail-screen .subtitle,
+#my-team-screen .subtitle {
+  color: #9fb2d4;
+}
+
+#my-team-screen .roster-table td,
+#player-detail-screen .compact-kv-list strong,
+#player-detail-screen .section-copy,
+#player-detail-screen .detail-card h4,
+#player-detail-screen h3 {
+  color: #ecf2ff;
 /* tactics tab v2 (scoped) */
 #tactics-screen .tactics-v2-shell {
   width: min(1680px, 96vw);
