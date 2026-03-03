@@ -2199,198 +2199,87 @@ body:has(#player-detail-screen.active) .app-shell {
   color: #0f172a;
 }
 
-/* === Premium Roster + Player Detail Upgrade === */
-#my-team-screen .roster-shell {
-  display: grid;
-  gap: 14px;
+/* --- Tactics HQ redesign --- */
+#tactics-screen .tactics-header-actions { display:flex; gap:10px; align-items:center; }
+#tactics-screen .tactics-shell-hq {
+  display:grid;
+  grid-template-columns: 280px minmax(780px,1fr) 340px;
+  gap: 18px;
+  align-items:start;
 }
-
-#my-team-screen .roster-kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-#my-team-screen .roster-kpi-card {
-  background: linear-gradient(140deg, #0f172a, #1e293b);
-  border: 1px solid rgba(148, 163, 184, 0.35);
+#tactics-screen .tactics-card {
+  background: linear-gradient(180deg, rgba(19,25,42,0.76), rgba(13,18,33,0.84));
+  border: 1px solid rgba(120,145,220,0.22);
   border-radius: 16px;
-  padding: 16px;
-  color: #e2e8f0;
-  box-shadow: 0 16px 30px rgba(2, 6, 23, 0.35);
+  padding: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
 }
-
-#my-team-screen .roster-kpi-card h3 {
-  margin: 4px 0;
-  font-size: 1.55rem;
-  color: #fff;
+#tactics-screen .tactics-left-panel,
+#tactics-screen .tactics-center-panel,
+#tactics-screen .tactics-right-panel { display:grid; gap: 14px; }
+#tactics-screen .tactics-select,
+#tactics-screen .tactics-filter-input {
+  width:100%;
+  border-radius:10px;
+  border:1px solid rgba(128,150,230,.35);
+  background: rgba(5,10,22,.7);
+  color:#f0f5ff;
+  min-height: 42px;
+  padding: 0 10px;
 }
-
-#my-team-screen .roster-kpi-card h3 span {
-  font-size: .85rem;
-  color: #cbd5e1;
-  margin-left: 4px;
+#tactics-screen .tactics-muted { color:#9eb2da; font-size: 13px; }
+#tactics-screen .tactics-current-copy { color:#d8e4ff; margin-top:8px; }
+#tactics-screen .tactics-lineup-title-row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+#tactics-screen .tactics-lineup-row {
+  display:grid;
+  grid-template-columns: minmax(200px,1fr) minmax(150px,1fr) minmax(150px,1fr) 130px;
+  gap:8px;
+  align-items:center;
 }
-
-#my-team-screen .kpi-label {
-  margin: 0;
-  font-size: .72rem;
-  letter-spacing: .14em;
-  color: #94a3b8;
+#tactics-screen .tactics-lineup-row select,
+#tactics-screen .tactics-lineup-row input[type="number"],
+#tactics-screen .tactics-lineup-row input[type="range"] {
+  border-radius:10px;
+  border:1px solid rgba(128,150,230,.32);
+  background: rgba(7,12,24,.85);
+  color:#f5f7ff;
 }
-
-#my-team-screen .kpi-sub {
-  margin: 0;
-  color: #cbd5e1;
-  font-size: .86rem;
-}
-
-#my-team-screen .roster-main-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.7fr);
-  gap: 14px;
-  align-items: start;
-}
-
-#my-team-screen .roster-focus-panel {
-  background: linear-gradient(160deg, #0f172a, #1f2937);
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 16px;
-  color: #f8fafc;
-  padding: 16px;
-  min-height: 240px;
-  position: sticky;
-  top: 14px;
-}
-
-#my-team-screen .focus-hero h3 {
-  margin: 4px 0;
-  color: #fff;
-}
-
-#my-team-screen .focus-hero p {
-  margin: 0;
-  color: #cbd5e1;
-}
-
-#my-team-screen .focus-grid {
-  margin-top: 14px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-#my-team-screen .focus-grid div {
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  border-radius: 12px;
-  padding: 10px;
-  display: grid;
-  gap: 4px;
-}
-
-#my-team-screen .focus-grid span {
-  color: #94a3b8;
-  font-size: .78rem;
-}
-
-#my-team-screen .focus-grid strong {
-  color: #fff;
-}
-
-#my-team-screen .focus-tags {
-  margin-top: 12px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-#my-team-screen .roster-table td {
-  font-variant-numeric: tabular-nums;
-}
-
-#my-team-screen .roster-row.is-selected {
-  background: linear-gradient(90deg, rgba(29, 78, 216, 0.12), rgba(30, 64, 175, 0.06));
-}
-
-#player-detail-screen .player-detail-panel {
-  padding: 20px;
-}
-
-#player-detail-screen .player-layout {
-  grid-template-columns: minmax(0, 2fr) minmax(320px, .9fr);
-  grid-template-areas:
-    "header contract"
-    "attr dissatisfaction"
-    "attr health"
-    "gamelog gamelog"
-    "stats stats";
-}
-
-#player-detail-screen .detail-card-gamelog {
-  grid-area: gamelog;
-}
-
-#player-detail-screen .attr-group {
-  margin-bottom: 14px;
-}
-
-#player-detail-screen .attr-group h5 {
-  margin: 0 0 8px;
-  color: #334155;
-}
-
-#player-detail-screen .attr-group-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 8px;
-}
-
-#player-detail-screen .game-log-table-wrap {
-  overflow: auto;
-}
-
-#player-detail-screen .game-log-table {
+#tactics-screen .tactics-minute-editor { display:grid; grid-template-columns:70px 1fr; gap:8px; align-items:center; }
+#tactics-screen .tactics-minutes-bar {
+  margin-top: 8px;
   width: 100%;
-  border-collapse: collapse;
-  min-width: 760px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  overflow: hidden;
 }
-
-#player-detail-screen .game-log-table th,
-#player-detail-screen .game-log-table td {
-  padding: 9px 10px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
-  text-align: center;
+#tactics-screen .tactics-minutes-fill {
+  height:100%;
+  width:0%;
+  background: linear-gradient(90deg,#5f8dff,#69ddff);
+  transition: width .2s ease;
 }
-
-#player-detail-screen .game-log-table th {
-  color: #64748b;
-  font-size: .78rem;
-  letter-spacing: .06em;
+#tactics-screen .tactics-impact-metrics { display:grid; gap:10px; }
+#tactics-screen .tactics-metric-row { display:grid; grid-template-columns:1fr auto auto; gap:10px; color:#dbe8ff; }
+#tactics-screen .delta-up { color: #65e8a8; }
+#tactics-screen .delta-down { color: #ff8f9b; }
+#tactics-screen .tactics-warning-list { display:grid; gap:8px; }
+#tactics-screen .tactics-warning-item {
+  border: 1px solid rgba(255,152,152,.35);
+  background: rgba(104,24,40,.35);
+  color:#ffd7dc;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
 }
+#tactics-screen .tactics-warning-item.info {
+  border-color: rgba(138,176,255,.35);
+  background: rgba(37,59,112,.28);
+  color: #d4e2ff;
+}
+#tactics-screen .tactics-roster-item { display:flex; justify-content:space-between; gap:8px; }
+#tactics-screen .tactics-roster-meta { color:#8ea7d6; font-size:12px; }
 
-@media (max-width: 1180px) {
-  #my-team-screen .roster-main-grid,
-  #player-detail-screen .player-layout {
-    grid-template-columns: 1fr;
-  }
-
-  #my-team-screen .roster-kpi-grid {
-    grid-template-columns: 1fr;
-  }
-
-  #my-team-screen .roster-focus-panel {
-    position: static;
-  }
-
-  #player-detail-screen .player-layout {
-    grid-template-areas:
-      "header"
-      "contract"
-      "dissatisfaction"
-      "health"
-      "attr"
-      "gamelog"
-      "stats";
-  }
+@media (max-width: 1440px) {
+  #tactics-screen .tactics-shell-hq { grid-template-columns: 1fr; }
 }
