@@ -31,3 +31,12 @@ class TeamPracticePreviewRequest(BaseModel):
     participant_pids: Optional[List[str]] = None
     non_participant_type: Optional[str] = None
 
+
+class TeamPracticePreviewRangeRequest(BaseModel):
+    season_year: Optional[int] = None
+    dates: List[str]  # YYYY-MM-DD[]
+    type: Optional[str] = None
+    offense_scheme_key: Optional[str] = None
+    defense_scheme_key: Optional[str] = None
+    participant_pids: Optional[List[str]] = None
+    non_participant_type: Optional[str] = None
